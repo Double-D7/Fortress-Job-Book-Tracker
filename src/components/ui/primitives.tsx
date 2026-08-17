@@ -154,8 +154,15 @@ export function Ring({
                 strokeDashoffset={circumference * (1 - clamped / 100)} />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="tnum text-3xl font-semibold tracking-tight">{clamped.toFixed(1)}%</span>
-        {sublabel && <span className="mt-0.5 text-2xs text-ink-muted">{sublabel}</span>}
+        {/* Scaled to the ring rather than fixed: at card size a fixed 3xl
+            overflows the circle it is meant to sit inside. */}
+        <span
+          className="tnum font-semibold leading-none tracking-tight"
+          style={{ fontSize: Math.max(13, Math.round(size * 0.2)) }}
+        >
+          {clamped.toFixed(1)}%
+        </span>
+        {sublabel && <span className="mt-1 text-2xs text-ink-muted">{sublabel}</span>}
       </div>
     </div>
   )

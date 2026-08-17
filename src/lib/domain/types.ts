@@ -108,6 +108,20 @@ export interface JobBookSection {
   approvedBy?: string | null
   approvedAt?: string | null
   computedPct: number
+  /**
+   * Declared scope: how many records or documents this section is expected
+   * to hold when the book is finished, entered at job setup from the
+   * drawing set and scope of work.
+   *
+   * This is the scoring denominator, and it is the difference between "how
+   * complete is what I have typed" and "how complete is the book". Without
+   * it, a tech who has entered 100 of 2,342 joints — all of them filled in
+   * correctly — sees the section at 100%, because the only rows the
+   * engine can see are the ones already there. Null means the scope was
+   * never declared, and the section falls back to scoring against what
+   * exists.
+   */
+  expectedCount?: number | null
   /** Fortress-only. Never present in a client or inspector payload. */
   internalNotes?: string | null
 }
@@ -212,6 +226,9 @@ export interface WeldLine {
   pipeGrade?: string | null
   serviceType?: string | null
   sortOrder: number
+  /** Joints this line is expected to carry, from the isometric. Summed
+   *  across lines to scope section 12 when set. */
+  expectedWeldCount?: number | null
 }
 
 export interface Weld {

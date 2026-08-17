@@ -13,6 +13,7 @@
  * are the database's rather than this file's.
  */
 import type { JobBookBundle, UserRole } from '@/lib/domain/types'
+import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { buildDp452Bundle } from './seed/dp452'
 
 export interface JobBookSummary {
@@ -36,18 +37,40 @@ export interface Viewer {
   clientOrgId: string | null
 }
 
+export interface CreateResult {
+  ok: boolean
+  jobBookId?: string
+  errors?: { field: string; message: string }[]
+  warnings?: { field: string; message: string }[]
+}
+
 export interface DataProvider {
   listJobBooks(viewer: Viewer): Promise<JobBookSummary[]>
   getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null>
+  createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult>
+  listClientOrgs(viewer: Viewer): Promise<{ id: string; name: string }[]>
 }
 
 /** The demo/seed provider. Builds the reference book once per process. */
 class SeedProvider implements DataProvider {
   private cache: JobBookBundle | null = null
+  /**
+   * Books created through the setup wizard. In-memory and per-process:
+   * they survive navigation but not a server restart, which is the right
+   * trade for a provider whose job is to demonstrate the flow. The
+   * Supabase provider persists through `create_job_book()`, which
+   * scaffolds the sections in the same transaction as the book so one
+   * cannot exist without the other.
+   */
+  private created = new Map<string, JobBookBundle>()
 
   private bundle(): JobBookBundle {
     if (!this.cache) this.cache = buildDp452Bundle()
     return this.cache
+  }
+
+  private all(): JobBookBundle[] {
+    return [this.bundle(), ...this.created.values()]
   }
 
   /**
@@ -63,36 +86,113 @@ class SeedProvider implements DataProvider {
   }
 
   async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {
-    const b = this.bundle()
-    if (!this.canSee(viewer, b)) return []
     const { scoreBook } = await import('@/lib/domain/scoring')
     const { countBySeverity, evaluateFlags } = await import('@/lib/domain/flags')
-    const score = scoreBook(b)
-    const counts = countBySeverity(evaluateFlags(b))
-    const days = b.book.targetTurnoverDate
-      ? Math.round(
-          (Date.parse(`${b.book.targetTurnoverDate}T00:00:00Z`) -
-            Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000,
-        )
-      : null
-    return [{
-      id: b.book.id,
-      jobNumber: b.book.jobNumber,
-      facilityName: b.book.facilityName ?? null,
-      clientOrgName: b.clientOrg.name,
-      bookType: b.book.bookType,
-      status: b.book.status,
-      overallPct: score.overallPct,
-      criticalFlags: counts.critical,
-      targetTurnoverDate: b.book.targetTurnoverDate ?? null,
-      daysToTurnover: days,
-    }]
+    const out: JobBookSummary[] = []
+    for (const b of this.all()) {
+      if (!this.canSee(viewer, b)) continue
+      const score = scoreBook(b)
+      const counts = countBySeverity(evaluateFlags(b))
+      const days = b.book.targetTurnoverDate
+        ? Math.round(
+            (Date.parse(`${b.book.targetTurnoverDate}T00:00:00Z`) -
+              Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000,
+          )
+        : null
+      out.push({
+        id: b.book.id,
+        jobNumber: b.book.jobNumber,
+        facilityName: b.book.facilityName ?? null,
+        clientOrgName: b.clientOrg.name,
+        bookType: b.book.bookType,
+        status: b.book.status,
+        overallPct: score.overallPct,
+        criticalFlags: counts.critical,
+        targetTurnoverDate: b.book.targetTurnoverDate ?? null,
+        daysToTurnover: days,
+      })
+    }
+    return out.sort((a, c) => a.jobNumber.localeCompare(c.jobNumber))
   }
 
   async getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null> {
-    const b = this.bundle()
-    if (b.book.id !== jobBookId || !this.canSee(viewer, b)) return null
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return null
     return redactForViewer(viewer, b)
+  }
+
+  async listClientOrgs(viewer: Viewer): Promise<{ id: string; name: string }[]> {
+    const orgs = new Map<string, string>()
+    for (const b of this.all()) {
+      if (this.canSee(viewer, b)) orgs.set(b.clientOrg.id, b.clientOrg.name)
+    }
+    // A demo instance would otherwise offer exactly one operator, which
+    // hides the client-isolation story the wizard is meant to show.
+    orgs.set('org-oxy', 'Occidental')
+    orgs.set('org-devon', 'Devon Energy')
+    return [...orgs.entries()].map(([id, name]) => ({ id, name }))
+                              .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  async createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult> {
+    // Mirrors the role check in `create_job_book()`. The database is the
+    // control; this is the courtesy that stops a tech reaching a form they
+    // cannot submit.
+    if (viewer.role !== 'fortress_admin' && viewer.role !== 'qaqc_manager') {
+      return {
+        ok: false,
+        errors: [{ field: 'role', message: 'Creating a job book requires a QA/QC Manager or Admin.' }],
+      }
+    }
+
+    const { errors, warnings } = validateNewJobBook(input)
+    if (errors.length) return { ok: false, errors, warnings }
+
+    const slug = input.jobNumber.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    if (this.all().some((b) => b.book.jobNumber.toLowerCase() === input.jobNumber.trim().toLowerCase())) {
+      return {
+        ok: false,
+        errors: [{ field: 'jobNumber', message: `A job book numbered ${input.jobNumber} already exists.` }],
+        warnings,
+      }
+    }
+
+    const { book, sections, weldLines, sectionDefinitions } = scaffoldJobBook(
+      input,
+      (kind, key) => (kind === 'book' ? `book-${slug}` : `${kind}-${slug}-${key.split(':').pop()}`),
+    )
+    const orgs = await this.listClientOrgs(viewer)
+    const org = orgs.find((o) => o.id === input.clientOrgId)
+
+    this.created.set(book.id, {
+      book,
+      project: {
+        id: input.projectId,
+        clientOrgId: input.clientOrgId,
+        name: input.facilityName?.trim() || book.jobNumber,
+        operatorPicName: input.operatorPicName ?? null,
+        afeNumber: null,
+      },
+      clientOrg: { id: input.clientOrgId, name: org?.name ?? 'Unknown operator', logoUrl: null },
+      sectionDefinitions,
+      sections,
+      documents: [],
+      weldLines,
+      welds: [],
+      welders: [],
+      welderQualifications: [],
+      cwis: [],
+      ndtTechnicians: [],
+      torqueWrenches: [],
+      torqueConnections: [],
+      certificates: [],
+      ndeReports: [],
+      materialHeats: [],
+      pressureTests: [],
+      cpTestPoints: [],
+      utReadings: [],
+    })
+    return { ok: true, jobBookId: book.id, warnings }
   }
 }
 

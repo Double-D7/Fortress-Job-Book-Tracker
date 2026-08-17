@@ -91,25 +91,42 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
           <Metric
             label="Weld credits"
             value={num(xray.totalWeldCredits)}
-            sub={`${num(xray.jointCount)} joints — credit basis overstates by ${pct(xray.creditOverstatementPct)}`}
+            sub={xray.jointCount === 0
+              ? 'No joints entered yet'
+              : `${num(xray.jointCount)} joints — credit basis overstates by ${pct(xray.creditOverstatementPct)}`}
           />
           <Metric
             label="X-ray coverage"
-            value={pct(xray.xrayPct)}
-            sub={`${num(xray.totalXrayCredits)} of ${num(xray.totalWeldCredits)} · job minimum ${b.book.requiredXrayPct}%`}
-            tone={xray.xrayPct >= b.book.requiredXrayPct ? 'complete' : 'critical'}
+            value={xray.totalWeldCredits === 0 ? '—' : pct(xray.xrayPct)}
+            sub={xray.totalWeldCredits === 0
+              ? 'No welds entered yet'
+              : `${num(xray.totalXrayCredits)} of ${num(xray.totalWeldCredits)} · job minimum ${b.book.requiredXrayPct}%`}
+            tone={xray.totalWeldCredits === 0
+              ? 'idle'
+              : xray.xrayPct >= b.book.requiredXrayPct ? 'complete' : 'critical'}
           />
           <Metric
             label="Torque inspection"
-            value={pct(torque.inspectionPct, 2)}
-            sub={`${num(torque.inspectedConnections)} of ${num(torque.totalConnections)} connections`}
-            tone={torque.meetsRequirement ? 'complete' : 'critical'}
+            value={torque.totalConnections === 0 ? '—' : pct(torque.inspectionPct, 2)}
+            sub={torque.totalConnections === 0
+              ? 'No connections entered yet'
+              : `${num(torque.inspectedConnections)} of ${num(torque.totalConnections)} connections`}
+            tone={torque.totalConnections === 0
+              ? 'idle'
+              : torque.meetsRequirement ? 'complete' : 'critical'}
           />
+          {/* An empty book references no heats, and "0 of 0" is vacuously
+              100%. Showing that in green would be the exact false
+              reassurance the declared-scope work exists to remove. */}
           <Metric
             label="MTR coverage"
-            value={pct(heats.coveragePct)}
-            sub={`${num(heats.heatsWithoutMtr.length)} referenced heats with no MTR on file`}
-            tone={heats.coveragePct >= 100 ? 'complete' : 'progress'}
+            value={heats.referencedHeats.length === 0 ? '—' : pct(heats.coveragePct)}
+            sub={heats.referencedHeats.length === 0
+              ? 'No welds reference a heat number yet'
+              : `${num(heats.heatsWithoutMtr.length)} referenced heats with no MTR on file`}
+            tone={heats.referencedHeats.length === 0
+              ? 'idle'
+              : heats.coveragePct >= 100 ? 'complete' : 'progress'}
           />
         </div>
 

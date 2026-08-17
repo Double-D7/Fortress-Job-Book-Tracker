@@ -11,7 +11,7 @@ Checklist` that governs it.
 ```bash
 npm install
 npm run dev          # http://localhost:3000 — runs on the DP452 reference book
-npm test             # 91 tests, including the §11 acceptance criteria
+npm test             # 117 tests, including the §11 acceptance criteria
 npm run seed:verify  # prints the seed's figures against the source brief
 ```
 
@@ -45,6 +45,53 @@ human opening a folder. Against its own governing checklist it scores
 Run `npm run seed:verify` to see all of it against the source figures.
 
 ---
+
+## Starting a new job book
+
+`/books/new` — a four-step setup that scaffolds all 22 checklist sections at
+once, with facility-only sections auto-marked N/A and the reason recorded.
+
+1. **Job identity** — the header block the Noble weld log repeats on every
+   line sheet: facility, drill pad, wells, operator PIC, welding company,
+   CWIs, pipe size/schedule/grade.
+2. **Dates and thresholds** — construction window, target turnover, and the
+   operator's compliance minimums (X-ray %, torque inspection %, torque
+   tolerance, cert expiry warning). Also the split-pass X-ray credit rule,
+   which changes every per-welder percentage in the book.
+3. **Scope** — how many joints, flanged connections, heat numbers, welders,
+   wrenches, NDE reports, pressure tests and CP points this job is expected
+   to produce, taken off the drawing set. Optionally the weld lines with
+   joints per line, which also scaffolds the line sheets.
+4. **Review** — then create.
+
+### Why step 3 is the one that matters
+
+Every percentage in this application is a fraction, and the denominator has
+to come from somewhere. Score against the rows entered so far and a book
+lies to you early: **100 joints typed out of a real 2,342, every one of them
+complete, reads as 100%.** The section looks finished when the job has
+barely started.
+
+Declaring the scope up front makes the same section read 4.3%, and the
+overview say *"100 of 2,342 expected joints entered · 100 complete"* — entry
+progress and record completeness as two separate numbers, because mid-job
+they answer different questions.
+
+The declared quantity is a **floor, not a cap**. Enter more than scoped and
+the denominator follows the real count upward, so a section can never exceed
+100%, and a scope guessed low can never make a half-finished section look
+finished. Per-line joint counts and the book-wide figure resolve the same
+way — the larger wins, so scaffolding two of thirty lines cannot shrink the
+denominator to those two.
+
+Estimates are fine, everything stays editable, and a section left blank
+falls back to scoring against whatever gets entered. A section scoped to
+**0** is marked N/A with the reason recorded, rather than parked at 0%
+forever.
+
+A brand-new book reports **0%**, and every headline tile reads `—` rather
+than a vacuous 100% — "0 of 0" is arithmetically complete and would be the
+exact false reassurance this whole mechanism exists to remove.
 
 ## Architecture
 
@@ -113,8 +160,8 @@ usefully, that a table added later cannot skip it.
 
 Schema, RLS and audit migrations · the complete domain engine · DP452 seed
 reproducing every stated figure · both Excel importers with per-row
-validation and round-trip verification · 13 screens on the dark theme · 91
-tests.
+validation and round-trip verification · job book setup with declared
+scope · 14 screens on the dark theme · 117 tests.
 
 **Scaffolded, not implemented** — these are UI and wiring, with no engine
 behind them yet:
@@ -130,7 +177,11 @@ behind them yet:
   assembly and ZIP generation are not built.
 - **Write paths.** Upload, approve, and flag resolution are inert controls.
   The rules behind them (two-person approval, required resolution note) are
-  enforced in the database already.
+  enforced in the database already. Job book *creation* is the exception —
+  it works end to end, but against the in-memory provider, so a created book
+  survives navigation and not a server restart. `create_job_book()` in
+  migration 0005 is the persistent equivalent and scaffolds the sections in
+  the same transaction as the book, so one cannot exist without the other.
 - **Mobile field entry** and offline-tolerant drafts (§7) are not started.
   The screens are responsive but were not designed for one-handed entry.
 

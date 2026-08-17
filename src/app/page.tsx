@@ -6,9 +6,11 @@
  * be got wrong.
  */
 import Link from 'next/link'
-import { AlertTriangle, CalendarClock } from 'lucide-react'
+import { AlertTriangle, CalendarClock, Plus } from 'lucide-react'
 import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
-import { Card, Chip, EmptyState, ProgressBar, Ring, SectionHeading, bandTone } from '@/components/ui/primitives'
+import {
+  Button, Card, Chip, EmptyState, ProgressBar, Ring, SectionHeading, bandTone,
+} from '@/components/ui/primitives'
 import { num } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -30,12 +32,17 @@ export default async function PortfolioPage() {
       <SectionHeading
         title="Job books"
         subtitle={`${books.length} book${books.length === 1 ? '' : 's'} visible to you`}
+        actions={
+          <Link href="/books/new">
+            <Button variant="primary"><Plus size={13} /> New job book</Button>
+          </Link>
+        }
       />
 
       {books.length === 0 ? (
         <EmptyState
           title="No job books"
-          detail="You have no job books assigned. A QA/QC manager can assign you to one."
+          detail="Create one from the checklist template, or ask a QA/QC manager to assign you to an existing book."
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">

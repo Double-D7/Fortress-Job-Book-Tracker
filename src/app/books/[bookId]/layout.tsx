@@ -20,8 +20,13 @@ export default async function BookLayout({
           <Chip tone="brand">{clientOrg.name}</Chip>
         </div>
         <p className="mt-1 text-xs text-ink-muted">
-          Pads {book.wellNames.join(' · ')} — {book.constructionCompany} — construction{' '}
-          {book.constructionStart} to {book.constructionEnd}
+          {[
+            book.wellNames.length ? `Pads ${book.wellNames.join(' · ')}` : null,
+            book.constructionCompany,
+            book.constructionStart && book.constructionEnd
+              ? `construction ${book.constructionStart} to ${book.constructionEnd}`
+              : null,
+          ].filter(Boolean).join(' — ') || 'No pads, contractor or construction window recorded yet.'}
         </p>
       </div>
       <BookNav bookId={bookId} />

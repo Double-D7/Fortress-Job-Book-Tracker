@@ -59,6 +59,42 @@ export interface BookScore {
 const pct = (n: number, d: number) => (d > 0 ? Math.min(1, n / d) * 100 : 0)
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+/**
+ * The denominator for a section, given what has been entered and what was
+ * declared at setup.
+ *
+ * `max` rather than the declared figure alone, for two reasons. A book that
+ * turns out bigger than scoped must not score above 100%, and a scope that
+ * was guessed low must not make a half-finished section look finished. The
+ * declared number sets the floor; reality can only raise it.
+ */
+function scopedDenominator(entered: number, expected?: number | null): number {
+  if (expected == null || expected <= 0) return entered
+  return Math.max(expected, entered)
+}
+
+/**
+ * How much of the declared scope has been entered at all, as distinct from
+ * how complete those entries are. Two different questions, and a QA/QC
+ * manager mid-job needs both: "we have typed 1,240 of 2,342 joints" and
+ * "of those, 1,180 are complete".
+ */
+function entryProgressInput(
+  label: string, entered: number, expected?: number | null,
+): ScoreInput[] {
+  if (expected == null || expected <= 0) return []
+  return [{
+    label: `${label} entered against a declared scope of ${expected.toLocaleString()}`,
+    numerator: Math.min(entered, expected),
+    denominator: expected,
+    detail: entered > expected
+      ? `${(entered - expected).toLocaleString()} more than scoped — the declared quantity looks low.`
+      : entered < expected
+        ? `${(expected - entered).toLocaleString()} still to be entered.`
+        : 'Scope fully entered.',
+  }]
+}
+
 /** Documents live in a section, are not soft-deleted, and are not
  *  superseded by a later revision. */
 function liveDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecord[] {
@@ -110,7 +146,11 @@ export function scoreSection(
     case 'document': {
       const approved = approvedDocuments(bundle.documents, section.id)
       const present = liveDocuments(bundle.documents, section.id)
-      const required = Math.max(1, def.minDocuments)
+      // A declared scope beats the template's generic minimum: the template
+      // says "at least one drawing", the job says "eleven".
+      const required = Math.max(
+        1, section.expectedCount ?? 0, section.expectedCount != null ? 0 : def.minDocuments,
+      )
       const inputs: ScoreInput[] = [
         { label: 'Approved documents', numerator: approved.length, denominator: required },
       ]
@@ -135,10 +175,10 @@ export function scoreSection(
     // against the whole roster: a lapsed cert on a welder who never touched
     // this book is not this book's problem.
     case 'personnel_certs':
-      return scorePersonnelCerts(base, def, bundle)
+      return scorePersonnelCerts(base, def, section, bundle)
 
     case 'equipment_certs':
-      return scoreEquipmentCerts(base, bundle)
+      return scoreEquipmentCerts(base, section, bundle)
 
     case 'records':
       return scoreRecords(base, def, section, bundle)
@@ -161,7 +201,9 @@ export function scoreSection(
 
 type Base = Pick<SectionScore, 'sectionNumber' | 'title' | 'weight' | 'requirementType' | 'status'>
 
-function scorePersonnelCerts(base: Base, def: SectionDefinition, bundle: JobBookBundle): SectionScore {
+function scorePersonnelCerts(
+  base: Base, def: SectionDefinition, section: JobBookSection, bundle: JobBookBundle,
+): SectionScore {
   const { certificates } = bundle
   let subjects: { id: string; label: string; workDates: string[] }[] = []
 
@@ -210,27 +252,36 @@ function scorePersonnelCerts(base: Base, def: SectionDefinition, bundle: JobBook
     s.workDates.every((d) => certValidOn(certificates, subjectType, s.id, d) !== null),
   )
   const uncovered = subjects.filter((s) => !covered.includes(s))
+  // Personnel are discovered from the records they appear on, so before the
+  // logs are entered this set is empty and would score a vacuous 100%. The
+  // crew size declared at setup holds the denominator up.
+  const denom = scopedDenominator(subjects.length, section.expectedCount)
 
   return {
     ...base,
-    pct: pct(covered.length, subjects.length),
+    pct: pct(covered.length, denom),
     countsTowardTotal: true,
     inputs: [
+      ...entryProgressInput('Personnel', subjects.length, section.expectedCount),
       { label: 'Personnel with a certificate valid on every work date',
-        numerator: covered.length, denominator: subjects.length },
+        numerator: covered.length, denominator: denom },
       ...(uncovered.length
         ? [{ label: 'Not covered', numerator: uncovered.length, denominator: subjects.length,
              detail: uncovered.map((s) => s.label).join(', ') }]
         : []),
     ],
     explanation: subjects.length === 0
-      ? 'No personnel of this type performed work on this job.'
-      : `${covered.length} of ${subjects.length} performed work with a valid-on-the-day certificate` +
+      ? (section.expectedCount
+          ? `None of the ${section.expectedCount} expected personnel have appeared on a record yet.`
+          : 'No personnel of this type performed work on this job.')
+      : `${covered.length} of ${denom} performed work with a valid-on-the-day certificate` +
         (uncovered.length ? `; gaps: ${uncovered.map((s) => s.label).join(', ')}.` : '.'),
   }
 }
 
-function scoreEquipmentCerts(base: Base, bundle: JobBookBundle): SectionScore {
+function scoreEquipmentCerts(
+  base: Base, section: JobBookSection, bundle: JobBookBundle,
+): SectionScore {
   // Only wrenches actually recorded against a connection are in scope.
   const usedIds = new Set(
     bundle.torqueConnections
@@ -243,22 +294,26 @@ function scoreEquipmentCerts(base: Base, bundle: JobBookBundle): SectionScore {
     return !!w?.certOnFile && !!w.lastCalibrationDate
   })
   const missing = used.filter((id) => !certified.includes(id))
+  const denom = scopedDenominator(used.length, section.expectedCount)
 
   return {
     ...base,
-    pct: pct(certified.length, used.length),
+    pct: pct(certified.length, denom),
     countsTowardTotal: true,
     inputs: [
+      ...entryProgressInput('Equipment', used.length, section.expectedCount),
       { label: 'Wrenches used on this job with a calibration certificate',
-        numerator: certified.length, denominator: used.length },
+        numerator: certified.length, denominator: denom },
       ...(missing.length
         ? [{ label: 'Used without a certificate', numerator: missing.length,
              denominator: used.length, detail: missing.join(', ') }]
         : []),
     ],
     explanation: used.length === 0
-      ? 'No torque wrenches recorded against any connection.'
-      : `${certified.length} of ${used.length} wrenches used on this job hold a calibration certificate` +
+      ? (section.expectedCount
+          ? `None of the ${section.expectedCount} expected wrenches have appeared on a connection yet.`
+          : 'No torque wrenches recorded against any connection.')
+      : `${certified.length} of ${denom} wrenches used on this job hold a calibration certificate` +
         (missing.length ? `; uncertified: ${missing.join(', ')}.` : '.'),
   }
 }
@@ -272,15 +327,30 @@ function scoreRecords(
       // denominator entirely.
       const welds = bundle.welds.filter(isCountable)
       const s = summarize(welds, weldCompleteness)
+      // Two sources of scope, and the larger wins. The per-line sum comes
+      // off the isometrics and is exact, but only for the lines entered so
+      // far — a tech who has scaffolded two of thirty lines must not
+      // thereby shrink the book's denominator to those two. The section
+      // figure is an estimate but covers the whole job. Taking the larger
+      // can only ever be pessimistic, which is the safe direction for a
+      // number an operator relies on.
+      const lineExpected = bundle.weldLines.reduce((t, l) => t + (l.expectedWeldCount ?? 0), 0)
+      const expected = Math.max(lineExpected, section.expectedCount ?? 0) || null
+      const denom = scopedDenominator(s.total, expected)
       return {
-        ...base, pct: s.pct, countsTowardTotal: true,
+        ...base, pct: pct(s.complete, denom), countsTowardTotal: true,
         inputs: [
-          { label: 'Complete weld records', numerator: s.complete, denominator: s.total },
+          ...entryProgressInput('Joints', s.total, expected),
+          { label: 'Complete weld records', numerator: s.complete, denominator: denom },
           ...s.missingByField.slice(0, 4).map((m) => ({
             label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
           })),
         ],
-        explanation: `${s.total.toLocaleString()} joints, ${s.complete.toLocaleString()} complete (${round2(s.pct)}%)` +
+        explanation:
+          (expected && s.total < expected
+            ? `${s.total.toLocaleString()} of ${expected.toLocaleString()} expected joints entered · `
+            : `${s.total.toLocaleString()} joints · `) +
+          `${s.complete.toLocaleString()} complete (${round2(pct(s.complete, denom))}%)` +
           (s.missingByField[0]
             ? ` · ${s.missingByField[0].count.toLocaleString()} missing ${s.missingByField[0].field}`
             : ''),
@@ -288,15 +358,21 @@ function scoreRecords(
     }
     case 'torque_connection': {
       const s = summarize(bundle.torqueConnections, torqueCompleteness)
+      const denom = scopedDenominator(s.total, section.expectedCount)
       return {
-        ...base, pct: s.pct, countsTowardTotal: true,
+        ...base, pct: pct(s.complete, denom), countsTowardTotal: true,
         inputs: [
-          { label: 'Complete torque connections', numerator: s.complete, denominator: s.total },
+          ...entryProgressInput('Connections', s.total, section.expectedCount),
+          { label: 'Complete torque connections', numerator: s.complete, denominator: denom },
           ...s.missingByField.slice(0, 4).map((m) => ({
             label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
           })),
         ],
-        explanation: `${s.total.toLocaleString()} connections, ${s.complete.toLocaleString()} complete (${round2(s.pct)}%).`,
+        explanation:
+          (section.expectedCount && s.total < section.expectedCount
+            ? `${s.total.toLocaleString()} of ${section.expectedCount.toLocaleString()} expected connections entered · `
+            : `${s.total.toLocaleString()} connections · `) +
+          `${s.complete.toLocaleString()} complete (${round2(pct(s.complete, denom))}%).`,
       }
     }
     case 'material_heat': {
@@ -310,18 +386,28 @@ function scoreRecords(
         (h) => !bundle.materialHeats.some((x) => x.heatNumber.trim() === h),
       )
       const s = summarize(inScope, heatCompleteness)
-      const denominator = referenced.size
+      // Heats are discovered from the welds, so early in a job the referenced
+      // set is small and would flatter the score. The declared scope holds
+      // the denominator up until the weld log catches up.
+      const denominator = scopedDenominator(referenced.size, section.expectedCount)
       const complete = s.complete
       return {
         ...base, pct: pct(complete, denominator), countsTowardTotal: true,
         inputs: [
+          ...entryProgressInput('Heats', referenced.size, section.expectedCount),
           { label: 'Referenced heats with an MTR on file', numerator: complete, denominator },
           ...(missingRecord.length
             ? [{ label: 'Heats with no material record at all', numerator: missingRecord.length,
                  denominator, detail: missingRecord.slice(0, 10).join(', ') }]
             : []),
         ],
-        explanation: `${denominator} heat numbers referenced by welds, ${complete} with an MTR on file (${round2(pct(complete, denominator))}%).`,
+        explanation: referenced.size === 0
+          ? (section.expectedCount
+              ? `No welds reference a heat yet; scoped to ${section.expectedCount} heat numbers.`
+              : 'No welds reference a heat number yet.')
+          : `${referenced.size} heat numbers referenced by welds` +
+            (denominator > referenced.size ? ` (scoped to ${denominator})` : '') +
+            `, ${complete} with an MTR on file (${round2(pct(complete, denominator))}%).`,
       }
     }
     case 'nde_report': {
@@ -332,11 +418,13 @@ function scoreRecords(
       // Both halves must hold: the reports are on file, and the examined
       // welds actually point at them.
       const numerator = withDoc.length + linked.length
-      const denominator = live.length + xrayedWelds.length
+      const reportDenom = scopedDenominator(live.length, section.expectedCount)
+      const denominator = reportDenom + xrayedWelds.length
       return {
         ...base, pct: pct(numerator, denominator), countsTowardTotal: true,
         inputs: [
-          { label: 'Reports with the document on file', numerator: withDoc.length, denominator: live.length },
+          ...entryProgressInput('Reports', live.length, section.expectedCount),
+          { label: 'Reports with the document on file', numerator: withDoc.length, denominator: reportDenom },
           { label: 'Examined welds linked to a report', numerator: linked.length, denominator: xrayedWelds.length },
         ],
         explanation: `${live.length} live reports (${withDoc.length} with files) · ` +
@@ -346,6 +434,7 @@ function scoreRecords(
     case 'pressure_test': {
       const s = summarize(bundle.pressureTests, (t) => pressureTestCompleteness(t, bundle.certificates))
       const docs = liveDocuments(bundle.documents, section.id)
+      const denom = scopedDenominator(s.total, section.expectedCount)
       if (s.total === 0 && docs.length === 0) {
         return {
           ...base, pct: 0, countsTowardTotal: true,
@@ -354,14 +443,16 @@ function scoreRecords(
         }
       }
       return {
-        ...base, pct: s.pct, countsTowardTotal: true,
+        ...base, pct: pct(s.complete, denom), countsTowardTotal: true,
         inputs: [
-          { label: 'Complete pressure tests', numerator: s.complete, denominator: s.total },
+          ...entryProgressInput('Tests', s.total, section.expectedCount),
+          { label: 'Complete pressure tests', numerator: s.complete, denominator: denom },
           ...s.missingByField.slice(0, 3).map((m) => ({
             label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
           })),
         ],
-        explanation: `${s.total} pressure tests, ${s.complete} with chart and valid recorder calibration.`,
+        explanation: `${s.total} of ${denom} pressure tests recorded, ${s.complete} with chart and ` +
+          `valid recorder calibration.`,
       }
     }
     case 'cp_test_point': {
@@ -370,7 +461,12 @@ function scoreRecords(
       const withReading = points.filter((p) => p.baselinePotentialV != null && p.readingDate)
       // Where the torque log marks flanges for CP testing, that count is the
       // denominator; otherwise fall back to the points on file.
-      const denominator = flagged.length || points.length
+      // The torque log's CP TEST = Y count is the best denominator when it
+      // exists, because it is derived rather than declared; the setup
+      // figure covers the window before the torque log is entered.
+      const denominator = scopedDenominator(
+        flagged.length || points.length, section.expectedCount,
+      )
       if (denominator === 0) {
         return {
           ...base, pct: 0, countsTowardTotal: true,
@@ -392,10 +488,13 @@ function scoreRecords(
     }
     case 'ut_reading': {
       const readings = bundle.utReadings.filter((r) => r.measuredWall != null && r.readingDate)
-      const denominator = bundle.utReadings.length || 1
+      const denominator = Math.max(1, scopedDenominator(bundle.utReadings.length, section.expectedCount))
       return {
         ...base, pct: pct(readings.length, denominator), countsTowardTotal: true,
-        inputs: [{ label: 'UT locations with a baseline reading', numerator: readings.length, denominator }],
+        inputs: [
+          ...entryProgressInput('UT locations', bundle.utReadings.length, section.expectedCount),
+          { label: 'UT locations with a baseline reading', numerator: readings.length, denominator },
+        ],
         explanation: `${readings.length} of ${bundle.utReadings.length} UT locations have a baseline reading.`,
       }
     }
