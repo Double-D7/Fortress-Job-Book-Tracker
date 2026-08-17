@@ -1,0 +1,469 @@
+/**
+ * Weighted hybrid completion scoring (§5).
+ *
+ * Two properties matter more than the arithmetic:
+ *
+ *   1. Every score decomposes. `SectionScore.inputs` carries the counted
+ *      numerator, denominator and a plain-English explanation, because a
+ *      QA/QC manager will not trust a number they cannot take apart and an
+ *      auditor will demand the decomposition.
+ *
+ *   2. N/A sections leave both the numerator and the denominator. Marking a
+ *      section N/A must never be able to raise or lower the score — only
+ *      change what the score is *about*.
+ */
+import type {
+  Certificate, DocumentRecord, JobBook, JobBookBundle, JobBookSection,
+  SectionDefinition,
+} from './types'
+import {
+  heatCompleteness, pressureTestCompleteness, summarize, torqueCompleteness,
+  weldCompleteness,
+} from './completeness'
+import { certValidOn } from './certificates'
+import { isCountable } from './welders'
+
+export interface ScoreInput {
+  label: string
+  numerator: number
+  denominator: number
+  detail?: string
+}
+
+export interface SectionScore {
+  sectionNumber: string
+  title: string
+  weight: number
+  requirementType: SectionDefinition['requirementType']
+  status: JobBookSection['status']
+  /** 0–100. Zero for an N/A or supplemental section, which is why
+   *  `countsTowardTotal` exists separately. */
+  pct: number
+  countsTowardTotal: boolean
+  inputs: ScoreInput[]
+  /** One line a manager can read without drilling in. */
+  explanation: string
+}
+
+export interface BookScore {
+  overallPct: number
+  weightApplied: number
+  weightAvailable: number
+  sections: SectionScore[]
+  /** Sections carrying weight that scored zero — the "what is missing"
+   *  answer, in weight order. */
+  missingSections: { sectionNumber: string; title: string; weight: number }[]
+  computedAt: string
+}
+
+const pct = (n: number, d: number) => (d > 0 ? Math.min(1, n / d) * 100 : 0)
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** Documents live in a section, are not soft-deleted, and are not
+ *  superseded by a later revision. */
+function liveDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecord[] {
+  return docs.filter((d) => d.sectionId === sectionId && !d.deletedAt && !d.isSuperseded)
+}
+
+function approvedDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecord[] {
+  return liveDocuments(docs, sectionId).filter((d) => d.approvedAt)
+}
+
+/**
+ * Score one section. Split out from `scoreBook` so a section detail screen
+ * can recompute a single section cheaply, and so each requirement type's
+ * formula reads on its own.
+ */
+export function scoreSection(
+  def: SectionDefinition,
+  section: JobBookSection,
+  bundle: JobBookBundle,
+): SectionScore {
+  const { book } = bundle
+  const base = {
+    sectionNumber: def.sectionNumber,
+    title: def.title,
+    weight: def.weight,
+    requirementType: def.requirementType,
+    status: section.status,
+  }
+
+  // N/A and supplemental sections leave the calculation entirely.
+  if (section.status === 'na') {
+    return {
+      ...base, pct: 0, countsTowardTotal: false, inputs: [],
+      explanation: section.naReason
+        ? `Marked N/A — ${section.naReason}`
+        : 'Marked N/A; excluded from the score.',
+    }
+  }
+  if (def.isSupplemental || def.requirementType === 'supplemental') {
+    const docs = liveDocuments(bundle.documents, section.id)
+    return {
+      ...base, pct: docs.length ? 100 : 0, countsTowardTotal: false,
+      inputs: [{ label: 'Documents', numerator: docs.length, denominator: docs.length || 1 }],
+      explanation: `Supplemental section — ${docs.length} document(s), not scored.`,
+    }
+  }
+
+  switch (def.requirementType) {
+    case 'document': {
+      const approved = approvedDocuments(bundle.documents, section.id)
+      const present = liveDocuments(bundle.documents, section.id)
+      const required = Math.max(1, def.minDocuments)
+      const inputs: ScoreInput[] = [
+        { label: 'Approved documents', numerator: approved.length, denominator: required },
+      ]
+      if (present.length > approved.length) {
+        inputs.push({
+          label: 'Uploaded, awaiting approval',
+          numerator: present.length - approved.length,
+          denominator: present.length,
+        })
+      }
+      return {
+        ...base, pct: pct(approved.length, required), countsTowardTotal: true, inputs,
+        explanation: approved.length === 0 && present.length === 0
+          ? `No documents uploaded; ${required} required.`
+          : `${approved.length} of ${required} required document(s) approved` +
+            (present.length > approved.length
+              ? `, ${present.length - approved.length} awaiting approval.` : '.'),
+      }
+    }
+
+    // Certificates score against people who actually worked this job, not
+    // against the whole roster: a lapsed cert on a welder who never touched
+    // this book is not this book's problem.
+    case 'personnel_certs':
+      return scorePersonnelCerts(base, def, bundle)
+
+    case 'equipment_certs':
+      return scoreEquipmentCerts(base, bundle)
+
+    case 'records':
+      return scoreRecords(base, def, section, bundle)
+
+    // Derived sections roll up another section and are never scored
+    // independently, or the underlying data would be counted twice.
+    case 'derived': {
+      const welds = bundle.welds.filter(isCountable)
+      return {
+        ...base, pct: 0, countsTowardTotal: false,
+        inputs: [{ label: 'Rolled up from section 12', numerator: welds.length, denominator: welds.length || 1 }],
+        explanation: `Derived from the detailed weld log (${welds.length} joints); carries no independent weight.`,
+      }
+    }
+
+    default:
+      return { ...base, pct: 0, countsTowardTotal: true, inputs: [], explanation: 'Not scored.' }
+  }
+}
+
+type Base = Pick<SectionScore, 'sectionNumber' | 'title' | 'weight' | 'requirementType' | 'status'>
+
+function scorePersonnelCerts(base: Base, def: SectionDefinition, bundle: JobBookBundle): SectionScore {
+  const { certificates } = bundle
+  let subjects: { id: string; label: string; workDates: string[] }[] = []
+
+  if (def.linkedRecordType === 'welder') {
+    const dates = new Map<string, string[]>()
+    for (const w of bundle.welds) {
+      if (!isCountable(w) || !w.weldDate) continue
+      for (const id of [w.rootWelderId, w.hotWelderId, w.fillWelderId, w.capWelderId]) {
+        if (!id) continue
+        const list = dates.get(id) ?? []
+        list.push(w.weldDate)
+        dates.set(id, list)
+      }
+    }
+    subjects = [...dates.entries()].map(([id, workDates]) => ({
+      id, label: bundle.welders.find((w) => w.id === id)?.initials ?? id, workDates,
+    }))
+  } else if (def.linkedRecordType === 'cwi') {
+    const dates = new Map<string, string[]>()
+    for (const w of bundle.welds) {
+      if (!w.cwiId || !w.visualInspectionDate) continue
+      const list = dates.get(w.cwiId) ?? []
+      list.push(w.visualInspectionDate)
+      dates.set(w.cwiId, list)
+    }
+    subjects = [...dates.entries()].map(([id, workDates]) => ({
+      id, label: bundle.cwis.find((c) => c.id === id)?.initials ?? id, workDates,
+    }))
+  } else {
+    const dates = new Map<string, string[]>()
+    for (const r of bundle.ndeReports) {
+      if (!r.technicianId || r.isSuperseded) continue
+      const list = dates.get(r.technicianId) ?? []
+      list.push(r.reportDate)
+      dates.set(r.technicianId, list)
+    }
+    subjects = [...dates.entries()].map(([id, workDates]) => ({
+      id, label: bundle.ndtTechnicians.find((t) => t.id === id)?.fullName ?? id, workDates,
+    }))
+  }
+
+  const subjectType = (def.linkedRecordType ?? 'welder') as Certificate['subjectType']
+  // Covered means: a certificate valid on *every* date this person worked,
+  // not merely a certificate on file.
+  const covered = subjects.filter((s) =>
+    s.workDates.every((d) => certValidOn(certificates, subjectType, s.id, d) !== null),
+  )
+  const uncovered = subjects.filter((s) => !covered.includes(s))
+
+  return {
+    ...base,
+    pct: pct(covered.length, subjects.length),
+    countsTowardTotal: true,
+    inputs: [
+      { label: 'Personnel with a certificate valid on every work date',
+        numerator: covered.length, denominator: subjects.length },
+      ...(uncovered.length
+        ? [{ label: 'Not covered', numerator: uncovered.length, denominator: subjects.length,
+             detail: uncovered.map((s) => s.label).join(', ') }]
+        : []),
+    ],
+    explanation: subjects.length === 0
+      ? 'No personnel of this type performed work on this job.'
+      : `${covered.length} of ${subjects.length} performed work with a valid-on-the-day certificate` +
+        (uncovered.length ? `; gaps: ${uncovered.map((s) => s.label).join(', ')}.` : '.'),
+  }
+}
+
+function scoreEquipmentCerts(base: Base, bundle: JobBookBundle): SectionScore {
+  // Only wrenches actually recorded against a connection are in scope.
+  const usedIds = new Set(
+    bundle.torqueConnections
+      .map((c) => c.wrenchIdRaw ?? bundle.torqueWrenches.find((w) => w.id === c.wrenchId)?.wrenchId)
+      .filter((x): x is string => !!x),
+  )
+  const used = [...usedIds]
+  const certified = used.filter((id) => {
+    const w = bundle.torqueWrenches.find((x) => x.wrenchId === id)
+    return !!w?.certOnFile && !!w.lastCalibrationDate
+  })
+  const missing = used.filter((id) => !certified.includes(id))
+
+  return {
+    ...base,
+    pct: pct(certified.length, used.length),
+    countsTowardTotal: true,
+    inputs: [
+      { label: 'Wrenches used on this job with a calibration certificate',
+        numerator: certified.length, denominator: used.length },
+      ...(missing.length
+        ? [{ label: 'Used without a certificate', numerator: missing.length,
+             denominator: used.length, detail: missing.join(', ') }]
+        : []),
+    ],
+    explanation: used.length === 0
+      ? 'No torque wrenches recorded against any connection.'
+      : `${certified.length} of ${used.length} wrenches used on this job hold a calibration certificate` +
+        (missing.length ? `; uncertified: ${missing.join(', ')}.` : '.'),
+  }
+}
+
+function scoreRecords(
+  base: Base, def: SectionDefinition, section: JobBookSection, bundle: JobBookBundle,
+): SectionScore {
+  switch (def.linkedRecordType) {
+    case 'weld': {
+      // NOT USED weld numbers are sequence gaps by design and leave the
+      // denominator entirely.
+      const welds = bundle.welds.filter(isCountable)
+      const s = summarize(welds, weldCompleteness)
+      return {
+        ...base, pct: s.pct, countsTowardTotal: true,
+        inputs: [
+          { label: 'Complete weld records', numerator: s.complete, denominator: s.total },
+          ...s.missingByField.slice(0, 4).map((m) => ({
+            label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
+          })),
+        ],
+        explanation: `${s.total.toLocaleString()} joints, ${s.complete.toLocaleString()} complete (${round2(s.pct)}%)` +
+          (s.missingByField[0]
+            ? ` · ${s.missingByField[0].count.toLocaleString()} missing ${s.missingByField[0].field}`
+            : ''),
+      }
+    }
+    case 'torque_connection': {
+      const s = summarize(bundle.torqueConnections, torqueCompleteness)
+      return {
+        ...base, pct: s.pct, countsTowardTotal: true,
+        inputs: [
+          { label: 'Complete torque connections', numerator: s.complete, denominator: s.total },
+          ...s.missingByField.slice(0, 4).map((m) => ({
+            label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
+          })),
+        ],
+        explanation: `${s.total.toLocaleString()} connections, ${s.complete.toLocaleString()} complete (${round2(s.pct)}%).`,
+      }
+    }
+    case 'material_heat': {
+      // Scored against heats the welds actually reference, so an MTR folder
+      // padded with unused certificates cannot inflate coverage.
+      const referenced = new Set(
+        bundle.welds.filter(isCountable).flatMap((w) => w.heatNumbers.map((h) => h.trim())).filter(Boolean),
+      )
+      const inScope = bundle.materialHeats.filter((h) => referenced.has(h.heatNumber.trim()))
+      const missingRecord = [...referenced].filter(
+        (h) => !bundle.materialHeats.some((x) => x.heatNumber.trim() === h),
+      )
+      const s = summarize(inScope, heatCompleteness)
+      const denominator = referenced.size
+      const complete = s.complete
+      return {
+        ...base, pct: pct(complete, denominator), countsTowardTotal: true,
+        inputs: [
+          { label: 'Referenced heats with an MTR on file', numerator: complete, denominator },
+          ...(missingRecord.length
+            ? [{ label: 'Heats with no material record at all', numerator: missingRecord.length,
+                 denominator, detail: missingRecord.slice(0, 10).join(', ') }]
+            : []),
+        ],
+        explanation: `${denominator} heat numbers referenced by welds, ${complete} with an MTR on file (${round2(pct(complete, denominator))}%).`,
+      }
+    }
+    case 'nde_report': {
+      const live = bundle.ndeReports.filter((r) => !r.isSuperseded)
+      const withDoc = live.filter((r) => r.documentId)
+      const xrayedWelds = bundle.welds.filter((w) => isCountable(w) && w.ndtMethod)
+      const linked = xrayedWelds.filter((w) => w.ndtReportId)
+      // Both halves must hold: the reports are on file, and the examined
+      // welds actually point at them.
+      const numerator = withDoc.length + linked.length
+      const denominator = live.length + xrayedWelds.length
+      return {
+        ...base, pct: pct(numerator, denominator), countsTowardTotal: true,
+        inputs: [
+          { label: 'Reports with the document on file', numerator: withDoc.length, denominator: live.length },
+          { label: 'Examined welds linked to a report', numerator: linked.length, denominator: xrayedWelds.length },
+        ],
+        explanation: `${live.length} live reports (${withDoc.length} with files) · ` +
+          `${linked.length} of ${xrayedWelds.length} examined welds linked to a report.`,
+      }
+    }
+    case 'pressure_test': {
+      const s = summarize(bundle.pressureTests, (t) => pressureTestCompleteness(t, bundle.certificates))
+      const docs = liveDocuments(bundle.documents, section.id)
+      if (s.total === 0 && docs.length === 0) {
+        return {
+          ...base, pct: 0, countsTowardTotal: true,
+          inputs: [{ label: 'Pressure test records', numerator: 0, denominator: 1 }],
+          explanation: 'No pressure test records and no documents — section absent.',
+        }
+      }
+      return {
+        ...base, pct: s.pct, countsTowardTotal: true,
+        inputs: [
+          { label: 'Complete pressure tests', numerator: s.complete, denominator: s.total },
+          ...s.missingByField.slice(0, 3).map((m) => ({
+            label: `Missing ${m.field}`, numerator: m.count, denominator: s.total,
+          })),
+        ],
+        explanation: `${s.total} pressure tests, ${s.complete} with chart and valid recorder calibration.`,
+      }
+    }
+    case 'cp_test_point': {
+      const points = bundle.cpTestPoints
+      const flagged = bundle.torqueConnections.filter((c) => c.cpTestOnFlange)
+      const withReading = points.filter((p) => p.baselinePotentialV != null && p.readingDate)
+      // Where the torque log marks flanges for CP testing, that count is the
+      // denominator; otherwise fall back to the points on file.
+      const denominator = flagged.length || points.length
+      if (denominator === 0) {
+        return {
+          ...base, pct: 0, countsTowardTotal: true,
+          inputs: [{ label: 'CP test points', numerator: 0, denominator: 1 }],
+          explanation: 'No cathodic protection test points recorded — section absent.',
+        }
+      }
+      return {
+        ...base, pct: pct(withReading.length, denominator), countsTowardTotal: true,
+        inputs: [
+          { label: 'Test points with a baseline reading', numerator: withReading.length, denominator },
+          ...(flagged.length
+            ? [{ label: 'Flanges marked CP TEST = Y in the torque log',
+                 numerator: flagged.length, denominator: flagged.length }]
+            : []),
+        ],
+        explanation: `${withReading.length} of ${denominator} required CP test points have a baseline reading.`,
+      }
+    }
+    case 'ut_reading': {
+      const readings = bundle.utReadings.filter((r) => r.measuredWall != null && r.readingDate)
+      const denominator = bundle.utReadings.length || 1
+      return {
+        ...base, pct: pct(readings.length, denominator), countsTowardTotal: true,
+        inputs: [{ label: 'UT locations with a baseline reading', numerator: readings.length, denominator }],
+        explanation: `${readings.length} of ${bundle.utReadings.length} UT locations have a baseline reading.`,
+      }
+    }
+    default: {
+      const docs = approvedDocuments(bundle.documents, section.id)
+      return {
+        ...base, pct: pct(docs.length, Math.max(1, def.minDocuments)), countsTowardTotal: true,
+        inputs: [{ label: 'Approved documents', numerator: docs.length, denominator: Math.max(1, def.minDocuments) }],
+        explanation: `${docs.length} approved document(s).`,
+      }
+    }
+  }
+}
+
+/**
+ * Overall book score: the weighted mean across applicable, non-N/A
+ * sections. Sections that do not count toward the total (N/A, derived,
+ * supplemental) are absent from both sides of the division, so their
+ * presence cannot move the number.
+ */
+export function scoreBook(bundle: JobBookBundle): BookScore {
+  const defsById = new Map(bundle.sectionDefinitions.map((d) => [d.id, d]))
+  const scores: SectionScore[] = []
+
+  for (const section of bundle.sections) {
+    const def = defsById.get(section.sectionDefinitionId)
+    if (!def) continue
+    scores.push(scoreSection(def, section, bundle))
+  }
+  scores.sort((a, b) => collateSectionNumber(a.sectionNumber) - collateSectionNumber(b.sectionNumber))
+
+  const counted = scores.filter((s) => s.countsTowardTotal && s.weight > 0)
+  const weightAvailable = counted.reduce((s, x) => s + x.weight, 0)
+  const weightApplied = counted.reduce((s, x) => s + (x.pct / 100) * x.weight, 0)
+
+  return {
+    overallPct: weightAvailable > 0 ? round2((weightApplied / weightAvailable) * 100) : 0,
+    weightApplied: round2(weightApplied),
+    weightAvailable: round2(weightAvailable),
+    sections: scores,
+    missingSections: counted
+      .filter((s) => s.pct === 0)
+      .map((s) => ({ sectionNumber: s.sectionNumber, title: s.title, weight: s.weight }))
+      .sort((a, b) => b.weight - a.weight),
+    computedAt: new Date().toISOString(),
+  }
+}
+
+/** Sort `1, 2, … 10, … 19-22, S1` the way the checklist prints them. */
+export function collateSectionNumber(n: string): number {
+  const m = n.match(/^(\d+)/)
+  if (m) return Number(m[1])
+  return 1000 + n.charCodeAt(0)
+}
+
+/** The per-section weight loss, for "what would move the number most". */
+export function weightLoss(score: BookScore): { sectionNumber: string; title: string; lost: number }[] {
+  return score.sections
+    .filter((s) => s.countsTowardTotal && s.weight > 0)
+    .map((s) => ({ sectionNumber: s.sectionNumber, title: s.title, lost: round2((1 - s.pct / 100) * s.weight) }))
+    .filter((s) => s.lost > 0)
+    .sort((a, b) => b.lost - a.lost)
+}
+
+export function scoreBand(pct: number): 'critical' | 'warning' | 'good' {
+  if (pct < 50) return 'critical'
+  if (pct < 90) return 'warning'
+  return 'good'
+}
+
+export type { JobBook }
