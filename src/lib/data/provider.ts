@@ -14,6 +14,7 @@
  */
 import type { JobBookBundle, UserRole } from '@/lib/domain/types'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
+import { applyComputedScores } from '@/lib/domain/scoring'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -74,7 +75,13 @@ class SeedProvider implements DataProvider {
   private created = new Map<string, JobBookBundle>()
 
   private seeded(): JobBookBundle[] {
-    if (!this.cache) this.cache = [buildDp452Bundle(), buildGreeleyBundle()]
+    // Stamped, not raw. `computedPct` is a cache the client-facing views
+    // read directly, so a bundle must never leave this provider carrying a
+    // stored percentage that disagrees with what the engine computes —
+    // otherwise staff and client read two different books off one dataset.
+    if (!this.cache) {
+      this.cache = [buildDp452Bundle(), buildGreeleyBundle()].map(applyComputedScores)
+    }
     return this.cache
   }
 
@@ -181,7 +188,7 @@ class SeedProvider implements DataProvider {
     const orgs = await this.listClientOrgs(viewer)
     const org = orgs.find((o) => o.id === input.clientOrgId)
 
-    this.created.set(book.id, {
+    this.created.set(book.id, applyComputedScores({
       book,
       project: {
         id: input.projectId,
@@ -208,7 +215,7 @@ class SeedProvider implements DataProvider {
       pressureTests: [],
       cpTestPoints: [],
       utReadings: [],
-    })
+    }))
     return { ok: true, jobBookId: book.id, warnings }
   }
 }
@@ -228,6 +235,10 @@ export function redactForViewer(viewer: Viewer, b: JobBookBundle): JobBookBundle
   if (!external) return b
   return {
     ...b,
+    // Marked, so `scoreBook` reads the cached figure instead of deriving a
+    // new one from evidence that is no longer all here. Without this the
+    // filtering below silently rewrites the completion percentage.
+    redacted: true,
     sections: b.sections.map((s) => ({ ...s, internalNotes: null })),
     // Draft and unapproved documents do not exist as far as an external
     // reader is concerned.

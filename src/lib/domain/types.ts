@@ -133,7 +133,18 @@ export interface JobBookSection {
   readyForReviewBy?: string | null
   approvedBy?: string | null
   approvedAt?: string | null
+  /**
+   * Cache of the live score, in percent.
+   *
+   * Derived, never authoritative: `applyComputedScores` writes it from the
+   * engine and `computedAt` records when. It exists for the readers that do
+   * not run the engine — most importantly the client-facing section view,
+   * which returns exactly this number to an operator.
+   */
   computedPct: number
+  /** When `computedPct` was last written. A cache with no timestamp cannot
+   *  be told apart from a current one. */
+  computedAt?: string | null
   /**
    * Declared scope: how many records or documents this section is expected
    * to hold when the book is finished, entered at job setup from the
@@ -557,4 +568,22 @@ export interface JobBookBundle {
   cpTestPoints: CpTestPoint[]
   utReadings: UtReading[]
   coatingInspections?: CoatingInspection[]
+  /**
+   * True once this bundle has been reduced for an external reader.
+   *
+   * Redaction removes identities and internal commentary — per-pass welder
+   * attribution, deficiency notes, unapproved documents. It is not supposed
+   * to change the completion verdict, but re-deriving a score from what is
+   * left does exactly that, and in both directions: DP452 section 12 falls
+   * from 92.19% to 0% because its evidence was filtered out, and section 6
+   * *rises* from 87.5% to 100% because the redacted bundle can no longer
+   * see which welder made the weld that failed the qualification check.
+   *
+   * The second is the dangerous one. Redaction must never hand an operator
+   * a cleaner book than the one Fortress is looking at. So the score is
+   * computed once, from the complete record, and travels with the payload
+   * in `JobBookSection.computedPct`; `scoreBook` reads that cache rather
+   * than recomputing whenever this flag is set.
+   */
+  redacted?: boolean
 }

@@ -668,6 +668,113 @@ function scoreRecords(
  * supplemental) are absent from both sides of the division, so their
  * presence cannot move the number.
  */
+/**
+ * A section's score as computed server-side from the complete record.
+ *
+ * Used only for a redacted bundle, where recomputing would produce a
+ * different — and sometimes flatteringly higher — number than the one
+ * Fortress is looking at. The evidence behind the figure is deliberately
+ * not reproduced: the inputs name records an external reader is not
+ * entitled to see, and half a derivation is worse than none.
+ */
+function cachedSectionScore(
+  def: SectionDefinition,
+  section: JobBookSection,
+): SectionScore {
+  if (section.computedAt == null) {
+    // Serving zero here is the exact failure this path exists to stop, so
+    // it fails loudly instead. A bundle redacted before it was scored is a
+    // bug in the provider, not a book at 0%.
+    throw new Error(
+      `Section ${def.sectionNumber} was redacted before it was scored. The completion ` +
+      `figure must be computed from the complete record before the payload is reduced.`,
+    )
+  }
+  return {
+    sectionNumber: def.sectionNumber,
+    title: def.title,
+    weight: def.weight,
+    requirementType: def.requirementType,
+    status: section.status,
+    ingestionStatus: section.ingestionStatus ?? 'unknown',
+    sourceFileCount: section.sourceFileCount ?? null,
+    sourceBytes: section.sourceBytes ?? null,
+    pct: section.computedPct,
+    countsTowardTotal: section.status !== 'na' && !def.isSupplemental && def.weight > 0,
+    inputs: [],
+    explanation: `Computed ${section.computedAt.slice(0, 10)} from the complete record.`,
+  }
+}
+
+/**
+ * Stamp the live scores onto the bundle's stored section rows.
+ *
+ * `job_book_section.computed_pct` is a **cache**, not a source. The score
+ * is derived — it is a pure function of the records, the declared scope and
+ * the section weights — so the stored column exists only for the surfaces
+ * that read the table without running the engine, and the client-facing
+ * `client_section_v` view is the one that matters: an operator reading it
+ * sees whatever number was last written there.
+ *
+ * That column was being written as zero and never refreshed, which meant
+ * Fortress staff and the client were reading two different books off the
+ * same data — the internal UI scored live and showed 90%, the client view
+ * returned the stored 0%. A compliance tool that reports a different
+ * completion figure depending on who is asking is worse than one that
+ * reports none.
+ *
+ * `computedAt` travels with the number so a stale cache is visible as
+ * stale rather than passing silently as current.
+ */
+export function applyComputedScores(bundle: JobBookBundle): JobBookBundle {
+  const score = scoreBook(bundle)
+  const defsById = new Map(bundle.sectionDefinitions.map((d) => [d.id, d]))
+  const byNumber = new Map(score.sections.map((s) => [s.sectionNumber, s]))
+
+  return {
+    ...bundle,
+    sections: bundle.sections.map((section) => {
+      const def = defsById.get(section.sectionDefinitionId)
+      const sc = def ? byNumber.get(def.sectionNumber) : undefined
+      if (!sc) return section
+      return { ...section, computedPct: sc.pct, computedAt: score.computedAt }
+    }),
+  }
+}
+
+/**
+ * Stored section percentages that no longer match what the engine computes.
+ * Empty is the only acceptable answer in a served payload.
+ *
+ * Only meaningful on a complete bundle. A redacted one no longer holds the
+ * evidence to check the cache against, and `scoreBook` reads that same
+ * cache for it — so the comparison would be the cache against itself, and
+ * would pass no matter how wrong the number was.
+ */
+export function staleComputedScores(
+  bundle: JobBookBundle,
+): { sectionNumber: string; stored: number; computed: number }[] {
+  if (bundle.redacted) {
+    throw new Error(
+      'staleComputedScores needs the complete record; a redacted bundle can only ' +
+      'compare the cached figure against itself.',
+    )
+  }
+  const score = scoreBook(bundle)
+  const defsById = new Map(bundle.sectionDefinitions.map((d) => [d.id, d]))
+  const byNumber = new Map(score.sections.map((s) => [s.sectionNumber, s]))
+  const out: { sectionNumber: string; stored: number; computed: number }[] = []
+  for (const section of bundle.sections) {
+    const def = defsById.get(section.sectionDefinitionId)
+    const sc = def ? byNumber.get(def.sectionNumber) : undefined
+    if (!sc) continue
+    if (Math.abs(section.computedPct - sc.pct) > 0.005) {
+      out.push({ sectionNumber: sc.sectionNumber, stored: section.computedPct, computed: sc.pct })
+    }
+  }
+  return out
+}
+
 export function scoreBook(bundle: JobBookBundle): BookScore {
   const defsById = new Map(bundle.sectionDefinitions.map((d) => [d.id, d]))
   const scores: SectionScore[] = []
@@ -675,7 +782,11 @@ export function scoreBook(bundle: JobBookBundle): BookScore {
   for (const section of bundle.sections) {
     const def = defsById.get(section.sectionDefinitionId)
     if (!def) continue
-    scores.push(scoreSection(def, section, bundle))
+    scores.push(
+      bundle.redacted
+        ? cachedSectionScore(def, section)
+        : scoreSection(def, section, bundle),
+    )
   }
   // A section we looked at and found empty says so, rather than leaving
   // the reader to guess whether anyone checked.
