@@ -48,6 +48,30 @@ pressure that live in those rows. The same applies to the workbook's
 carries ASME B36.10M standard dimensions instead, and `loadNpsTable`
 replaces them once the sheet is importable.
 
+## The bigger gap: nothing walks the folder tree
+
+The weld log is not the main reason DP-318 scored 14%. The book holds
+roughly 700 files across 20 populated sections, and only 15 of them had
+been loaded — the app had an upload dropzone and no bulk path at all.
+
+`src/lib/import/folderTree.ts` is that path now. It matches folders to
+sections by their leading number, because the titles on disk read
+"Ultrasonic Testion", "Facilty Only", "Certifed Welding Inspector" and
+"Non- Destructive" — a matcher built on titles drops four sections on
+spelling alone.
+
+Verified from the tree (`folder-tree.txt`):
+
+- sections **16, 18, 19** are genuinely empty — their folders exist and
+  hold 0 bytes
+- section 17 holds 22 test packs: #1-#13, #19, #20, #21, #27 as folders and
+  #14-#18 as unexpanded ZIPs; #22-#26 are absent entirely
+- section 21 is organised into 15 construction-area folders, nesting again
+  by isometric beneath that
+- section 2 and section 11 are byte-identical in size, and section 4 and
+  section 5 likewise — consistent with the reference's finding that one
+  holds a copy of the weld log PDF and the other duplicates the WPS
+
 ## To unblock
 
 Either is a few seconds of work and needs doing only once.

@@ -1,0 +1,42 @@
+# DP-318 Greeley Crescent — section folders, with total bytes, read from
+# OneDrive on 2026-08-21. Sizes are the folder's recursive total.
+#
+# This is NOT a full file listing: the tree nests three deep in places
+# (section -> construction area -> isometric group -> files) and walking it
+# through the connector would take on the order of a hundred calls. What it
+# does prove is which sections hold content and which are genuinely empty.
+#
+# section	bytes	folder name as it appears on disk
+1	131539	1. Job Book Checklist
+2	281789	2. Facility Overview
+3	2857895	3. Chevron Piping Specification
+4	150763	4. Welding Procedure Specification
+5	150763	5. Welding Procedure Qualification Record
+6	10469274	6. Welder Performance Qualifications
+7	1393889	7. Certifed Welding Inspector Credentials
+8	702446	8. Non-Destructive Testing Technician Credentials
+9	7335871	9. Non Destructive Testing Procedures
+10	10584013	10. Non- Destructive Testing Job Logs and Films
+11	281789	11. Weld Log Overview Sheet With Inspection Percentages
+12	867124	12. Detailed Weld Log
+13	4825235	13. Torque Wrench Calibration Certificates
+14	312411	14. Detailed Torque Log
+15	286412948	15. Material Test Reports
+16	0	16. Pressure Testing Procedure with P&ID Valve Orientation
+17	41448507	17. Pressure Testing Results with Recorder Calibration Certificates
+18	0	18. Cathodic Protection Testing Locations and Baseline Results
+19	0	19. Ultrasonic Testion Locations and Baseline Results (Facilty Only)
+20	33129271	20. As-Built P&IDs (Facilty Only)
+21	95321018	21. Isometric Weld and X-Ray Map (Facilty Only)
+22	62678256	22. Isometric Heat Number and Torque Map (Facilty only)
+23	1787532	23. Coating Inspection
+-	309438672	DP-318 Hydro Test        (off-checklist, at the book root)
+#
+# Section 21 subfolders, one per construction area (verified):
+#   2100 COMPLETED, 2200, 2400 (THRD), 3100, 3400, 4100, 7200, 8000, 8400,
+#   9070 COMPLETED, 9400 (THRD), 9500 COMPLETED, 9600, REDLINE,
+#   RED LINE HEATER T V-2202 (0 bytes, empty)
+#
+# Section 17 contents (verified): test packs #1-#13, #19, #20, #21, #27 as
+# folders; #14-#18 as unexpanded .zip; plus IA Testing/, psv/, and
+# Testing Times and Pressures.xlsx. Tests #22-#26 are absent entirely.

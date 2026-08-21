@@ -120,3 +120,46 @@ for (const f of aggregateFindings(evaluateFlags(b, { asOf: '2026-08-21' }))) {
   console.log(`  ${f.severity.padEnd(8)} ${String(f.occurrences).padStart(4)}  ${f.title}`)
 }
 console.log()
+
+// ---------------------------------------------------------------------
+// The bridge from what is loaded to what the book should score.
+//
+// Each blocked section is credited with the reference figure to show what
+// the gap is made of. This is a projection for planning, never a score:
+// nothing here is written into the book.
+// ---------------------------------------------------------------------
+console.log('\n══ Bridge: 14% → 59% ══')
+const blockedSections = ['4', '9', '10', '12', '15', '17', '21', '22']
+let running = score.weightApplied
+const startPct = score.overallPct
+console.log(`  loaded now                                        ${startPct.toFixed(2)}%`)
+for (const n of blockedSections) {
+  const ours = byNumber.get(n)
+  const refPct = jsonSections.get(n) as number | null
+  if (!ours || refPct == null) continue
+  const gain = ((refPct - ours.pct) / 100) * ours.weight
+  running += gain
+  console.log(`  + §${n.padEnd(3)} ${String(refPct).padStart(5)}% × w${String(ours.weight).padStart(4)}` +
+    ` = +${gain.toFixed(2).padStart(5)} pts   →  ${(running / score.weightAvailable * 100).toFixed(2)}%`)
+}
+console.log(`  reference                                         ${json.expected_overall_score_pct}%`)
+
+// ---------------------------------------------------------------------
+// What the empty sections cost, and the question they raise.
+// ---------------------------------------------------------------------
+const genuinelyEmpty = ['16', '18', '19']
+const emptyWeight = genuinelyEmpty
+  .map((n) => byNumber.get(n)?.weight ?? 0)
+  .reduce((a, w) => a + w, 0)
+console.log('\n══ The three empty sections ══')
+for (const n of genuinelyEmpty) {
+  const s = byNumber.get(n)
+  console.log(`  §${n.padEnd(3)} w=${String(s?.weight).padStart(4)}  ${s?.title}`)
+}
+console.log(`  Together ${emptyWeight} of ${score.weightAvailable} weight points, all scoring zero.`)
+console.log(`  Verified empty on disk: their folders exist and hold 0 bytes.`)
+console.log(`  If these are genuinely out of scope for this facility and were marked N/A,`)
+console.log(`  the same evidence would score ${
+  (json.expected_overall_score_pct / (score.weightAvailable - emptyWeight) * score.weightAvailable).toFixed(1)
+}% instead of ${json.expected_overall_score_pct}% — N/A leaves both sides of the division.`)
+console.log()

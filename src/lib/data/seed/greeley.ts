@@ -34,8 +34,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   Certificate, CoatingInspection, Cwi, DocumentRecord, JobBook, JobBookBundle,
-  JobBookSection, NdtTechnician, SectionDefinition, TorqueConnection, TorqueWrench,
-  Welder, WelderQualification,
+  JobBookSection, NdtTechnician, PressureTest, SectionDefinition, TorqueConnection,
+  TorqueWrench, Welder, WelderQualification,
 } from '@/lib/domain/types'
 import { appliesToBook, buildTemplateSections } from '@/lib/domain/checklist'
 import { parseCellDump, sheetByName } from '@/lib/import/cellDump'
@@ -83,6 +83,43 @@ const CONSTRUCTION_AREAS = [
   '2100', '2200', '2400', '3100', '3400', '4100', '7200',
   '8000', '8400', '9070', '9400', '9500', '9600', 'REDLINE',
 ]
+
+/**
+ * Pressure test packs.
+ *
+ * Section 17 holds 22 of them: #1-#13, #19, #20, #21 and #27 as folders,
+ * #14-#18 as unexpanded ZIPs. `Testing Times and Pressures.xlsx` carries
+ * the hold data for #1-#13; the rest sit in the template with zeroed rows,
+ * so they are recorded as packs that exist without a recorded hold rather
+ * than as tests that passed.
+ *
+ * Tests #22-#26 are absent from the tree entirely — a gap in the
+ * numbering, not a set of missing files.
+ */
+const PRESSURE_PACKS = [
+  { id: '1',  date: '2025-09-19', minutes: 11,     startPsi: 1129, endPsi: 1156, spec: 'B-Spec' },
+  { id: '2',  date: '2025-09-19', minutes: 12,     startPsi: 1128, endPsi: 1148, spec: 'B-Spec' },
+  { id: '3',  date: '2025-10-07', minutes: 10,     startPsi: 2225, endPsi: 2235, spec: 'D-Spec' },
+  { id: '4',  date: '2025-10-08', minutes: 11,     startPsi: 1126, endPsi: 1130, spec: 'B-Spec' },
+  { id: '5',  date: '2025-10-21', minutes: 11.5,   startPsi: 1127, endPsi: 1131, spec: 'B-Spec' },
+  { id: '6',  date: '2025-10-23', minutes: 11.667, startPsi: 1125, endPsi: 1125, spec: 'B-Spec' },
+  { id: '7',  date: '2025-10-23', minutes: 10.417, startPsi: 2221, endPsi: 2244, spec: 'D-Spec' },
+  { id: '8',  date: '2025-10-23', minutes: 10.917, startPsi: 450,  endPsi: 450,  spec: 'A-Spec' },
+  { id: '9',  date: '2025-10-29', minutes: 11.25,  startPsi: 447,  endPsi: 447,  spec: 'A-Spec' },
+  { id: '10', date: '2025-10-29', minutes: 12.583, startPsi: 1126, endPsi: 1135, spec: 'B-Spec' },
+  { id: '11', date: '2025-11-07', minutes: 11,     startPsi: 449,  endPsi: 441,  spec: 'A-Spec' },
+  { id: '12', date: '2025-11-07', minutes: 10.333, startPsi: 1115, endPsi: 1114, spec: 'B-Spec' },
+  { id: '13', date: '2025-11-07', minutes: 10.917, startPsi: 2225, endPsi: 2220, spec: 'D-Spec' },
+  { id: '14', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'A-Spec', zipOnly: true },
+  { id: '15', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'B-Spec', zipOnly: true },
+  { id: '16', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'D-spec', zipOnly: true },
+  { id: '17', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'A-Spec', zipOnly: true },
+  { id: '18', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'D-Spec', zipOnly: true },
+  { id: '19', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'B-Spec' },
+  { id: '20', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'A-Spec' },
+  { id: '21', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'D-Spec' },
+  { id: '27', date: null, minutes: null, startPsi: null, endPsi: null, spec: 'A-Spec' },
+] as const
 
 function loadTorqueFixture(): ReturnType<typeof parseFacilityTorqueRows> | null {
   try {
@@ -255,6 +292,26 @@ export function buildGreeleyBundle(): JobBookBundle {
     })),
   ]
 
+  const pressureTests: PressureTest[] = PRESSURE_PACKS.map((p) => ({
+    id: `ptest-dp318-${p.id}`,
+    jobBookId: book.id,
+    testIdentifier: `Test #${p.id} ${p.spec}`,
+    lineCodes: [],
+    testDate: p.date,
+    testMedium: 'Hydrostatic',
+    testPressurePsi: p.startPsi,
+    durationMinutes: p.minutes == null ? null : Math.round(p.minutes),
+    // A hold that lost pressure is not automatically a failure — ambient
+    // temperature moves a reading — so no result is asserted from the
+    // numbers alone. The result document in each pack decides it, and
+    // those have not been read.
+    result: null,
+    recorderSerial: null,
+    recorderCertId: null,
+    chartDocumentId: null,
+    witnessedBy: null,
+  }))
+
   // Section 23: one area of fourteen has coating records, and those are
   // photographs with no structured readings.
   const coatingInspections: CoatingInspection[] = [
@@ -332,6 +389,12 @@ export function buildGreeleyBundle(): JobBookBundle {
   // Section 23 — two coating photographs for area 8400.
   addDoc('23', 'Area 8400 coating 1.jpg', 2.1)
   addDoc('23', 'Area 8400 coating 2.jpg', 1.9)
+  // Section 17 — the hold-data workbook, and the five test packs that
+  // arrived as unexpanded archives.
+  addDoc('17', 'Testing Times and Pressures.xlsx', 0.015)
+  for (const p of PRESSURE_PACKS.filter((x) => 'zipOnly' in x && x.zipOnly)) {
+    addDoc('17', `Test #${p.id} ${p.spec}.zip`, 0.5)
+  }
 
   return {
     book,
@@ -356,7 +419,7 @@ export function buildGreeleyBundle(): JobBookBundle {
     certificates,
     ndeReports: [],
     materialHeats: [],
-    pressureTests: [],
+    pressureTests,
     cpTestPoints: [],
     utReadings: [],
     coatingInspections,
