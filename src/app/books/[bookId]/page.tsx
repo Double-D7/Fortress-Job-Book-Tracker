@@ -49,12 +49,30 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
       <div className="space-y-4">
         <Card>
           <CardBody className="flex flex-col items-center py-6">
-            <Ring value={score.overallPct} sublabel="overall completion" />
+            <Ring
+              value={score.overallPct}
+              sublabel={score.isLowerBound ? 'at least' : 'overall completion'}
+            />
             <p className="mt-4 text-center text-2xs leading-relaxed text-ink-muted">
               {score.weightApplied.toFixed(1)} of {score.weightAvailable} weight points earned
               across {score.sections.filter((s) => s.countsTowardTotal && s.weight > 0).length} scoring
               sections.
             </p>
+            {/* A percentage computed over content nobody has read is a
+                floor, not a verdict, and saying so is the difference
+                between a useful number and a misleading one. */}
+            {score.isLowerBound && (
+              <div className="mt-3 w-full rounded-md border border-status-info/40 bg-status-info/[0.07] px-3 py-2.5">
+                <p className="text-2xs font-medium text-status-info">
+                  This is a lower bound, not a verdict
+                </p>
+                <p className="mt-1 text-2xs leading-relaxed text-ink-secondary">
+                  Only {score.evidenceCoveragePct}% of this book&apos;s weight has been imported.{' '}
+                  {score.weightNotImported} points sit in sections that hold files nobody has read
+                  yet — they score zero for lack of evidence, not for lack of work.
+                </p>
+              </div>
+            )}
           </CardBody>
         </Card>
 
@@ -85,6 +103,8 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
             <p className="pt-1 text-2xs leading-relaxed text-ink-muted">
               Weight points lost, largest first. Closing the top item moves the overall
               percentage more than closing the rest combined.
+              {score.isLowerBound && ' Sections not yet imported are included here, so some of ' +
+                'this may already be done and simply unread.'}
             </p>
           </CardBody>
         </Card>
@@ -162,6 +182,12 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
                             <Chip tone={status.tone}>{status.label}</Chip>
                             {def?.isSupplemental && <Chip tone="idle">Supplemental · unscored</Chip>}
                             {s.requirementType === 'derived' && <Chip tone="idle">Derived</Chip>}
+                            {s.ingestionStatus === 'not_imported' && (
+                              <Chip tone="info">Not imported</Chip>
+                            )}
+                            {s.ingestionStatus === 'verified_empty' && s.weight > 0 && (
+                              <Chip tone="critical">Verified empty</Chip>
+                            )}
                           </div>
                           <p className="mt-1 text-2xs leading-relaxed text-ink-secondary">
                             {s.explanation}
@@ -183,7 +209,11 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
                                   critical: 'text-status-critical', idle: '', info: '', brand: '' }[bandTone(s.pct)]
                           }`}
                         >
-                          {s.countsTowardTotal && s.weight > 0 ? pct(s.pct) : '—'}
+                          {!s.countsTowardTotal || s.weight === 0
+                            ? '—'
+                            : s.ingestionStatus === 'not_imported'
+                              ? <span className="text-status-info">?</span>
+                              : pct(s.pct)}
                         </span>
                       </div>
                     </Link>

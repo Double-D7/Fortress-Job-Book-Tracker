@@ -60,10 +60,26 @@ sections by their leading number, because the titles on disk read
 "Non- Destructive" — a matcher built on titles drops four sections on
 spelling alone.
 
+### Unread is not the same as empty
+
+The application used to report both as 0% with the words "section absent",
+which for section 17 was simply false: it holds 41 MB of pressure test
+packs, every pack opened carrying the Crystal nVision recorder calibration
+certificate the section is named for, and several carrying the result
+document too. A turnover report claiming that section is missing would send
+a crew to redo work already finished.
+
+`job_book_section.ingestion_status` now distinguishes three states, and the
+overall percentage is labelled a lower bound while any weight is unread.
+
 Verified from the tree (`folder-tree.txt`):
 
 - sections **16, 18, 19** are genuinely empty — their folders exist and
   hold 0 bytes
+- section **17 is NOT empty** — 22 test packs, 41 MB. Sampled packs:
+  #1 and #2 hold gauge, recorder and PSV certificates; #8 adds the test
+  workbook; #9 adds the result PDF as well. Consistent with 8 packs holding
+  a result document and 13 holding certificates only
 - section 17 holds 22 test packs: #1-#13, #19, #20, #21, #27 as folders and
   #14-#18 as unexpanded ZIPs; #22-#26 are absent entirely
 - section 21 is organised into 15 construction-area folders, nesting again

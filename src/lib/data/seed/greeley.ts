@@ -48,6 +48,53 @@ export const GREELEY_BOOK_ID = 'book-dp318'
 export const GREELEY_PROJECT_ID = 'proj-greeley-crescent'
 export const CHEVRON_ORG_ID = 'org-chevron'
 
+/**
+ * What is actually in each section's folder on disk, read from OneDrive.
+ *
+ * `verified_empty` means the folder was opened and holds nothing.
+ * `not_imported` means it holds content that has not been read into the
+ * book — the distinction the application previously could not make, and
+ * the reason a book full of pressure test packs reported section 17 as
+ * absent.
+ *
+ * Byte totals are recursive folder sizes; file counts are only recorded
+ * where the folder was actually walked.
+ */
+const SECTION_SOURCE: Record<string, {
+  status: 'imported' | 'not_imported' | 'verified_empty'
+  bytes: number
+  files?: number
+}> = {
+  '1':  { status: 'not_imported',   bytes: 131539 },
+  '2':  { status: 'not_imported',   bytes: 281789 },
+  '3':  { status: 'imported',       bytes: 2857895, files: 1 },
+  '4':  { status: 'not_imported',   bytes: 150763 },
+  '5':  { status: 'not_imported',   bytes: 150763 },
+  '6':  { status: 'imported',       bytes: 10469274, files: 9 },
+  '7':  { status: 'imported',       bytes: 1393889, files: 2 },
+  '8':  { status: 'imported',       bytes: 702446, files: 4 },
+  '9':  { status: 'not_imported',   bytes: 7335871 },
+  '10': { status: 'not_imported',   bytes: 10584013 },
+  '11': { status: 'not_imported',   bytes: 281789 },
+  '12': { status: 'not_imported',   bytes: 867124 },
+  '13': { status: 'imported',       bytes: 4825235, files: 6 },
+  '14': { status: 'imported',       bytes: 312411, files: 1 },
+  '15': { status: 'not_imported',   bytes: 286412948 },
+  // Verified: folder exists, holds nothing.
+  '16': { status: 'verified_empty', bytes: 0, files: 0 },
+  // 22 test packs. Every pack opened carries the Crystal nVision recorder
+  // calibration certificate this section is named for; some also carry the
+  // result document and the test workbook. Partially walked, so the pack
+  // records are loaded but their contents are not.
+  '17': { status: 'not_imported',   bytes: 41448507 },
+  '18': { status: 'verified_empty', bytes: 0, files: 0 },
+  '19': { status: 'verified_empty', bytes: 0, files: 0 },
+  '20': { status: 'not_imported',   bytes: 33129271 },
+  '21': { status: 'not_imported',   bytes: 95321018 },
+  '22': { status: 'not_imported',   bytes: 62678256 },
+  '23': { status: 'imported',       bytes: 1787532, files: 2 },
+}
+
 /** Section 13 holds exactly these six certificates. Read from the folder
  *  listing, not from the log's roster block — which claims certificates
  *  for three wrenches that have none. */
@@ -341,6 +388,11 @@ export function buildGreeleyBundle(): JobBookBundle {
         : null,
       readyForReviewBy: null, approvedBy: null, approvedAt: null,
       computedPct: 0, expectedCount: null, internalNotes: null,
+      ingestionStatus: applicable
+        ? SECTION_SOURCE[d.sectionNumber]?.status ?? 'unknown'
+        : 'verified_empty',
+      sourceFileCount: SECTION_SOURCE[d.sectionNumber]?.files ?? null,
+      sourceBytes: SECTION_SOURCE[d.sectionNumber]?.bytes ?? null,
     }
   })
 

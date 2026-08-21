@@ -141,6 +141,29 @@ export interface JobBookSection {
    * exists.
    */
   expectedCount?: number | null
+  /**
+   * Whether this section's contents have been loaded into the application
+   * at all — which is a different question from whether they exist.
+   *
+   * Conflating the two is the most dangerous thing this application can
+   * do. DP-318's section 17 holds 41 MB of pressure test packs, every one
+   * carrying the recorder calibration certificate the section is named
+   * for, and the book reported it as "section absent" because nothing had
+   * walked the folder. A turnover report saying a section is missing when
+   * it is merely unread is worse than no report: it sends a crew to
+   * re-do work that was already done, and it destroys trust in every
+   * other number on the page.
+   *
+   *   imported       — contents loaded; the score is a real verdict
+   *   not_imported   — contents exist on disk but have not been read;
+   *                    the score is a floor, not a verdict
+   *   verified_empty — looked, and there is genuinely nothing there
+   *   unknown        — nobody has established which of the above holds
+   */
+  ingestionStatus?: 'imported' | 'not_imported' | 'verified_empty' | 'unknown'
+  /** Evidence from the source folder, where a tree listing has been read. */
+  sourceFileCount?: number | null
+  sourceBytes?: number | null
   /** Fortress-only. Never present in a client or inspector payload. */
   internalNotes?: string | null
 }

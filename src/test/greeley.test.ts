@@ -296,3 +296,67 @@ describe('flag aggregation on DP452', () => {
     expect(wrongJob.title).toContain('DP425')
   })
 })
+
+describe('unread is not the same as empty', () => {
+  /**
+   * The most dangerous thing this application can report is that a section
+   * is missing when it is merely unread. DP-318 holds 41 MB of pressure
+   * test packs in section 17 — every pack carrying the recorder
+   * calibration certificate the section is named for — and the book said
+   * "section absent" because nothing had walked the folder. A crew sent to
+   * re-do that work would be re-doing work that was already done.
+   */
+  const score = scoreBook(bundle)
+  const at = (n: string) => score.sections.find((s) => s.sectionNumber === n)!
+
+  it('reports a section holding unread files as unread, not absent', () => {
+    const s17 = at('17')
+    expect(s17.ingestionStatus).toBe('not_imported')
+    expect(s17.explanation).toMatch(/Not yet imported/)
+    expect(s17.explanation).toMatch(/lack of evidence, not for lack of work/)
+    expect(s17.explanation).not.toMatch(/absent/)
+  })
+
+  it('reports a genuinely empty section as empty', () => {
+    for (const n of ['16', '18', '19']) {
+      expect(at(n).ingestionStatus).toBe('verified_empty')
+    }
+  })
+
+  it('never lists an unread section among the missing ones', () => {
+    const missing = score.missingSections.map((s) => s.sectionNumber).sort()
+    expect(missing).toEqual(['16', '18', '19'])
+    expect(missing).not.toContain('17')
+    expect(missing).not.toContain('21')
+  })
+
+  it('marks the overall figure as a lower bound while weight is unread', () => {
+    expect(score.isLowerBound).toBe(true)
+    expect(score.weightNotImported).toBeGreaterThan(50)
+    expect(score.evidenceCoveragePct).toBeLessThan(100)
+    // Coverage and unread weight must agree with each other.
+    expect(score.evidenceCoveragePct).toBeCloseTo(
+      ((score.weightAvailable - score.weightNotImported) / score.weightAvailable) * 100, 1)
+  })
+
+  it('drops the caveat once every section has been read', () => {
+    const fully = {
+      ...bundle,
+      sections: bundle.sections.map((s) => ({ ...s, ingestionStatus: 'imported' as const })),
+    }
+    const s = scoreBook(fully)
+    expect(s.isLowerBound).toBe(false)
+    expect(s.evidenceCoveragePct).toBe(100)
+  })
+
+  it('does not let the unread state change the arithmetic', () => {
+    // The caveat is about how the number is presented, not what it is.
+    const unread = scoreBook(bundle).overallPct
+    const asImported = scoreBook({
+      ...bundle,
+      sections: bundle.sections.map((s) =>
+        s.ingestionStatus === 'not_imported' ? { ...s, ingestionStatus: 'unknown' as const } : s),
+    }).overallPct
+    expect(unread).toBe(asImported)
+  })
+})

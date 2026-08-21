@@ -36,6 +36,14 @@ export interface SectionScore {
   weight: number
   requirementType: SectionDefinition['requirementType']
   status: JobBookSection['status']
+  /**
+   * Whether this score is a verdict or a floor. A section whose contents
+   * have not been read scores zero for lack of evidence, not for lack of
+   * work, and the two must never render the same way.
+   */
+  ingestionStatus: 'imported' | 'not_imported' | 'verified_empty' | 'unknown'
+  sourceFileCount?: number | null
+  sourceBytes?: number | null
   /** 0–100. Zero for an N/A or supplemental section, which is why
    *  `countsTowardTotal` exists separately. */
   pct: number
@@ -49,6 +57,17 @@ export interface BookScore {
   overallPct: number
   weightApplied: number
   weightAvailable: number
+  /**
+   * Share of the scoring weight whose contents have actually been read.
+   * When this is below 100 the overall percentage is a lower bound, and
+   * every surface that shows the percentage must say so.
+   */
+  evidenceCoveragePct: number
+  /** Weight sitting in sections known to hold unread content. */
+  weightNotImported: number
+  /** True when the overall figure understates the book because content
+   *  exists that has not been ingested. */
+  isLowerBound: boolean
   sections: SectionScore[]
   /** Sections carrying weight that scored zero — the "what is missing"
    *  answer, in weight order. */
@@ -122,6 +141,29 @@ export function scoreSection(
     weight: def.weight,
     requirementType: def.requirementType,
     status: section.status,
+    ingestionStatus: section.ingestionStatus ?? 'unknown',
+    sourceFileCount: section.sourceFileCount ?? null,
+    sourceBytes: section.sourceBytes ?? null,
+  }
+
+  // A section known to hold files that have not been read is reported as
+  // exactly that. Scoring it and calling the result "absent" would be a
+  // false statement about the job, not a conservative one.
+  if (section.ingestionStatus === 'not_imported') {
+    const files = section.sourceFileCount
+    const mb = section.sourceBytes ? section.sourceBytes / 1_048_576 : null
+    return {
+      ...base, pct: 0, countsTowardTotal: true, inputs: [],
+      explanation:
+        `Not yet imported — ` +
+        (files != null
+          ? `${files.toLocaleString()} file${files === 1 ? '' : 's'}`
+          : 'content') +
+        (mb != null ? ` (${mb.toFixed(1)} MB)` : '') +
+        ` ${files === 1 ? 'is' : files != null ? 'are' : 'is'} present in the source folder but ` +
+        `has not been read into the book. This section scores zero for lack of evidence, not for ` +
+        `lack of work.`,
+    }
   }
 
   // N/A and supplemental sections leave the calculation entirely.
@@ -199,7 +241,11 @@ export function scoreSection(
   }
 }
 
-type Base = Pick<SectionScore, 'sectionNumber' | 'title' | 'weight' | 'requirementType' | 'status'>
+type Base = Pick<
+  SectionScore,
+  'sectionNumber' | 'title' | 'weight' | 'requirementType' | 'status'
+  | 'ingestionStatus' | 'sourceFileCount' | 'sourceBytes'
+>
 
 function scorePersonnelCerts(
   base: Base, def: SectionDefinition, section: JobBookSection, bundle: JobBookBundle,
@@ -630,19 +676,36 @@ export function scoreBook(bundle: JobBookBundle): BookScore {
     if (!def) continue
     scores.push(scoreSection(def, section, bundle))
   }
+  // A section we looked at and found empty says so, rather than leaving
+  // the reader to guess whether anyone checked.
+  for (const sc of scores) {
+    if (sc.ingestionStatus !== 'verified_empty' || sc.weight <= 0 || sc.pct > 0) continue
+    sc.explanation = `Verified empty — the source folder exists and holds nothing. ${sc.explanation}`
+  }
   scores.sort((a, b) => collateSectionNumber(a.sectionNumber) - collateSectionNumber(b.sectionNumber))
 
   const counted = scores.filter((s) => s.countsTowardTotal && s.weight > 0)
   const weightAvailable = counted.reduce((s, x) => s + x.weight, 0)
   const weightApplied = counted.reduce((s, x) => s + (x.pct / 100) * x.weight, 0)
 
+  const notImported = counted
+    .filter((s) => s.ingestionStatus === 'not_imported')
+    .reduce((a, s) => a + s.weight, 0)
+
   return {
     overallPct: weightAvailable > 0 ? round2((weightApplied / weightAvailable) * 100) : 0,
     weightApplied: round2(weightApplied),
     weightAvailable: round2(weightAvailable),
+    evidenceCoveragePct: weightAvailable > 0
+      ? round2(((weightAvailable - notImported) / weightAvailable) * 100)
+      : 100,
+    weightNotImported: round2(notImported),
+    isLowerBound: notImported > 0,
     sections: scores,
+    // "Missing" means we looked and it is not there. A section nobody has
+    // read yet is not missing; it is unread, and it is reported separately.
     missingSections: counted
-      .filter((s) => s.pct === 0)
+      .filter((s) => s.pct === 0 && s.ingestionStatus !== 'not_imported')
       .map((s) => ({ sectionNumber: s.sectionNumber, title: s.title, weight: s.weight }))
       .sort((a, b) => b.weight - a.weight),
     computedAt: new Date().toISOString(),
