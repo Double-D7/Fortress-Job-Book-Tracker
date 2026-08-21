@@ -16,9 +16,27 @@ npm run seed:verify     # DP452 figures against the source brief
 npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
 ```
 
-No database is needed to run or test: the app ships with the DP452
-reference book as an in-memory provider, and every screen runs the same
-scoring and flag code the persistent provider will.
+No database is needed to run or test: the app ships with two books as an
+in-memory provider, and every screen runs the same scoring and flag code
+the persistent provider will.
+
+### The two books are not the same kind of thing
+
+**DP452 is synthetic.** It is generated — `makeRng`, `fakeSha`, no
+filesystem access at all — to reproduce the figures quoted in the original
+build brief: 2,476 weld credits, 631 X-rays, 616 torque connections, 315
+files. It is an excellent *fixture*, because it exercises every rule with
+known-correct answers, and it is the basis of the acceptance tests. It is
+not evidence that ingestion works, because nothing was ingested.
+
+**DP-318 Greeley Crescent is real.** It reads an actual workbook off disk
+and reports what is genuinely there. That is why it looks worse: a
+generated book is complete by construction, and a real one is only as
+complete as what has been read into it.
+
+Anyone comparing the two should read DP452's 80.6% as "the engine computes
+correctly" and DP-318's 14.4% as "ingestion is the unfinished half of this
+project".
 
 ---
 
@@ -192,6 +210,12 @@ usefully, that a table added later cannot skip it.
 ---
 
 ## Status
+
+**The honest summary:** the calculation engine is finished and verified.
+The ingestion path is not. Every figure DP-318 cannot show is a file that
+has not been read, not a rule that has not been written — and
+`verify:greeley` demonstrates that by reaching 59.08% against the
+reference's 59.1% once the missing figures are credited.
 
 **Working end to end**
 
