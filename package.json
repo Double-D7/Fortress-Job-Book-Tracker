@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:verify": "tsx scripts/verify-seed.ts",
-    "verify:greeley": "tsx scripts/verify-greeley.ts"
+    "verify:greeley": "tsx scripts/verify-greeley.ts",
+    "ingest": "tsx scripts/ingest-job-book.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

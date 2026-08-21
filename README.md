@@ -12,6 +12,7 @@ Checklist` that governs it.
 npm install
 npm run dev          # http://localhost:3000 — runs on the DP452 reference book
 npm test             # 173 tests, including the §11 acceptance criteria
+npm run ingest -- "<path to a job book folder>"   # read a real book off disk
 npm run seed:verify     # DP452 figures against the source brief
 npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
 ```
@@ -64,6 +65,14 @@ human opening a folder. Against its own governing checklist it scores
 Run `npm run seed:verify` to see all of it against the source figures.
 
 ---
+
+## Ingesting a real job book
+
+`npm run ingest -- "<path>"` walks a job book folder, finds its workbooks by
+content rather than by filename, parses them, and writes fixtures the app
+reads. Run it where the files are — see [HANDOFF.md](HANDOFF.md). A local
+run has no MIME allow-list, so macro-enabled `.xlsm` weld logs read
+natively, and no per-folder API cost, so a deep tree is free.
 
 ## Book types
 
