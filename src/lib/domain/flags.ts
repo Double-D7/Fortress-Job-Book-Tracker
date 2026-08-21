@@ -16,7 +16,9 @@ import type {
 import { today } from './dates'
 import { certValidOn, evaluateCert } from './certificates'
 import { checkWrenchCalibration, isInspected, reconcileWrenches, suggestWrenchTypo, torqueTotals, torqueWithinTolerance } from './torque'
-import { creditedWelders, isCountable, isXrayed, qualifiedOn, rollupByWelder } from './welders'
+import {
+  checkFlatRule, creditedWelders, isCountable, isXrayed, qualifiedOn, rollupByWelder,
+} from './welders'
 import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
 import { reconcileCp, reconcileHeats } from './reconcile'
 
@@ -40,6 +42,23 @@ export interface FlagContext {
 
 const fp = (...parts: (string | number | null | undefined)[]) =>
   parts.filter((p) => p != null && p !== '').join('|')
+
+/**
+ * Is this section's content still unread?
+ *
+ * Every rule that reasons about what a section contains has to ask this
+ * first. A rule firing against unread data does not report a problem with
+ * the job — it reports a problem with the import, in language that accuses
+ * the job. "22 pressure tests have no recorder calibration" is a serious
+ * allegation, and on DP-318 it was false: every test pack holds the
+ * recorder certificate, and nothing had opened them.
+ */
+function sectionIsUnread(b: JobBookBundle, sectionNumber: string): boolean {
+  const def = b.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+  if (!def) return false
+  const section = b.sections.find((x) => x.sectionDefinitionId === def.id)
+  return section?.ingestionStatus === 'not_imported'
+}
 
 /**
  * Findings used to be capped per rule, with the overflow thrown away. That
@@ -163,6 +182,7 @@ export function ruleNdeTechnicianNotCertified(b: JobBookBundle): Finding[] {
 
 /** A weld referencing a heat number with no MTR on file. */
 export function ruleHeatWithoutMtr(b: JobBookBundle): Finding[] {
+  if (sectionIsUnread(b, '15')) return []
   const rec = reconcileHeats(b.welds, b.materialHeats)
   return cap('material.heat_without_mtr', rec.heatsWithoutMtr.map((h) => ({
     ruleId: 'material.heat_without_mtr',
@@ -180,6 +200,9 @@ export function ruleHeatWithoutMtr(b: JobBookBundle): Finding[] {
 /** A pressure test with no recorder calibration certificate valid on the
  *  test date. */
 export function rulePressureTestNoRecorderCert(b: JobBookBundle): Finding[] {
+  // The recorder certificates live inside the section 17 test packs. Until
+  // those are read, "no valid certificate" means "not looked at yet".
+  if (sectionIsUnread(b, '17')) return []
   const out: Finding[] = []
   for (const t of b.pressureTests) {
     const cert = b.certificates.find((c) => c.id === t.recorderCertId)
@@ -258,6 +281,9 @@ export function ruleWrongJobDocument(b: JobBookBundle): Finding[] {
 
 /** A welder below the job's required minimum X-ray percentage. */
 export function ruleWelderBelowXrayMinimum(b: JobBookBundle): Finding[] {
+  // A book carrying an explicit inspection rule is checked by that rule
+  // instead, so the two never both fire on the same welder.
+  if (b.book.inspectionRule) return []
   const rollups = rollupByWelder(b.welds, b.welders, b.book)
   return rollups
     .filter((r) => r.totalWelds > 0 && !r.meetsRequirement)
@@ -328,6 +354,14 @@ export function ruleFutureDatedRecords(b: JobBookBundle, ctx: FlagContext = {}):
  * so it cannot be satisfied by averaging across a job.
  */
 export function ruleTierNotMet(b: JobBookBundle, rules?: TierRule[]): Finding[] {
+  // Only a book actually governed by the tiered rule can fail it. DP-318
+  // states a flat "100% visual & 10% NDE" requirement on its own face;
+  // reading a tier obligation into it produced 90 findings against welds
+  // that owed nothing, which is worse than missing a real one — it sends a
+  // crew to X-ray pipe that was never required to be X-rayed.
+  if (b.book.inspectionRule && b.book.inspectionRule.kind !== 'tiered') return []
+  if (!rules?.length) return []
+
   const out: Finding[] = []
   for (const w of b.welds) {
     if (!isCountable(w)) continue
@@ -352,6 +386,31 @@ export function ruleTierNotMet(b: JobBookBundle, rules?: TierRule[]): Finding[] 
     })
   }
   return out
+}
+
+/**
+ * A welder below the job's flat NDE requirement.
+ *
+ * The facility equivalent of the flowline X-ray percentage rule, reading
+ * the threshold from the job rather than assuming one. Every DP-318 welder
+ * clears its 10%; the lowest is the MR LC crew stamp at 11.1%.
+ */
+export function ruleFlatRuleNotMet(b: JobBookBundle): Finding[] {
+  const rule = b.book.inspectionRule
+  if (!rule || rule.kind !== 'flat') return []
+  const { perWelder } = checkFlatRule(b.welds, b.welders, rule)
+  return perWelder
+    .filter((p) => p.welds > 0 && !p.meetsNde)
+    .map((p) => ({
+      ruleId: 'welder.below_job_nde_requirement',
+      severity: 'critical' as const,
+      title: `${p.initials} is at ${p.ndePct.toFixed(1)}% NDE, below the job's ${rule.requiredNdePct}%`,
+      detail: `${p.welds} welds with ${p.nde} examinations (${p.ndePct.toFixed(1)}%). This job's ` +
+        `stated requirement is ${rule.requiredVisualPct}% visual and ${rule.requiredNdePct}% NDE` +
+        (rule.statedAs ? ` — "${rule.statedAs}".` : '.'),
+      entityType: 'welder', entityId: p.welderId, sectionNumber: '12',
+      fingerprint: fp('welder.below_job_nde_requirement', p.welderId),
+    }))
 }
 
 /** A weld lacking the pipe data its inspection obligation depends on. */
@@ -438,6 +497,10 @@ export function ruleEmptyRequiredSection(b: JobBookBundle): Finding[] {
   const out: Finding[] = []
   for (const s of b.sections) {
     if (s.status === 'na') continue
+    // Empty means we looked. An unread section is reported by the section
+    // list as unread, and accusing it of being empty here would put ten
+    // false criticals on a book that merely has not finished importing.
+    if (s.ingestionStatus === 'not_imported') continue
     const def = defsById.get(s.sectionDefinitionId)
     if (!def || def.weight <= 0 || !def.isRequired) continue
     const docs = b.documents.filter((d) => d.sectionId === s.id && !d.deletedAt)
@@ -632,6 +695,7 @@ export function ruleCertificateExpiringSoon(b: JobBookBundle, ctx: FlagContext =
 /** `CP TEST ON FLANGE = Y` with no matching cathodic protection test point:
  *  the tie between section 14 and section 18. */
 export function ruleCpFlangeWithoutTestPoint(b: JobBookBundle): Finding[] {
+  if (sectionIsUnread(b, '18')) return []
   const rec = reconcileCp(b.torqueConnections, b.cpTestPoints)
   return cap('cp.flange_without_test_point', rec.flangesAwaitingCpPoint.map((c) => ({
     ruleId: 'cp.flange_without_test_point',
@@ -646,6 +710,7 @@ export function ruleCpFlangeWithoutTestPoint(b: JobBookBundle): Finding[] {
 
 /** A weld recording an NDE method with no report behind it. */
 export function ruleWeldNdeWithoutReport(b: JobBookBundle): Finding[] {
+  if (sectionIsUnread(b, '10') || sectionIsUnread(b, '12')) return []
   const out: Finding[] = []
   for (const w of b.welds) {
     if (!isCountable(w) || !w.ndtMethod || w.ndtReportId) continue
@@ -691,7 +756,10 @@ export function ruleWrenchNotOnRoster(b: JobBookBundle): Finding[] {
   const rec = reconcileWrenches(b.torqueConnections, b.torqueWrenches)
   return rec.usedNotOnRoster.map((id) => ({
     ruleId: 'torque.wrench_not_on_roster',
-    severity: 'warning' as const,
+    // A wrench in service that the log's own roster does not list is a
+    // control failure, not an untidiness: nothing establishes what it is,
+    // who owns it, or when it was last calibrated.
+    severity: 'critical' as const,
     title: `Wrench ${id} is used on ${rec.usageCounts[id] ?? 0} connections but absent from the roster`,
     detail: `The torque log's roster header does not list wrench ${id}, yet it appears on ` +
       `${rec.usageCounts[id] ?? 0} connection row(s).` +
@@ -708,6 +776,7 @@ export function ruleWrenchNotOnRoster(b: JobBookBundle): Finding[] {
 // ---------------------------------------------------------------------
 
 export function ruleMtrNotReferenced(b: JobBookBundle): Finding[] {
+  if (sectionIsUnread(b, '15')) return []
   const rec = reconcileHeats(b.welds, b.materialHeats)
   return cap('material.mtr_not_referenced', rec.mtrsWithoutWelds.map((h) => ({
     ruleId: 'material.mtr_not_referenced',
@@ -784,6 +853,122 @@ export function ruleArchiveUploaded(b: JobBookBundle): Finding[] {
   return cap('document.archive_uploaded', out)
 }
 
+/**
+ * A document filed under a section its own content contradicts.
+ *
+ * Two shapes, both real in DP-318: an As-Built section holding a drawing
+ * stamped IFR, and a PQR section holding a byte-identical copy of the WPS.
+ * Neither is a missing file, which is why neither shows up as one — the
+ * section looks populated and is not.
+ */
+export function ruleWrongDocumentForSection(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  const defsById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))
+  const sectionOf = new Map(b.sections.map((s) => [s.id, defsById.get(s.sectionDefinitionId)]))
+
+  // An As-Built section holding a drawing stamped for review.
+  for (const d of b.documents) {
+    if (d.deletedAt || !d.sectionId) continue
+    const def = sectionOf.get(d.sectionId)
+    if (!def || !/as-built/i.test(def.title)) continue
+    if (!/\bIFR\b|issued\s*for\s*review/i.test(d.originalFilename)) continue
+    out.push({
+      ruleId: 'document.ifr_in_as_built',
+      severity: 'warning',
+      title: `${d.originalFilename} is stamped IFR in an As-Built section`,
+      detail: `Section ${def.sectionNumber} must hold as-built drawings. An Issued For Review ` +
+        `drawing records what was planned, not what was installed, so this section is populated ` +
+        `but not satisfied.`,
+      entityType: 'document', entityId: d.id, sectionNumber: def.sectionNumber,
+      fingerprint: fp('document.ifr_in_as_built', d.id),
+    })
+  }
+
+  // Two sections whose only file is the same file.
+  const byHash = new Map<string, { doc: (typeof b.documents)[number]; section: string }[]>()
+  for (const d of b.documents) {
+    if (d.deletedAt || !d.sectionId) continue
+    const def = sectionOf.get(d.sectionId)
+    if (!def) continue
+    const list = byHash.get(d.sha256) ?? []
+    list.push({ doc: d, section: def.sectionNumber })
+    byHash.set(d.sha256, list)
+  }
+  for (const [hash, copies] of byHash) {
+    const sections = [...new Set(copies.map((c) => c.section))]
+    if (sections.length < 2) continue
+    out.push({
+      ruleId: 'document.same_file_in_two_sections',
+      severity: 'warning',
+      title: `Sections ${sections.join(' and ')} hold the same file`,
+      detail: `${copies[0]!.doc.originalFilename} is byte-identical across sections ` +
+        `${sections.join(', ')} (SHA-256 ${hash.slice(0, 12)}…). One of those sections is ` +
+        `evidenced by a document that belongs to the other.`,
+      entityType: 'document', entityId: copies[0]!.doc.id, sectionNumber: sections[0],
+      fingerprint: fp('document.same_file_in_two_sections', hash),
+    })
+  }
+  return out
+}
+
+/**
+ * A certificate that expires inside the job's own working window.
+ *
+ * Different from the generic expiry warning, which asks whether a cert is
+ * lapsing soon relative to today. This asks whether it lapses before the
+ * work is finished — which is knowable the day the job starts.
+ */
+export function ruleCertExpiresDuringJob(b: JobBookBundle): Finding[] {
+  const end = b.book.constructionEnd
+  if (!end) return []
+  const out: Finding[] = []
+  for (const c of b.certificates) {
+    if (!c.expiryDate || c.expiryDate >= end) continue
+    if (b.book.constructionStart && c.expiryDate < b.book.constructionStart) continue
+    const welder = b.welders.find((w) => w.id === c.subjectId)
+    const subject = welder?.fullName ?? c.subjectId
+    // Whether it actually bit is a separate question from whether it will.
+    const workAfter = b.welds.filter(
+      (w) => w.weldDate && w.weldDate > c.expiryDate! && creditedWelders(w).includes(c.subjectId),
+    ).length
+    out.push({
+      ruleId: 'certificate.expires_during_job',
+      severity: workAfter > 0 ? 'critical' : 'warning',
+      title: `${subject}'s ${c.certType} expires ${c.expiryDate}, before the job ends ${end}`,
+      detail: workAfter > 0
+        ? `${workAfter} weld(s) are recorded after that date and are not covered.`
+        : `No work is recorded after that date yet, so nothing is uncovered — but any further ` +
+          `work on this job would be.`,
+      entityType: 'certificate', entityId: c.id, sectionNumber: '6',
+      fingerprint: fp('certificate.expires_during_job', c.id),
+    })
+  }
+  return out
+}
+
+/** A section whose only file is an editor lock file rather than a document. */
+export function ruleOrphanedLockFile(b: JobBookBundle): Finding[] {
+  const defsById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))
+  const out: Finding[] = []
+  for (const s of b.sections) {
+    const def = defsById.get(s.sectionDefinitionId)
+    if (!def || def.weight <= 0) continue
+    const docs = b.documents.filter((d) => d.sectionId === s.id && !d.deletedAt)
+    if (!docs.length) continue
+    if (!docs.every((d) => /^~\$/.test(d.originalFilename))) continue
+    out.push({
+      ruleId: 'document.only_lock_file',
+      severity: 'warning',
+      title: `Section ${def.sectionNumber} holds only an editor lock file`,
+      detail: `${docs[0]!.originalFilename} is a Word lock file left behind by an open document, ` +
+        `not a deliverable. The section reads as populated in a folder listing and is empty.`,
+      entityType: 'job_book_section', entityId: s.id, sectionNumber: def.sectionNumber,
+      fingerprint: fp('document.only_lock_file', s.id),
+    })
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------
@@ -802,6 +987,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleWrongJobDocument(b),
     ...ruleWelderBelowXrayMinimum(b),
     ...ruleTierNotMet(b, ctx.tierRules),
+    ...ruleFlatRuleNotMet(b),
     ...ruleSmysUncomputable(b, ctx.tierRules),
     ...ruleWeldWithoutStamp(b),
     ...ruleEmptyRequiredSection(b),
@@ -816,6 +1002,9 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleWeldNdeWithoutReport(b),
     ...ruleReportOutsideConstructionWindow(b),
     ...ruleWrenchNotOnRoster(b),
+    ...ruleWrongDocumentForSection(b),
+    ...ruleCertExpiresDuringJob(b),
+    ...ruleOrphanedLockFile(b),
     ...ruleCombinedStampAttribution(b),
     ...ruleMtrNotReferenced(b),
     ...ruleNonConformingFilename(b),
@@ -923,6 +1112,10 @@ const RULE_SUMMARIES: Record<string, (n: number, sample: Finding) => string> = {
     `${n} record${n === 1 ? '' : 's'} are dated after the log's as-of date`,
   'weld.tier_not_met': (n) =>
     `${n} weld${n === 1 ? '' : 's'} have not received the NDE their inspection tier requires`,
+  'welder.below_job_nde_requirement': (n) =>
+    `${n} welder${n === 1 ? '' : 's'} are below the job's stated NDE requirement`,
+  'torque.wrench_not_on_roster': (n) =>
+    `${n} wrench${n === 1 ? '' : 'es'} in use appear on no roster row`,
   'weld.smys_uncomputable': (n) =>
     `${n} weld${n === 1 ? '' : 's'} lack the pipe data needed to compute % of SMYS`,
   'weld.no_welder_stamp': (n) =>
@@ -947,6 +1140,10 @@ const RULE_SUMMARIES: Record<string, (n: number, sample: Finding) => string> = {
     `${n} archive${n === 1 ? '' : 's'} were uploaded and their contents are not indexed`,
   'section.empty_required': (n) =>
     `${n} required section${n === 1 ? '' : 's'} are empty`,
+  'document.same_file_in_two_sections': (n) =>
+    `${n} file${n === 1 ? '' : 's'} are filed under two sections at once`,
+  'certificate.expires_during_job': (n) =>
+    `${n} certificate${n === 1 ? '' : 's'} expire before this job ends`,
 }
 
 /**

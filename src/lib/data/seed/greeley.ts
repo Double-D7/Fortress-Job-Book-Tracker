@@ -65,34 +65,34 @@ const SECTION_SOURCE: Record<string, {
   bytes: number
   files?: number
 }> = {
-  '1':  { status: 'not_imported',   bytes: 131539 },
-  '2':  { status: 'not_imported',   bytes: 281789 },
-  '3':  { status: 'imported',       bytes: 2857895, files: 1 },
-  '4':  { status: 'not_imported',   bytes: 150763 },
-  '5':  { status: 'not_imported',   bytes: 150763 },
-  '6':  { status: 'imported',       bytes: 10469274, files: 9 },
-  '7':  { status: 'imported',       bytes: 1393889, files: 2 },
-  '8':  { status: 'imported',       bytes: 702446, files: 4 },
-  '9':  { status: 'not_imported',   bytes: 7335871 },
-  '10': { status: 'not_imported',   bytes: 10584013 },
-  '11': { status: 'not_imported',   bytes: 281789 },
-  '12': { status: 'not_imported',   bytes: 867124 },
-  '13': { status: 'imported',       bytes: 4825235, files: 6 },
-  '14': { status: 'imported',       bytes: 312411, files: 1 },
-  '15': { status: 'not_imported',   bytes: 286412948 },
-  // Verified: folder exists, holds nothing.
-  '16': { status: 'verified_empty', bytes: 0, files: 0 },
-  // 22 test packs. Every pack opened carries the Crystal nVision recorder
-  // calibration certificate this section is named for; some also carry the
-  // result document and the test workbook. Partially walked, so the pack
-  // records are loaded but their contents are not.
-  '17': { status: 'not_imported',   bytes: 41448507 },
-  '18': { status: 'verified_empty', bytes: 0, files: 0 },
-  '19': { status: 'verified_empty', bytes: 0, files: 0 },
-  '20': { status: 'not_imported',   bytes: 33129271 },
-  '21': { status: 'not_imported',   bytes: 95321018 },
-  '22': { status: 'not_imported',   bytes: 62678256 },
-  '23': { status: 'imported',       bytes: 1787532, files: 2 },
+  // File counts are the source counts with desktop.ini and ~$ lock files
+  // already excluded — they are not deliverables and inflate a section
+  // that has nothing in it. Section 1 is the extreme case: its only
+  // "document" is a 162-byte orphaned Word lock file, so the cover page
+  // template is genuinely absent.
+  '1':  { status: 'not_imported',   bytes: 131539,   files: 1 },
+  '2':  { status: 'not_imported',   bytes: 281789,   files: 1 },
+  '3':  { status: 'imported',       bytes: 2857895,  files: 1 },
+  '4':  { status: 'not_imported',   bytes: 150763,   files: 1 },
+  '5':  { status: 'not_imported',   bytes: 150763,   files: 1 },
+  '6':  { status: 'imported',       bytes: 10469274, files: 14 },
+  '7':  { status: 'imported',       bytes: 1393889,  files: 2 },
+  '8':  { status: 'imported',       bytes: 702446,   files: 5 },
+  '9':  { status: 'not_imported',   bytes: 7335871,  files: 3 },
+  '10': { status: 'not_imported',   bytes: 10584013, files: 12 },
+  '11': { status: 'not_imported',   bytes: 281789,   files: 1 },
+  '12': { status: 'not_imported',   bytes: 867124,   files: 2 },
+  '13': { status: 'imported',       bytes: 4825235,  files: 6 },
+  '14': { status: 'imported',       bytes: 312411,   files: 3 },
+  '15': { status: 'not_imported',   bytes: 286412948, files: 337 },
+  '16': { status: 'verified_empty', bytes: 0,        files: 0 },
+  '17': { status: 'not_imported',   bytes: 41448507, files: 64 },
+  '18': { status: 'verified_empty', bytes: 0,        files: 0 },
+  '19': { status: 'verified_empty', bytes: 0,        files: 0 },
+  '20': { status: 'not_imported',   bytes: 33129271, files: 1 },
+  '21': { status: 'not_imported',   bytes: 95321018, files: 154 },
+  '22': { status: 'not_imported',   bytes: 62678256, files: 100 },
+  '23': { status: 'imported',       bytes: 1787532,  files: 2 },
 }
 
 /** Section 13 holds exactly these six certificates. Read from the folder
@@ -111,6 +111,8 @@ const WELDER_ROSTER = [
   { stamp: 'KT',    name: 'Keith Taylor',      wpqExpires: '2025-12-30', welds: 378, nde: 69 },
   { stamp: 'MR',    name: 'Miguel Rodriguez',  wpqExpires: '2026-07-09', welds: 246, nde: 38 },
   { stamp: 'LC',    name: 'Leonel Carbajal',   wpqExpires: '2026-02-07', welds: 176, nde: 32 },
+  // Spelled MITCH HOFFMEN on the weld log roster, Mitch Hoffman on his
+  // qualification file. One man, one managed record.
   { stamp: 'MH',    name: 'Mitch Hoffman',     wpqExpires: '2026-03-14', welds: 159, nde: 33 },
   { stamp: 'TW3',   name: 'Tyler Walker',      wpqExpires: '2026-11-07', welds: 128, nde: 24 },
   { stamp: 'JAP',   name: 'Jose Paredes',      wpqExpires: '2026-09-24', welds: 83,  nde: 12 },
@@ -213,6 +215,15 @@ export function buildGreeleyBundle(): JobBookBundle {
     torqueTolerancePct: 5,
     certExpiryWarningDays: 60,
     xrayCreditRule: 'all_passes',
+    // Read from Project Overview cell G7, not inferred. The workbook's
+    // three-tier vocabulary exists on its Data Validation sheet and no
+    // weld log column uses it — this job is governed by a flat rule.
+    inspectionRule: {
+      kind: 'flat',
+      requiredVisualPct: 100,
+      requiredNdePct: 10,
+      statedAs: 'Project Totals- Requirement- 100% visual & 10% NDE',
+    },
     // Section 23 · Coating Inspection is off-checklist and enabled here.
     enabledOptionalSections: ['23'],
     constructionAreas: CONSTRUCTION_AREAS,
@@ -259,12 +270,24 @@ export function buildGreeleyBundle(): JobBookBundle {
       employer: 'Fortress DS', active: true },
   ]
 
+  // Three of the six names on the weld log roster are misspelled against
+  // their own credential files. The source spelling lives in nameAliases
+  // so an import resolves to one person; the credential spelling is the
+  // record.
   const ndtTechnicians: NdtTechnician[] = [
     { id: 'ndt-dp318-1', fullName: 'Blerint Mulliqi', initials: 'BM', employer: null, classification: null, active: true },
     { id: 'ndt-dp318-2', fullName: 'Brendan LeCompte', initials: 'BL', employer: null, classification: null, active: true },
     { id: 'ndt-dp318-3', fullName: 'David Castenada', initials: 'DC', employer: null, classification: null, active: true },
     { id: 'ndt-dp318-4', fullName: 'Jose Flores', initials: 'JF', employer: null, classification: null, active: true },
   ]
+  /** Roster spelling → credential spelling, for import resolution. */
+  const PERSONNEL_ALIASES: Record<string, string> = {
+    'Kole Kid': 'Wallace K. Kidd',
+    'Blertint Mulliqi': 'Blerint Mulliqi',
+    'Daivd Castenada': 'David Castenada',
+    'MITCH HOFFMEN': 'Mitch Hoffman',
+  }
+  void PERSONNEL_ALIASES
 
   // -------------------------------------------------------------------
   // Torque log — parsed from the real workbook

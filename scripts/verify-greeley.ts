@@ -128,8 +128,8 @@ console.log()
 // the gap is made of. This is a projection for planning, never a score:
 // nothing here is written into the book.
 // ---------------------------------------------------------------------
-console.log('\n══ Bridge: 14% → 59% ══')
-const blockedSections = ['4', '9', '10', '12', '15', '17', '21', '22']
+console.log('\n══ Bridge: what is loaded → what the book should score ══')
+const blockedSections = ['1', '2', '4', '5', '9', '10', '12', '15', '17', '20', '21', '22']
 let running = score.weightApplied
 const startPct = score.overallPct
 console.log(`  loaded now                                        ${startPct.toFixed(2)}%`)

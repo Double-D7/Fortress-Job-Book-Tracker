@@ -44,7 +44,10 @@ export interface WelderRollup {
 
 /** A weld is X-rayed if a radiographic examination is recorded against it. */
 export function isXrayed(w: Weld): boolean {
-  return w.ndtMethod === 'RT' || (!!w.xrayNumber && w.xrayNumber.trim() !== '')
+  // "Examined", not literally radiographed: DP-318 records 194 RT and 27
+  // PT examinations against one 10% NDE requirement, so counting only RT
+  // would under-report every welder by their PT work.
+  return !!w.ndtMethod || (!!w.xrayNumber && w.xrayNumber.trim() !== '')
 }
 
 /** `NOT USED` weld numbers are gaps in the sequence by design and never
@@ -150,6 +153,51 @@ export function rollupByWelder(
   }
 
   return [...acc.values()].sort((a, b) => b.totalWelds - a.totalWelds)
+}
+
+/**
+ * Does each welder meet the job's flat NDE requirement?
+ *
+ * The flowline books express this as an X-ray percentage; a facility book
+ * on the flat rule expresses the same idea as "100% visual & 10% NDE".
+ * One calculation serves both — a percentage of a welder's own welds —
+ * so a job's shape changes the threshold, not the arithmetic.
+ */
+export interface FlatRuleResult {
+  welderId: string
+  initials: string
+  welds: number
+  nde: number
+  ndePct: number
+  visualPct: number
+  meetsNde: boolean
+  meetsVisual: boolean
+}
+
+export function checkFlatRule(
+  welds: Weld[],
+  welders: Welder[],
+  rule: { requiredVisualPct: number; requiredNdePct: number },
+): { perWelder: FlatRuleResult[]; allMeet: boolean; lowest: FlatRuleResult | null } {
+  const rollups = rollupByWelder(welds, welders, {
+    xrayCreditRule: 'all_passes',
+    requiredXrayPct: rule.requiredNdePct,
+  })
+  const perWelder: FlatRuleResult[] = rollups.map((r) => ({
+    welderId: r.welderId,
+    initials: r.initials,
+    welds: r.totalWelds,
+    nde: r.totalXrays,
+    ndePct: r.xrayPct,
+    visualPct: r.pctInspected,
+    meetsNde: r.xrayPct >= rule.requiredNdePct,
+    meetsVisual: r.pctInspected >= rule.requiredVisualPct,
+  }))
+  const withWork = perWelder.filter((p) => p.welds > 0)
+  const lowest = withWork.length
+    ? withWork.reduce((a, b) => (b.ndePct < a.ndePct ? b : a))
+    : null
+  return { perWelder, allMeet: withWork.every((p) => p.meetsNde), lowest }
 }
 
 export interface XrayTotals {

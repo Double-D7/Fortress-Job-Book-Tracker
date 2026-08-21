@@ -48,6 +48,28 @@ pressure that live in those rows. The same applies to the workbook's
 carries ASME B36.10M standard dimensions instead, and `loadNpsTable`
 replaces them once the sheet is importable.
 
+## Correction: this job is NOT governed by a SMYS tier
+
+An earlier reading of this book assumed `% of SMYS` drove a three-tier
+inspection requirement breaking at 20%, and reported 90 welds as failing an
+NDE obligation. That was wrong, and wrong in the expensive direction — it
+sends a crew to radiograph pipe no specification asked for.
+
+The workbook says otherwise in two places:
+
+- Project Overview cell **G7** states the job requirement plainly:
+  `Project Totals- Requirement- 100% visual & 10% NDE` — flat and job-wide.
+- The tier vocabulary (`Random Visual` / `100% Visual` /
+  `100% Visual and 15% NDT`) exists on the `Data Validation` sheet and
+  **no weld log column uses it**.
+
+Both rule shapes are now implemented and the job picks one
+(`job.inspectionRule`). DP-318 is `flat` at 100/10, and every welder clears
+it — the lowest is the `MR LC` crew stamp at 11.1%. `% of SMYS` is still
+computed for every weld, because it is real engineering data about the pipe
+whether or not it decides anything. No break point is hard-coded anywhere;
+`EXAMPLE_TIER_RULES` is named for what it is and is applied to nothing.
+
 ## The bigger gap: nothing walks the folder tree
 
 The weld log is not the main reason DP-318 scored 14%. The book holds

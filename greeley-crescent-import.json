@@ -17,12 +17,12 @@
     "governing_checklist": "Facility/Flow Line Job Book Checklist (22 items) \u2014 identical to DP452",
     "piping_spec": "DJBU-GL-RBU-PIP-SPC-0001 COMBINE 2025 Rev16"
   },
-  "expected_overall_score_pct": 59.1,
+  "expected_overall_score_pct": 60.1,
   "note_on_score": "Computed with the SPEC.md \u00a75.3b facility weights (sum 100). Sections 1 and 11 carry weight 0 (generated / derived) and are excluded from the denominator.",
   "welds": {
     "total": 1259,
     "field_complete": 1226,
-    "fully_complete_incl_tier": 1136,
+    "fully_complete_incl_tier": null,
     "by_type": {
       "Butt": 1074,
       "O-Let": 174,
@@ -49,9 +49,6 @@
       "max_pct": 56.63,
       "uncomputable": 2
     },
-    "tier_required": 166,
-    "tier_met": 76,
-    "tier_shortfall": 90,
     "welds_without_welder_stamp": 3,
     "unique_isometrics_referenced": 133,
     "pressure_tests_referenced": [
@@ -77,7 +74,15 @@
       20,
       21,
       27
-    ]
+    ],
+    "job_inspection_requirement": "100% visual & 10% NDE (stated in Project Overview cell G7)",
+    "inspection_rule": "flat",
+    "all_welders_meet_10pct_nde": true,
+    "lowest_welder_nde_pct": {
+      "stamp": "MR LC",
+      "pct": 11.1
+    },
+    "note_on_tiers": "The three-tier vocabulary (Random Visual / 100% Visual / 100% Visual and 15% NDT) exists on the Data Validation sheet but NO weld log column uses it. This job is governed by the flat 100%/10% rule. Do not apply a 20% SMYS tier rule to this book."
   },
   "welders": [
     {
@@ -246,7 +251,8 @@
       25,
       26
     ],
-    "note": "Weld log references tests 0-14,16-21,27. Folder tree holds 1-21,27. The two disagree about test 15."
+    "note": "Weld log references tests 0-14,16-21,27. Folder tree holds 1-21,27. The two disagree about test 15.",
+    "hold_data_present_for": "tests 1-13 plus IA test; 14-20 are zero-filled and must import as not-run"
   },
   "coating": {
     "areas_total": 14,
@@ -353,8 +359,8 @@
       "n": 12,
       "title": "Detailed Weld Log",
       "weight": 14,
-      "score_pct": 90.2,
-      "basis": "1,136 of 1,259 welds complete and meeting tier"
+      "score_pct": 97.4,
+      "basis": "1,226 of 1,259 welds field-complete; job rule is 100% visual & 10% NDE and all welders meet it"
     },
     {
       "n": 13,
@@ -437,9 +443,9 @@
   "expected_flags": {
     "critical": [
       "289 of 718 torque connections used a wrench with no calibration certificate (0216, 0218, 0480, 0719, 4463, 5123)",
-      "90 welds at or above 20% SMYS have not received their required NDE (166 required, 76 done)",
       "Sections 16, 18 and 19 are empty",
-      "3 welds have no welder stamp; 2 have no pipe grade so % of SMYS cannot be computed"
+      "3 welds have no welder stamp; 2 have no pipe grade so % of SMYS cannot be computed",
+      "4 wrenches in use (0216, 0719, 5123, 9125) appear on no roster row"
     ],
     "warning": [
       "Section 20 holds an IFR drawing in an As-Built section",
@@ -447,7 +453,9 @@
       "Section 22 covers 44 fewer isometrics than Section 21",
       "13 of 21 populated pressure test folders hold certs but no result document",
       "Section 2 contains a copy of the weld log instead of a facility overview",
-      "Keith Taylor WPQ expires 2025-12-30 and the job runs into 2026"
+      "Keith Taylor WPQ expires 2025-12-30 and the job runs into 2026",
+      "Five pressure tests (14-18) exist only as unextracted ZIP archives",
+      "Section 1's cover page template exists only as an orphaned Word lock file"
     ],
     "info": [
       "All 1,259 CWI visual inspections recorded Pass",

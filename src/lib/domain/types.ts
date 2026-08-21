@@ -81,9 +81,16 @@ export interface JobBook {
   /** Section numbers of off-checklist optional sections enabled for this
    *  job. An optional section not listed here is marked N/A. */
   enabledOptionalSections?: string[]
-  /** Facility: design pressure used for the tier calculation where a weld
-   *  does not carry its own. */
+  /** Facility: design pressure used where a weld does not carry its own. */
   defaultDesignPressurePsi?: number | null
+  /**
+   * What inspection this job's welds owe. Read from the log's own face —
+   * DP-318 states it in Project Overview cell G7 — never inferred from the
+   * presence of a vocabulary elsewhere in the workbook.
+   */
+  inspectionRule?:
+    | { kind: 'flat'; requiredVisualPct: number; requiredNdePct: number; statedAs?: string }
+    | { kind: 'tiered'; ruleTableId?: string; confirmed: boolean }
   /** Business unit as printed on the log header (e.g. "Chevron DJBU"). */
   businessUnit?: string | null
   qaqcRepresentative?: string | null

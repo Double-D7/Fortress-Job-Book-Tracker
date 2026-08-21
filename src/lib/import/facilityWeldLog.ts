@@ -17,7 +17,7 @@
 import type { NdtMethod, PassFail, Weld } from '@/lib/domain/types'
 import { parseLooseDate } from '@/lib/domain/dates'
 import {
-  computeSmys, DEFAULT_TIER_RULES, type NpsDimension, type SmysResult, type TierRule,
+  computeSmys, type NpsDimension, type SmysResult, type TierRule,
 } from '@/lib/domain/engineering'
 import type { ImportPreview, RowIssue } from './types'
 
@@ -153,7 +153,9 @@ export function parseFacilityWeldRows(
   } = {},
 ): FacilityWeldImportResult {
   const sheetName = opts.sheetName ?? 'Weld Log'
-  const rules = opts.tierRules ?? DEFAULT_TIER_RULES
+  // No bands unless the job supplies them: % of SMYS is computed either
+  // way, but a tier is only assigned where one is actually specified.
+  const rules = opts.tierRules ?? []
   const { headerRow, columns } = locateHeader(rows)
   const issues: RowIssue[] = []
   const parsed: ParsedFacilityWeldRow[] = []

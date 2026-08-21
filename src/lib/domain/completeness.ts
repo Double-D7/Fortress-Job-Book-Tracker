@@ -30,22 +30,46 @@ export function weldCompleteness(w: Weld): CompletenessResult {
   if (!isCountable(w)) return { complete: true, missing: [] }
   const missing: string[] = []
   if (!w.weldDate) missing.push('weld date')
-  const passes = [w.rootWelderId, w.hotWelderId, w.fillWelderId, w.capWelderId]
-  const passNames = ['root', 'hot', 'fill', 'cap']
-  passes.forEach((p, i) => { if (!p) missing.push(`${passNames[i]} pass welder`) })
+
+  // Two log shapes, and asking each for the other's fields invents
+  // findings. A facility log records one welder stamp and carries no heat
+  // number column at all, so requiring four pass assignments and a heat
+  // would mark every facility weld incomplete for doing exactly what its
+  // template asks.
+  const isFacilityShape = !!w.welderStamp || !!w.welderId ||
+    !!w.constructionArea || !!w.isometricNumber
+  if (isFacilityShape) {
+    if (!w.welderStamp?.trim() && !w.welderId) missing.push('welder stamp')
+    if (!w.isometricNumber?.trim()) missing.push('isometric number')
+    if (!w.pipeSizeSchedule?.trim()) missing.push('pipe size / schedule')
+    if (!w.pipeGrade?.trim()) missing.push('pipe grade')
+    if (w.designPressurePsi == null) missing.push('design pressure')
+  } else {
+    const passes = [w.rootWelderId, w.hotWelderId, w.fillWelderId, w.capWelderId]
+    const passNames = ['root', 'hot', 'fill', 'cap']
+    passes.forEach((p, i) => { if (!p) missing.push(`${passNames[i]} pass welder`) })
+    if (!w.componentDescription?.trim()) missing.push('component description')
+    if (!w.heatNumbers.length) missing.push('heat numbers')
+  }
+
   if (!w.jointType) missing.push('joint type')
-  if (!w.componentDescription?.trim()) missing.push('component description')
-  if (!w.heatNumbers.length) missing.push('heat numbers')
   if (!w.cwiInitials?.trim()) missing.push('CWI initials')
   if (!w.cwiVisualResult) missing.push('CWI visual result')
 
   // The NDE half of the requirement applies only to welds actually selected
   // for examination — an un-X-rayed joint is not incomplete for lacking a
   // film.
-  if (isXrayed(w)) {
+  // The NDE half applies only where an examination was actually recorded.
+  // On a facility log the ticket number is the evidence, not a separate
+  // report record.
+  if (isXrayed(w) || w.ndtMethod) {
     if (!w.ndtMethod) missing.push('NDT method')
     if (!w.ndtResult) missing.push('NDT result')
-    if (!w.ndtReportId) missing.push('linked NDE report')
+    if (isFacilityShape) {
+      if (!w.ndtTicketNumber?.trim()) missing.push('NDT ticket number')
+    } else if (!w.ndtReportId) {
+      missing.push('linked NDE report')
+    }
   }
   return result(missing)
 }
