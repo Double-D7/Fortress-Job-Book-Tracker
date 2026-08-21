@@ -246,10 +246,34 @@ function scorePersonnelCerts(
   }
 
   const subjectType = (def.linkedRecordType ?? 'welder') as Certificate['subjectType']
+
+  // Personnel are normally discovered from the records they appear on. When
+  // those records are not loaded — a book whose weld log has yet to be
+  // imported — the roster registered against the book is the honest
+  // denominator, and the check degrades from "valid on every work date" to
+  // "on file at all". Scoring zero instead would report a book with nine
+  // filed WPQs as having none.
+  const rosterFallback = subjects.length === 0
+  if (rosterFallback) {
+    const roster: { id: string; label: string }[] =
+      def.linkedRecordType === 'cwi'
+        ? bundle.cwis.map((c) => ({ id: c.id, label: c.initials }))
+        : def.linkedRecordType === 'ndt_technician'
+          ? bundle.ndtTechnicians.map((t) => ({ id: t.id, label: t.fullName }))
+          // A combined crew stamp is not a person and holds no qualification
+        // of its own; the welders behind it hold theirs.
+        : bundle.welders.filter((w) => !w.combinedOf?.length)
+            .map((w) => ({ id: w.id, label: w.initials }))
+    subjects = roster.map((r) => ({ ...r, workDates: [] }))
+  }
   // Covered means: a certificate valid on *every* date this person worked,
   // not merely a certificate on file.
   const covered = subjects.filter((s) =>
-    s.workDates.every((d) => certValidOn(certificates, subjectType, s.id, d) !== null),
+    rosterFallback
+      // No work dates to check against, so the question is only whether a
+      // certificate exists for this person on this book.
+      ? certificates.some((c) => c.subjectType === subjectType && c.subjectId === s.id)
+      : s.workDates.every((d) => certValidOn(certificates, subjectType, s.id, d) !== null),
   )
   const uncovered = subjects.filter((s) => !covered.includes(s))
   // Personnel are discovered from the records they appear on, so before the
@@ -273,7 +297,11 @@ function scorePersonnelCerts(
     explanation: subjects.length === 0
       ? (section.expectedCount
           ? `None of the ${section.expectedCount} expected personnel have appeared on a record yet.`
-          : 'No personnel of this type performed work on this job.')
+          : 'No personnel of this type are registered against this job.')
+      : rosterFallback
+        ? `${covered.length} of ${denom} registered personnel have a certificate on file. No work ` +
+          `dates are loaded, so validity on the day of work has not been checked` +
+          (uncovered.length ? `; missing: ${uncovered.map((s) => s.label).join(', ')}.` : '.')
       : `${covered.length} of ${denom} performed work with a valid-on-the-day certificate` +
         (uncovered.length ? `; gaps: ${uncovered.map((s) => s.label).join(', ')}.` : '.'),
   }
@@ -289,11 +317,16 @@ function scoreEquipmentCerts(
       .filter((x): x is string => !!x),
   )
   const used = [...usedIds]
-  const certified = used.filter((id) => {
-    const w = bundle.torqueWrenches.find((x) => x.wrenchId === id)
-    return !!w?.certOnFile && !!w.lastCalibrationDate
-  })
+  // Section 13 asks one question: is the calibration certificate filed?
+  // Whether it is valid on the day of the work is a different question,
+  // answered by `checkWrenchCalibration` and raised as a critical flag —
+  // conflating them scored a wrench as uncertified merely because nobody
+  // had transcribed a date off the scanned certificate.
+  const certified = used.filter((id) =>
+    !!bundle.torqueWrenches.find((x) => x.wrenchId === id)?.certOnFile)
   const missing = used.filter((id) => !certified.includes(id))
+  const undated = certified.filter((id) =>
+    !bundle.torqueWrenches.find((x) => x.wrenchId === id)?.lastCalibrationDate)
   const denom = scopedDenominator(used.length, section.expectedCount)
 
   return {
@@ -307,6 +340,12 @@ function scoreEquipmentCerts(
       ...(missing.length
         ? [{ label: 'Used without a certificate', numerator: missing.length,
              denominator: used.length, detail: missing.join(', ') }]
+        : []),
+      ...(undated.length
+        ? [{ label: 'Certificate on file but no calibration date recorded',
+             numerator: undated.length, denominator: certified.length,
+             detail: `${undated.join(', ')} — validity on the day of work cannot be checked ` +
+               `until the date is entered.` }]
         : []),
     ],
     explanation: used.length === 0
@@ -484,6 +523,73 @@ function scoreRecords(
             : []),
         ],
         explanation: `${withReading.length} of ${denominator} required CP test points have a baseline reading.`,
+      }
+    }
+    case 'coating_inspection': {
+      // Scored per construction area: the job is divided into areas and
+      // each needs its own coating record. Photographs with no structured
+      // readings count as started, not as done.
+      const areas = bundle.book.constructionAreas ?? []
+      const records = bundle.coatingInspections ?? []
+      const withData = records.filter((r) => r.hasStructuredData)
+      const withAnything = records.filter((r) => r.documentCount > 0 || r.hasStructuredData)
+      const denominator = scopedDenominator(
+        areas.length || records.length, section.expectedCount,
+      )
+      if (denominator === 0) {
+        return {
+          ...base, pct: 0, countsTowardTotal: true,
+          inputs: [{ label: 'Construction areas', numerator: 0, denominator: 1 }],
+          explanation: 'No construction areas defined, so coating coverage cannot be measured.',
+        }
+      }
+      return {
+        ...base, pct: pct(withAnything.length, denominator), countsTowardTotal: true,
+        inputs: [
+          { label: 'Construction areas with a coating record',
+            numerator: withAnything.length, denominator },
+          { label: 'Areas with structured readings rather than photographs only',
+            numerator: withData.length, denominator },
+        ],
+        explanation: `${withAnything.length} of ${denominator} construction areas have a coating ` +
+          `record` +
+          (withAnything.length > withData.length
+            ? `; ${withAnything.length - withData.length} hold photographs with no structured data.`
+            : '.'),
+      }
+    }
+    case 'isometric': {
+      // Sections 21 and 22 are scored against the isometrics the logs
+      // actually reference — the union of both, since a drawing is needed
+      // wherever work happened, not only where welds happened.
+      const fromWelds = new Set(
+        bundle.welds.filter(isCountable)
+          .map((w) => w.isometricNumber?.trim().toUpperCase()).filter(Boolean) as string[],
+      )
+      const fromTorque = new Set(
+        bundle.torqueConnections
+          .map((c) => c.isoNumber?.trim().toUpperCase()).filter(Boolean) as string[],
+      )
+      const union = new Set([...fromWelds, ...fromTorque])
+      const drawings = approvedDocuments(bundle.documents, section.id)
+      const denominator = scopedDenominator(union.size, section.expectedCount)
+      if (denominator === 0) {
+        return {
+          ...base, pct: 0, countsTowardTotal: true,
+          inputs: [{ label: 'Isometrics referenced by the logs', numerator: 0, denominator: 1 }],
+          explanation: 'No isometrics referenced by either log yet.',
+        }
+      }
+      return {
+        ...base, pct: pct(drawings.length, denominator), countsTowardTotal: true,
+        inputs: [
+          { label: 'Drawings on file', numerator: drawings.length, denominator },
+          { label: 'Isometrics referenced by the weld log', numerator: fromWelds.size, denominator: union.size },
+          { label: 'Isometrics referenced by the torque log', numerator: fromTorque.size, denominator: union.size },
+        ],
+        explanation: `${drawings.length} drawings against ${denominator} isometrics referenced ` +
+          `across both logs (${fromWelds.size} from the weld log, ${fromTorque.size} from the ` +
+          `torque log).`,
       }
     }
     case 'ut_reading': {

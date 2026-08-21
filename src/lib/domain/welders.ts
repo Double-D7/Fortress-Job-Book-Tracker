@@ -58,8 +58,18 @@ export function isCountable(w: Weld): boolean {
  * credits two men, once each — never twice for holding two passes.
  */
 export function creditedWelders(w: Weld): string[] {
+  // A facility log records one welder stamp per weld rather than four pass
+  // assignments. Reading whichever shape is populated keeps every rollup,
+  // qualification check and continuity calculation identical across book
+  // types — the alternative is the same logic written twice and drifting.
+  if (w.welderId) return [w.welderId]
   const ids = [w.rootWelderId, w.hotWelderId, w.fillWelderId, w.capWelderId]
   return [...new Set(ids.filter((x): x is string => !!x))]
+}
+
+/** True when this weld uses the facility single-stamp shape. */
+export function isSingleStampWeld(w: Weld): boolean {
+  return !!w.welderId || (!!w.welderStamp && !w.welderPassAssignment)
 }
 
 /**
@@ -68,6 +78,9 @@ export function creditedWelders(w: Weld): string[] {
  * assumption baked into the rollup.
  */
 export function xrayCreditedWelders(w: Weld, rule: JobBook['xrayCreditRule']): string[] {
+  // A single-stamp weld has one welder, so the split-pass credit rule has
+  // nothing to choose between.
+  if (w.welderId) return [w.welderId]
   switch (rule) {
     case 'root_welder': return w.rootWelderId ? [w.rootWelderId] : []
     case 'cap_welder':  return w.capWelderId ? [w.capWelderId] : []

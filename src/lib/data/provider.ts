@@ -15,6 +15,7 @@
 import type { JobBookBundle, UserRole } from '@/lib/domain/types'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { buildDp452Bundle } from './seed/dp452'
+import { buildGreeleyBundle } from './seed/greeley'
 
 export interface JobBookSummary {
   id: string
@@ -24,10 +25,18 @@ export interface JobBookSummary {
   bookType: 'flowline' | 'facility'
   status: string
   overallPct: number
+  /** Distinct findings, not the records behind them. */
   criticalFlags: number
+  criticalRecords: number
   targetTurnoverDate: string | null
+  /** Null when no target is set, and null once the book has been handed
+   *  over — a delivered book cannot be running late. */
   daysToTurnover: number | null
+  turnoverState: 'no_target' | 'delivered' | 'upcoming' | 'overdue'
 }
+
+/** Statuses at or past hand-over. Countdowns stop here. */
+const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
 
 export interface Viewer {
   id: string
@@ -53,7 +62,7 @@ export interface DataProvider {
 
 /** The demo/seed provider. Builds the reference book once per process. */
 class SeedProvider implements DataProvider {
-  private cache: JobBookBundle | null = null
+  private cache: JobBookBundle[] | null = null
   /**
    * Books created through the setup wizard. In-memory and per-process:
    * they survive navigation but not a server restart, which is the right
@@ -64,13 +73,13 @@ class SeedProvider implements DataProvider {
    */
   private created = new Map<string, JobBookBundle>()
 
-  private bundle(): JobBookBundle {
-    if (!this.cache) this.cache = buildDp452Bundle()
+  private seeded(): JobBookBundle[] {
+    if (!this.cache) this.cache = [buildDp452Bundle(), buildGreeleyBundle()]
     return this.cache
   }
 
   private all(): JobBookBundle[] {
-    return [this.bundle(), ...this.created.values()]
+    return [...this.seeded(), ...this.created.values()]
   }
 
   /**
@@ -87,18 +96,24 @@ class SeedProvider implements DataProvider {
 
   async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {
     const { scoreBook } = await import('@/lib/domain/scoring')
-    const { countBySeverity, evaluateFlags } = await import('@/lib/domain/flags')
+    const { aggregateFindings, countBySeverity, evaluateFlags } = await import('@/lib/domain/flags')
     const out: JobBookSummary[] = []
     for (const b of this.all()) {
       if (!this.canSee(viewer, b)) continue
       const score = scoreBook(b)
-      const counts = countBySeverity(evaluateFlags(b))
-      const days = b.book.targetTurnoverDate
+      const counts = countBySeverity(aggregateFindings(evaluateFlags(b)))
+      const delivered = DELIVERED_STATUSES.has(b.book.status)
+      const days = b.book.targetTurnoverDate && !delivered
         ? Math.round(
             (Date.parse(`${b.book.targetTurnoverDate}T00:00:00Z`) -
               Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000,
           )
         : null
+      const turnoverState: JobBookSummary['turnoverState'] =
+        delivered ? 'delivered'
+          : !b.book.targetTurnoverDate ? 'no_target'
+          : (days ?? 0) < 0 ? 'overdue'
+          : 'upcoming'
       out.push({
         id: b.book.id,
         jobNumber: b.book.jobNumber,
@@ -108,8 +123,10 @@ class SeedProvider implements DataProvider {
         status: b.book.status,
         overallPct: score.overallPct,
         criticalFlags: counts.critical,
+        criticalRecords: counts.criticalRecords,
         targetTurnoverDate: b.book.targetTurnoverDate ?? null,
         daysToTurnover: days,
+        turnoverState,
       })
     }
     return out.sort((a, c) => a.jobNumber.localeCompare(c.jobNumber))

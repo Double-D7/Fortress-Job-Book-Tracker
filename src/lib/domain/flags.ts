@@ -17,6 +17,7 @@ import { today } from './dates'
 import { certValidOn, evaluateCert } from './certificates'
 import { checkWrenchCalibration, isInspected, reconcileWrenches, suggestWrenchTypo, torqueTotals, torqueWithinTolerance } from './torque'
 import { creditedWelders, isCountable, isXrayed, qualifiedOn, rollupByWelder } from './welders'
+import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
 import { reconcileCp, reconcileHeats } from './reconcile'
 
 export interface Finding {
@@ -33,29 +34,26 @@ export interface Finding {
 export interface FlagContext {
   /** Evaluation date. Injectable so tests are not time-dependent. */
   asOf?: IsoDate
+  /** Per-job inspection tier rules; defaults to the built-in table. */
+  tierRules?: TierRule[]
 }
 
 const fp = (...parts: (string | number | null | undefined)[]) =>
   parts.filter((p) => p != null && p !== '').join('|')
 
-/** Findings are capped per rule so one systemic problem cannot bury the
- *  rest of the queue; the count of suppressed items is reported instead. */
-const MAX_PER_RULE = 50
+/**
+ * Findings used to be capped per rule, with the overflow thrown away. That
+ * was the wrong answer to volume: a book with 278 future-dated connections
+ * does not have 278 problems, it has one problem 278 times, and a queue
+ * that lists them individually is a queue nobody reads. Rules now return
+ * every occurrence and `aggregateFindings` collapses them into one entry
+ * per rule with the count on the face and the records on drill-down.
+ */
+const cap = <T>(_ruleId: string, findings: T[]): T[] => findings
 
-function cap(ruleId: string, findings: Finding[]): Finding[] {
-  if (findings.length <= MAX_PER_RULE) return findings
-  const shown = findings.slice(0, MAX_PER_RULE)
-  const first = findings[0]!
-  shown.push({
-    ruleId: `${ruleId}.truncated`,
-    severity: first.severity,
-    title: `${findings.length - MAX_PER_RULE} further occurrences not listed individually`,
-    detail: `Rule ${ruleId} matched ${findings.length} records. The first ${MAX_PER_RULE} are listed; ` +
-      `use the record grid filtered to this condition to see the rest.`,
-    fingerprint: fp(ruleId, 'truncated'),
-  })
-  return shown
-}
+/** How many individual records travel with an aggregated finding. Bounds
+ *  the payload without discarding the count. */
+const MAX_RECORDS_PER_GROUP = 200
 
 // ---------------------------------------------------------------------
 // Critical rules
@@ -121,13 +119,19 @@ export function ruleWrenchCalibrationInvalid(b: JobBookBundle): Finding[] {
         detail = `Connection ${c.isoFlangeNumber} was torqued with wrench ${label}; no calibration ` +
           `certificate has been uploaded for it.`
         break
+      case 'no_calibration_date':
+        title = `Wrench ${label}'s certificate carries no recorded calibration date`
+        detail = `Connection ${c.isoFlangeNumber} was torqued with wrench ${label}. Its certificate ` +
+          `is on file, but no calibration date has been entered, so validity on the day of the ` +
+          `work cannot be checked.`
+        break
       default:
         title = `Connection ${c.isoFlangeNumber} records no wrench`
         detail = 'A torque connection must identify the wrench used.'
     }
     out.push({
       ruleId: `torque.wrench_${check.verdict}`,
-      severity: 'critical',
+      severity: check.verdict === 'no_calibration_date' ? 'warning' : 'critical',
       title, detail,
       entityType: 'torque_connection', entityId: c.id, sectionNumber: '13',
       fingerprint: fp(`torque.wrench_${check.verdict}`, c.id, label),
@@ -316,6 +320,154 @@ export function ruleFutureDatedRecords(b: JobBookBundle, ctx: FlagContext = {}):
   return cap('record.future_dated', out)
 }
 
+/**
+ * A weld whose inspection tier requires NDE that it never received.
+ *
+ * This is the facility equivalent of the flowline X-ray percentage rule,
+ * and it is stricter: the obligation is per weld and derived from the pipe,
+ * so it cannot be satisfied by averaging across a job.
+ */
+export function ruleTierNotMet(b: JobBookBundle, rules?: TierRule[]): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.welds) {
+    if (!isCountable(w)) continue
+    const smys = computeSmys({
+      pipeSizeSchedule: w.pipeSizeSchedule,
+      pipeGrade: w.pipeGrade,
+      designPressurePsi: w.designPressurePsi ?? b.book.defaultDesignPressurePsi ?? null,
+    }, rules)
+    if (!tierRequiresNde(smys)) continue
+    if (w.ndtMethod) continue
+    out.push({
+      ruleId: 'weld.tier_not_met',
+      severity: 'critical',
+      title: `Weld ${w.weldNumber} is at ${((smys.pctSmys ?? 0) * 100).toFixed(1)}% SMYS and has no NDE`,
+      detail: `${w.pipeSizeSchedule ?? 'pipe'} ${w.pipeGrade ?? ''} at ` +
+        `${w.designPressurePsi ?? b.book.defaultDesignPressurePsi} psi gives a hoop stress of ` +
+        `${Math.round(smys.hoopStressPsi ?? 0).toLocaleString()} psi, ` +
+        `${((smys.pctSmys ?? 0) * 100).toFixed(2)}% of SMYS. Its tier requires ` +
+        `"${smys.tier}", and no examination is recorded.`,
+      entityType: 'weld', entityId: w.id, sectionNumber: '12',
+      fingerprint: fp('weld.tier_not_met', w.id),
+    })
+  }
+  return out
+}
+
+/** A weld lacking the pipe data its inspection obligation depends on. */
+export function ruleSmysUncomputable(b: JobBookBundle, rules?: TierRule[]): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.welds) {
+    if (!isCountable(w)) continue
+    // Only meaningful on books that carry pipe engineering at all.
+    if (!w.pipeSizeSchedule && !w.pipeGrade && w.designPressurePsi == null) continue
+    const smys = computeSmys({
+      pipeSizeSchedule: w.pipeSizeSchedule,
+      pipeGrade: w.pipeGrade,
+      designPressurePsi: w.designPressurePsi ?? b.book.defaultDesignPressurePsi ?? null,
+    }, rules)
+    if (!smys.uncomputableReason) continue
+    out.push({
+      ruleId: 'weld.smys_uncomputable',
+      severity: 'critical',
+      title: `Weld ${w.weldNumber}: % of SMYS cannot be computed`,
+      detail: `${smys.uncomputableReason}. Without it the weld's required inspection tier is ` +
+        `unknown, so the book cannot show whether it was inspected enough.`,
+      entityType: 'weld', entityId: w.id, sectionNumber: '12',
+      fingerprint: fp('weld.smys_uncomputable', w.id),
+    })
+  }
+  return out
+}
+
+/**
+ * Welds recorded against a combined crew stamp.
+ *
+ * Not a defect in the work — two men on one weld is normal — but it means
+ * those welds cannot be attributed to an individual, so they sit outside
+ * every per-welder percentage the operator audits.
+ */
+export function ruleCombinedStampAttribution(b: JobBookBundle): Finding[] {
+  const combined = b.welders.filter((w) => w.combinedOf?.length)
+  const out: Finding[] = []
+  for (const w of combined) {
+    const n = b.welds.filter((x) => isCountable(x) && x.welderId === w.id).length
+    if (n === 0) continue
+    out.push({
+      ruleId: 'welder.combined_stamp',
+      severity: 'info',
+      title: `${n} weld${n === 1 ? '' : 's'} are stamped to the combined crew ${w.initials}`,
+      detail: `${w.fullName} is a crew stamp covering ${w.combinedOf!.length} welders. Welds under ` +
+        `it cannot be attributed to an individual, so they fall outside each man's inspection ` +
+        `percentage even though both are qualified.`,
+      entityType: 'welder', entityId: w.id, sectionNumber: '12',
+      fingerprint: fp('welder.combined_stamp', w.id),
+    })
+  }
+  return out
+}
+
+/** A weld with no welder stamp cannot be attributed or checked. */
+export function ruleWeldWithoutStamp(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.welds) {
+    if (!isCountable(w)) continue
+    if (creditedWelders(w).length > 0 || w.welderStamp) continue
+    out.push({
+      ruleId: 'weld.no_welder_stamp',
+      severity: 'critical',
+      title: `Weld ${w.weldNumber} has no welder stamp`,
+      detail: `No welder is recorded against this weld, so it cannot be attributed, checked ` +
+        `against a qualification, or counted in any welder's inspection percentage.`,
+      entityType: 'weld', entityId: w.id, sectionNumber: '12',
+      fingerprint: fp('weld.no_welder_stamp', w.id),
+    })
+  }
+  return out
+}
+
+/**
+ * A required section with nothing in it.
+ *
+ * Previously this only surfaced as a zero score on the overview. An empty
+ * required section is a finding in its own right — it is the single most
+ * common reason a turnover package is rejected.
+ */
+export function ruleEmptyRequiredSection(b: JobBookBundle): Finding[] {
+  const defsById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))
+  const out: Finding[] = []
+  for (const s of b.sections) {
+    if (s.status === 'na') continue
+    const def = defsById.get(s.sectionDefinitionId)
+    if (!def || def.weight <= 0 || !def.isRequired) continue
+    const docs = b.documents.filter((d) => d.sectionId === s.id && !d.deletedAt)
+    if (docs.length > 0) continue
+    // Record-backed sections are empty only if they also carry no records.
+    const recordCounts: Record<string, number> = {
+      weld: b.welds.length,
+      torque_connection: b.torqueConnections.length,
+      material_heat: b.materialHeats.length,
+      nde_report: b.ndeReports.length,
+      pressure_test: b.pressureTests.length,
+      cp_test_point: b.cpTestPoints.length,
+      ut_reading: b.utReadings.length,
+      coating_inspection: (b.coatingInspections ?? []).length,
+    }
+    if (def.linkedRecordType && (recordCounts[def.linkedRecordType] ?? 0) > 0) continue
+    out.push({
+      ruleId: 'section.empty_required',
+      severity: 'critical',
+      title: `Section ${def.sectionNumber} · ${def.title} is empty`,
+      detail: `This section is required by the governing checklist and holds no documents or ` +
+        `records. It carries ${def.weight} weight point${def.weight === 1 ? '' : 's'}, and the ` +
+        `book cannot be turned over without it.`,
+      entityType: 'job_book_section', entityId: s.id, sectionNumber: def.sectionNumber,
+      fingerprint: fp('section.empty_required', def.sectionNumber),
+    })
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------
 // Warning rules
 // ---------------------------------------------------------------------
@@ -345,9 +497,16 @@ export function ruleTorqueOutOfTolerance(b: JobBookBundle): Finding[] {
     out.push({
       ruleId: 'torque.out_of_tolerance',
       severity: 'warning',
-      title: `Connection ${c.isoFlangeNumber} torqued to ${c.actualTorqueFtLb} against ${c.requiredTorqueFtLb} ft-lb`,
-      detail: `Actual torque deviates from required by more than the job's ` +
-        `${b.book.torqueTolerancePct}% tolerance.`,
+      title: `Connection ${c.isoFlangeNumber} torqued to ${c.actualTorqueFtLb} ft-lb, ` +
+        `outside ${c.requiredTorqueMinFtLb != null && c.requiredTorqueMaxFtLb != null &&
+          c.requiredTorqueMaxFtLb > c.requiredTorqueMinFtLb
+            ? `${c.requiredTorqueMinFtLb}-${c.requiredTorqueMaxFtLb}`
+            : String(c.requiredTorqueFtLb)}`,
+      detail: c.requiredTorqueMaxFtLb != null && c.requiredTorqueMinFtLb != null &&
+        c.requiredTorqueMaxFtLb > c.requiredTorqueMinFtLb
+          ? `The required torque is a range and the recorded actual falls outside it.`
+          : `Actual torque deviates from required by more than the job's ` +
+            `${b.book.torqueTolerancePct}% tolerance.`,
       entityType: 'torque_connection', entityId: c.id, sectionNumber: '14',
       fingerprint: fp('torque.out_of_tolerance', c.id),
     })
@@ -642,6 +801,10 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...rulePressureTestNoRecorderCert(b),
     ...ruleWrongJobDocument(b),
     ...ruleWelderBelowXrayMinimum(b),
+    ...ruleTierNotMet(b, ctx.tierRules),
+    ...ruleSmysUncomputable(b, ctx.tierRules),
+    ...ruleWeldWithoutStamp(b),
+    ...ruleEmptyRequiredSection(b),
     ...ruleFutureDatedRecords(b, ctx),
     ...ruleInspectionPctBelowMinimum(b),
     ...ruleTorqueOutOfTolerance(b),
@@ -653,6 +816,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleWeldNdeWithoutReport(b),
     ...ruleReportOutsideConstructionWindow(b),
     ...ruleWrenchNotOnRoster(b),
+    ...ruleCombinedStampAttribution(b),
     ...ruleMtrNotReferenced(b),
     ...ruleNonConformingFilename(b),
     ...ruleArchiveUploaded(b),
@@ -667,12 +831,169 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     .sort((a, b2) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b2.severity])
 }
 
-export interface FlagCounts { critical: number; warning: number; info: number; total: number }
+export interface FlagCounts {
+  critical: number
+  warning: number
+  info: number
+  total: number
+  /** Individual records behind those findings. A book can have 4 critical
+   *  findings covering 300 records; both numbers are worth showing, but
+   *  the first is the one a manager acts on. */
+  criticalRecords: number
+  totalRecords: number
+}
 
-export function countBySeverity(findings: Finding[]): FlagCounts {
-  const c: FlagCounts = { critical: 0, warning: 0, info: 0, total: findings.length }
-  for (const f of findings) c[f.severity]++
+export function countBySeverity(findings: (Finding | AggregatedFinding)[]): FlagCounts {
+  const c: FlagCounts = {
+    critical: 0, warning: 0, info: 0, total: findings.length,
+    criticalRecords: 0, totalRecords: 0,
+  }
+  for (const f of findings) {
+    c[f.severity]++
+    const n = 'occurrences' in f ? f.occurrences : 1
+    c.totalRecords += n
+    if (f.severity === 'critical') c.criticalRecords += n
+  }
   return c
+}
+
+// ---------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------
+
+export interface FindingRecord {
+  entityType?: string
+  entityId?: string
+  title: string
+  detail: string
+  fingerprint: string
+}
+
+export interface AggregatedFinding {
+  ruleId: string
+  severity: FlagSeverity
+  /** Reads as one actionable statement — "90 welds at or above 20% SMYS
+   *  have not received their required NDE" — rather than as the first of
+   *  ninety identical lines. */
+  title: string
+  detail: string
+  occurrences: number
+  sectionNumber?: string
+  fingerprint: string
+  records: FindingRecord[]
+  /** True when `records` holds fewer than `occurrences`. */
+  recordsTruncated: boolean
+}
+
+/**
+ * One-line summaries per rule. Written here rather than at each `push`
+ * so the queue's wording lives in one readable place, and so a rule that
+ * fires once and a rule that fires three hundred times read the same way.
+ */
+const RULE_SUMMARIES: Record<string, (n: number, sample: Finding) => string> = {
+  'welder.not_qualified_on_weld_date': (n) =>
+    `${n} weld${n === 1 ? '' : 's'} performed on a date the welder held no valid qualification`,
+  'torque.wrench_not_yet_issued': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} torqued with a wrench whose calibration postdates the work`,
+  'torque.wrench_expired': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} torqued with a wrench whose calibration had expired`,
+  'torque.wrench_no_certificate': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} torqued with a wrench that has no calibration certificate`,
+  'torque.wrench_unknown_wrench': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} record a wrench that appears on no roster`,
+  'torque.wrench_no_wrench_recorded': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} record no wrench at all`,
+  'torque.wrench_no_calibration_date': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} used a wrench whose certificate carries no calibration date`,
+  'torque.out_of_range': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} were torqued outside their required range`,
+  'nde.technician_not_certified_on_report_date': (n) =>
+    `${n} NDE report${n === 1 ? '' : 's'} signed by a technician whose certification did not cover the date`,
+  'material.heat_without_mtr': (n) =>
+    `${n} heat number${n === 1 ? '' : 's'} referenced by welds have no MTR on file`,
+  'pressure.no_valid_recorder_cert': (n) =>
+    `${n} pressure test${n === 1 ? '' : 's'} have no recorder calibration valid on the test date`,
+  'document.wrong_job': (n) =>
+    `${n} document${n === 1 ? '' : 's'} reference a different job`,
+  'document.wrong_job_filename': (n) =>
+    `${n} filename${n === 1 ? '' : 's'} name a job other than this one`,
+  'welder.below_xray_minimum': (n) =>
+    `${n} welder${n === 1 ? '' : 's'} are below the job's required X-ray percentage`,
+  'record.future_dated': (n) =>
+    `${n} record${n === 1 ? '' : 's'} are dated after the log's as-of date`,
+  'weld.tier_not_met': (n) =>
+    `${n} weld${n === 1 ? '' : 's'} have not received the NDE their inspection tier requires`,
+  'weld.smys_uncomputable': (n) =>
+    `${n} weld${n === 1 ? '' : 's'} lack the pipe data needed to compute % of SMYS`,
+  'weld.no_welder_stamp': (n) =>
+    `${n} weld${n === 1 ? '' : 's'} carry no welder stamp`,
+  'torque.out_of_tolerance': (n) =>
+    `${n} connection${n === 1 ? '' : 's'} were torqued outside the required value`,
+  'document.duplicate': (n) =>
+    `${n} set${n === 1 ? '' : 's'} of files share identical content`,
+  'certificate.expiring_soon': (n) =>
+    `${n} certificate${n === 1 ? '' : 's'} expire within the warning window`,
+  'cp.flange_without_test_point': (n) =>
+    `${n} flange${n === 1 ? '' : 's'} marked CP TEST = Y have no test point on file`,
+  'weld.nde_without_report': (n) =>
+    `${n} weld${n === 1 ? '' : 's'} record an examination with no report on file`,
+  'nde.outside_construction_window': (n) =>
+    `${n} NDE report${n === 1 ? '' : 's'} fall outside the construction window`,
+  'material.mtr_not_referenced': (n) =>
+    `${n} MTR${n === 1 ? '' : 's'} on file are referenced by no weld`,
+  'document.filename_normalized': (n) =>
+    `${n} file${n === 1 ? '' : 's'} were renamed to the book's filing convention`,
+  'document.archive_uploaded': (n) =>
+    `${n} archive${n === 1 ? '' : 's'} were uploaded and their contents are not indexed`,
+  'section.empty_required': (n) =>
+    `${n} required section${n === 1 ? '' : 's'} are empty`,
+}
+
+/**
+ * Collapse per-record findings into one entry per rule.
+ *
+ * A rule that fires once keeps its own wording, since "Wrench 1304's
+ * calibration postdates the work" is already the whole story. A rule that
+ * fires many times gets a count-led summary and carries its records for
+ * drill-down.
+ */
+export function aggregateFindings(findings: Finding[]): AggregatedFinding[] {
+  const groups = new Map<string, Finding[]>()
+  for (const f of findings) {
+    const list = groups.get(f.ruleId) ?? []
+    list.push(f)
+    groups.set(f.ruleId, list)
+  }
+
+  const out: AggregatedFinding[] = []
+  for (const [ruleId, items] of groups) {
+    const sample = items[0]!
+    const n = items.length
+    const summarize = RULE_SUMMARIES[ruleId]
+    out.push({
+      ruleId,
+      severity: sample.severity,
+      title: n === 1 || !summarize ? sample.title : summarize(n, sample),
+      detail: n === 1
+        ? sample.detail
+        : `${sample.detail} This is the first of ${n}; open the finding for the full list.`,
+      occurrences: n,
+      sectionNumber: sample.sectionNumber,
+      fingerprint: n === 1 ? sample.fingerprint : fp(ruleId, 'group'),
+      records: items.slice(0, MAX_RECORDS_PER_GROUP).map((f) => ({
+        entityType: f.entityType,
+        entityId: f.entityId,
+        title: f.title,
+        detail: f.detail,
+        fingerprint: f.fingerprint,
+      })),
+      recordsTruncated: n > MAX_RECORDS_PER_GROUP,
+    })
+  }
+
+  return out.sort(
+    (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || b.occurrences - a.occurrences,
+  )
 }
 
 /** Merge freshly-evaluated findings with the flags already stored, so a

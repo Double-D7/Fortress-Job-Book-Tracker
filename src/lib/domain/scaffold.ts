@@ -68,6 +68,12 @@ export interface NewJobBookInput {
   xrayCreditRule?: JobBook['xrayCreditRule']
   scope?: ScopeDeclaration[]
   weldLines?: WeldLineDeclaration[]
+  /** Off-checklist sections this job delivers, by section number. */
+  enabledOptionalSections?: string[]
+  constructionAreas?: string[]
+  businessUnit?: string
+  qaqcRepresentative?: string
+  defaultDesignPressurePsi?: number
   createdBy?: string
 }
 
@@ -177,10 +183,20 @@ export function scaffoldJobBook(
     torqueTolerancePct: input.torqueTolerancePct ?? 5,
     certExpiryWarningDays: input.certExpiryWarningDays ?? 60,
     xrayCreditRule: input.xrayCreditRule ?? 'all_passes',
+    enabledOptionalSections: input.enabledOptionalSections ?? [],
+    constructionAreas: input.constructionAreas ?? [],
+    businessUnit: input.businessUnit ?? null,
+    qaqcRepresentative: input.qaqcRepresentative ?? null,
+    defaultDesignPressurePsi: input.defaultDesignPressurePsi ?? null,
   }
 
+  const enabledOptional = new Set(input.enabledOptionalSections ?? [])
   const sections: JobBookSection[] = sectionDefinitions.map((def) => {
-    const applicable = appliesToBook(def.appliesTo, input.bookType)
+    // An optional section is off unless the job turns it on, and off means
+    // N/A — out of both sides of the division, so a job that does no
+    // coating work is not penalised for having no coating records.
+    const applicable = appliesToBook(def.appliesTo, input.bookType) &&
+      (!def.isOptional || enabledOptional.has(def.sectionNumber))
     const declared = scopeByNumber.get(def.sectionNumber) ?? null
     // A scope of zero is a statement that the section has no work in it,
     // which is what N/A means. Recording it as a zero denominator instead
@@ -192,8 +208,10 @@ export function scaffoldJobBook(
       sectionDefinitionId: def.id,
       status: !applicable || scopedToNothing ? 'na' : 'not_started',
       naReason: !applicable
-        ? `${def.appliesTo === 'facility' ? 'Facility' : 'Flowline'}-only section; not applicable to a ` +
-          `${input.bookType} book.`
+        ? (def.isOptional
+            ? `Off-checklist optional section; not enabled for this job.`
+            : `${def.appliesTo === 'facility' ? 'Facility' : 'Flowline'}-only section; not applicable to a ` +
+              `${input.bookType} book.`)
         : scopedToNothing
           ? 'Scoped to zero at job setup — this job has no work of this kind.'
           : null,

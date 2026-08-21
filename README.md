@@ -11,8 +11,9 @@ Checklist` that governs it.
 ```bash
 npm install
 npm run dev          # http://localhost:3000 — runs on the DP452 reference book
-npm test             # 117 tests, including the §11 acceptance criteria
-npm run seed:verify  # prints the seed's figures against the source brief
+npm test             # 173 tests, including the §11 acceptance criteria
+npm run seed:verify     # DP452 figures against the source brief
+npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
 ```
 
 No database is needed to run or test: the app ships with the DP452
@@ -45,6 +46,42 @@ human opening a folder. Against its own governing checklist it scores
 Run `npm run seed:verify` to see all of it against the source figures.
 
 ---
+
+## Book types
+
+**Flowline** (DP452) and **facility** (Greeley Crescent DP-318) share one
+schema and one scoring engine. A facility book differs in five ways, each
+of them data rather than a branch in code:
+
+- sections 19–22 are active, where a flowline book delivers them as one
+  combined map section; section 23 · Coating Inspection is **optional and
+  off-checklist** — scored when a job enables it, out of the denominator
+  when it does not
+- work is organised by **construction area and equipment tag**, not by line
+- welds carry **one welder stamp**, not four pass assignments
+- required torque is a **range** (`130-260`), so "in spec" is a containment
+  test rather than a percentage tolerance
+- inspection obligation is **derived per weld from pipe engineering**
+  rather than set as a flat job-wide percentage
+
+### The inspection tier
+
+```
+od, wall        ← NPS lookup on (size, schedule)
+hoop_stress     = design_pressure × od / (2 × wall)      -- Barlow, OD basis
+pct_smys        = hoop_stress / SMYS[grade]
+tier            ← the rule table band containing pct_smys
+```
+
+The tier thresholds live in `inspection_tier_rule`, a table, **not in an
+`if` statement** — the 20% SMYS break point is inferred from the DP-318
+weld log rather than quoted from a code clause, and `is_confirmed` is
+false until QA/QC sign off. Moving it to 30% for a different operator is a
+row edit and a recomputation, not a deploy.
+
+Derived values are never stored. Hoop stress, % SMYS and the tier are
+recomputed from the inputs on every read, so changing a design pressure or
+a threshold cannot leave a stale obligation behind in a column.
 
 ## Starting a new job book
 
@@ -161,7 +198,8 @@ usefully, that a table added later cannot skip it.
 Schema, RLS and audit migrations · the complete domain engine · DP452 seed
 reproducing every stated figure · both Excel importers with per-row
 validation and round-trip verification · job book setup with declared
-scope · 14 screens on the dark theme · 117 tests.
+scope · facility book support with the SMYS inspection-tier engine · 14
+screens on the dark theme · 173 tests.
 
 **Scaffolded, not implemented** — these are UI and wiring, with no engine
 behind them yet:

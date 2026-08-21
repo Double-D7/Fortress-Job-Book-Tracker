@@ -66,19 +66,25 @@ export default async function PortfolioPage() {
                   <ProgressBar value={b.overallPct} tone={bandTone(b.overallPct)} />
                 </div>
 
-                <div className="mt-3 flex items-center justify-between text-2xs">
-                  <span className="inline-flex items-center gap-1.5 text-status-critical">
+                <div className="mt-3 flex items-center justify-between gap-2 text-2xs">
+                  <span className={`inline-flex items-center gap-1.5 ${
+                    b.criticalFlags ? 'text-status-critical' : 'text-ink-muted'}`}>
                     <AlertTriangle size={12} />
                     {num(b.criticalFlags)} critical
+                    {b.criticalRecords > b.criticalFlags && (
+                      <span className="text-ink-muted">
+                        ({num(b.criticalRecords)} records)
+                      </span>
+                    )}
                   </span>
-                  {b.daysToTurnover !== null && (
-                    <span className="inline-flex items-center gap-1.5 text-ink-muted">
-                      <CalendarClock size={12} />
-                      {b.daysToTurnover < 0
-                        ? `${num(Math.abs(b.daysToTurnover))} days past target`
-                        : `${num(b.daysToTurnover)} days to turnover`}
-                    </span>
-                  )}
+                  <span className="inline-flex items-center gap-1.5 text-ink-muted">
+                    <CalendarClock size={12} />
+                    {b.turnoverState === 'delivered' ? 'Delivered'
+                      : b.turnoverState === 'no_target' ? 'No target set'
+                      : b.daysToTurnover! < 0
+                        ? `${num(Math.abs(b.daysToTurnover!))} days past target`
+                        : `${num(b.daysToTurnover!)} days to turnover`}
+                  </span>
                 </div>
               </Card>
             </Link>

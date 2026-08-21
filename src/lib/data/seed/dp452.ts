@@ -173,7 +173,10 @@ export function buildDp452Bundle(): JobBookBundle {
     pipeSchedule: '80',
     pipeGrade: 'X42',
     status: 'ready_for_review',
-    targetTurnoverDate: '2025-03-31',
+    // The delivered book records no target turnover date, so neither does
+    // this. An invented one made a book that shipped in early 2025 read as
+    // hundreds of days overdue.
+    targetTurnoverDate: null,
     constructionStart: '2024-05-01',
     constructionEnd: '2025-02-28',
     // The field logs were closed against this date. Records dated after it

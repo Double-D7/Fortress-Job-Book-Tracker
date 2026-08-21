@@ -1,0 +1,468 @@
+{
+  "job": {
+    "code": "DP-318",
+    "name": "Greeley Crescent Facility",
+    "book_type": "facility",
+    "client_org": "Chevron",
+    "business_unit": "Chevron DJBU",
+    "operator_pic": "Scott Green",
+    "qaqc_representative": "Antonio Brito",
+    "construction_company": "Fortress DS",
+    "project_type": "FACILITY",
+    "status": "in_progress",
+    "work_period": {
+      "first_weld": "2025-09-30",
+      "last_activity": "2026-06-05"
+    },
+    "governing_checklist": "Facility/Flow Line Job Book Checklist (22 items) \u2014 identical to DP452",
+    "piping_spec": "DJBU-GL-RBU-PIP-SPC-0001 COMBINE 2025 Rev16"
+  },
+  "expected_overall_score_pct": 59.1,
+  "note_on_score": "Computed with the SPEC.md \u00a75.3b facility weights (sum 100). Sections 1 and 11 carry weight 0 (generated / derived) and are excluded from the denominator.",
+  "welds": {
+    "total": 1259,
+    "field_complete": 1226,
+    "fully_complete_incl_tier": 1136,
+    "by_type": {
+      "Butt": 1074,
+      "O-Let": 174,
+      "Socket": 11
+    },
+    "by_grade": {
+      "Gr. B": 1257,
+      "(missing)": 2
+    },
+    "nde_examined": 221,
+    "nde_by_method": {
+      "RT": 194,
+      "PT": 27
+    },
+    "nde_pct": 17.6,
+    "all_nde_have_ticket_and_result": true,
+    "cwi_results": {
+      "Pass": 1259,
+      "Fail": 0
+    },
+    "smys": {
+      "below_20pct": 1065,
+      "at_or_above_20pct": 166,
+      "max_pct": 56.63,
+      "uncomputable": 2
+    },
+    "tier_required": 166,
+    "tier_met": 76,
+    "tier_shortfall": 90,
+    "welds_without_welder_stamp": 3,
+    "unique_isometrics_referenced": 133,
+    "pressure_tests_referenced": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      27
+    ]
+  },
+  "welders": [
+    {
+      "stamp": "KT",
+      "name": "Keith Taylor",
+      "welds": 378,
+      "nde": 69,
+      "wpq_expires": "2025-12-30"
+    },
+    {
+      "stamp": "MR",
+      "name": "Miguel Rodriguez",
+      "welds": 246,
+      "nde": 38,
+      "wpq_expires": "2026-07-09"
+    },
+    {
+      "stamp": "LC",
+      "name": "Leonel Carbajal",
+      "welds": 176,
+      "nde": 32,
+      "wpq_expires": "2026-02-07"
+    },
+    {
+      "stamp": "MH",
+      "name": "Mitch Hoffman",
+      "welds": 159,
+      "nde": 33,
+      "wpq_expires": "2026-03-14"
+    },
+    {
+      "stamp": "TW3",
+      "name": "Tyler Walker",
+      "welds": 128,
+      "nde": 24,
+      "wpq_expires": "2026-11-07"
+    },
+    {
+      "stamp": "JAP",
+      "name": "Jose Paredes",
+      "welds": 83,
+      "nde": 12,
+      "wpq_expires": "2026-09-24"
+    },
+    {
+      "stamp": "JP",
+      "name": "Joshua Pearman",
+      "welds": 41,
+      "nde": 6,
+      "wpq_expires": "2026-10-22"
+    },
+    {
+      "stamp": "MR LC",
+      "name": "Miguel Rodriguez + Leonel Carbajal (combined stamp)",
+      "welds": 27,
+      "nde": 3,
+      "wpq_expires": null
+    },
+    {
+      "stamp": "EC",
+      "name": "Evan Claver",
+      "welds": 17,
+      "nde": 3,
+      "wpq_expires": "2026-07-15"
+    },
+    {
+      "stamp": "AG",
+      "name": "Alex Guzman",
+      "welds": 1,
+      "nde": 1,
+      "wpq_expires": "2026-10-15"
+    },
+    {
+      "stamp": null,
+      "name": "(no stamp recorded)",
+      "welds": 3,
+      "nde": 0,
+      "wpq_expires": null
+    }
+  ],
+  "cwis": [
+    "Alex Emig",
+    "Wallace K. Kidd (listed as 'Kole Kid' on the weld log roster)"
+  ],
+  "ndt_technicians": [
+    "Blerint Mulliqi",
+    "Brendan LeCompte",
+    "David Castenada",
+    "Jose Flores"
+  ],
+  "torque": {
+    "total_connections": 718,
+    "field_complete": 716,
+    "missing_actual_torque": 2,
+    "inspected_rows": 211,
+    "inspected_per_log_header": 205,
+    "inspection_pct": 29.4,
+    "required_torque_is_range": true,
+    "wrench_ids_used": {
+      "5155": 287,
+      "5125": 85,
+      "0480": 74,
+      "0218": 63,
+      "4463": 59,
+      "0216": 45,
+      "0808": 39,
+      "0719": 28,
+      "5123": 20,
+      "9125": 18
+    },
+    "wrench_certs_on_file": [
+      "0808",
+      "1583",
+      "3282",
+      "5155",
+      "9125",
+      "5125"
+    ],
+    "wrenches_used_without_cert": [
+      "0216",
+      "0218",
+      "0480",
+      "0719",
+      "4463",
+      "5123"
+    ],
+    "connections_on_uncertified_wrenches": 289,
+    "certs_for_unused_wrenches": [
+      "1583",
+      "3282"
+    ],
+    "unique_isometrics_referenced": 196
+  },
+  "materials": {
+    "heats_recorded": 165,
+    "mtr_found": 161,
+    "mtr_missing": 4,
+    "template_slots": 560,
+    "note": "The facility weld log has no heat number column, so the denominator cannot be reconciled against welds."
+  },
+  "isometrics": {
+    "referenced_by_weld_log": 133,
+    "referenced_by_torque_log": 196,
+    "union_total": 244,
+    "section_21_drawings": 131,
+    "section_22_drawings": 87,
+    "section_22_gap": 44,
+    "note": "Union of both logs is the proposed denominator for sections 21/22 and needs QA/QC confirmation \u2014 some threaded lines may not require a drawing in both sections."
+  },
+  "pressure_tests": {
+    "referenced_by_welds": 22,
+    "folders_on_disk": 21,
+    "with_result_document": 8,
+    "certs_only_no_result": 13,
+    "zip_only": [
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "sequence_gap": [
+      22,
+      23,
+      24,
+      25,
+      26
+    ],
+    "note": "Weld log references tests 0-14,16-21,27. Folder tree holds 1-21,27. The two disagree about test 15."
+  },
+  "coating": {
+    "areas_total": 14,
+    "areas_with_records": 1,
+    "area": "8400",
+    "records": "2 photographs, no structured data",
+    "note": "Section 23 is off-checklist and optional. Enable per job."
+  },
+  "construction_areas": [
+    "2100",
+    "2200",
+    "2400",
+    "3100",
+    "3400",
+    "4100",
+    "7200",
+    "8000",
+    "8400",
+    "9070",
+    "9400",
+    "9500",
+    "9600",
+    "REDLINE"
+  ],
+  "sections": [
+    {
+      "n": 1,
+      "title": "Job Book Checklist",
+      "weight": 0,
+      "score_pct": null,
+      "basis": "generated by the app"
+    },
+    {
+      "n": 2,
+      "title": "Facility Overview",
+      "weight": 2,
+      "score_pct": 0,
+      "basis": "0 of 1 document \u2014 the only file is a copy of the weld log PDF"
+    },
+    {
+      "n": 3,
+      "title": "Operator Piping Specification",
+      "weight": 0.5,
+      "score_pct": 100,
+      "basis": "1 of 1 \u2014 Chevron Rev 16"
+    },
+    {
+      "n": 4,
+      "title": "Welding Procedure Specification",
+      "weight": 0.25,
+      "score_pct": 100,
+      "basis": "1 of 1"
+    },
+    {
+      "n": 5,
+      "title": "Welding Procedure Qualification Record",
+      "weight": 0.25,
+      "score_pct": 0,
+      "basis": "0 of 1 \u2014 file duplicates the Section 4 WPS"
+    },
+    {
+      "n": 6,
+      "title": "Welder Performance Qualifications",
+      "weight": 3,
+      "score_pct": 100,
+      "basis": "9 of 9 welders certified"
+    },
+    {
+      "n": 7,
+      "title": "CWI Credentials",
+      "weight": 0.5,
+      "score_pct": 100,
+      "basis": "2 of 2"
+    },
+    {
+      "n": 8,
+      "title": "NDT Technician Credentials",
+      "weight": 1,
+      "score_pct": 100,
+      "basis": "4 of 4"
+    },
+    {
+      "n": 9,
+      "title": "NDT Procedures",
+      "weight": 0.5,
+      "score_pct": 100,
+      "basis": "3 of 3 \u2014 MT, PT, RT"
+    },
+    {
+      "n": 10,
+      "title": "NDT Job Logs and Films",
+      "weight": 7,
+      "score_pct": 100,
+      "basis": "221 of 221 NDE welds have ticket and result"
+    },
+    {
+      "n": 11,
+      "title": "Weld Log Overview Sheet",
+      "weight": 0,
+      "score_pct": null,
+      "basis": "derived from Section 12"
+    },
+    {
+      "n": 12,
+      "title": "Detailed Weld Log",
+      "weight": 14,
+      "score_pct": 90.2,
+      "basis": "1,136 of 1,259 welds complete and meeting tier"
+    },
+    {
+      "n": 13,
+      "title": "Torque Wrench Calibration Certificates",
+      "weight": 3,
+      "score_pct": 40.0,
+      "basis": "4 of 10 wrenches used have certs"
+    },
+    {
+      "n": 14,
+      "title": "Detailed Torque Log",
+      "weight": 8,
+      "score_pct": 99.7,
+      "basis": "716 of 718 connections complete"
+    },
+    {
+      "n": 15,
+      "title": "Material Test Reports",
+      "weight": 12,
+      "score_pct": 97.6,
+      "basis": "161 of 165 recorded heats have MTRs"
+    },
+    {
+      "n": 16,
+      "title": "Pressure Testing Procedure",
+      "weight": 1,
+      "score_pct": 0,
+      "basis": "section empty"
+    },
+    {
+      "n": 17,
+      "title": "Pressure Testing Results",
+      "weight": 10,
+      "score_pct": 36.4,
+      "basis": "8 of 22 referenced tests have results"
+    },
+    {
+      "n": 18,
+      "title": "Cathodic Protection Testing",
+      "weight": 4,
+      "score_pct": 0,
+      "basis": "section empty"
+    },
+    {
+      "n": 19,
+      "title": "Ultrasonic Testing Baselines",
+      "weight": 4,
+      "score_pct": 0,
+      "basis": "section empty"
+    },
+    {
+      "n": 20,
+      "title": "As-Built P&IDs",
+      "weight": 5,
+      "score_pct": 0,
+      "basis": "0 of 1 \u2014 drawing is stamped IFR, not As-Built"
+    },
+    {
+      "n": 21,
+      "title": "Isometric Weld and X-Ray Map",
+      "weight": 10,
+      "score_pct": 53.7,
+      "basis": "131 of 244 isometrics"
+    },
+    {
+      "n": 22,
+      "title": "Isometric Heat Number and Torque Map",
+      "weight": 10,
+      "score_pct": 35.7,
+      "basis": "87 of 244 isometrics"
+    },
+    {
+      "n": 23,
+      "title": "Coating Inspection",
+      "weight": 4,
+      "score_pct": 7.1,
+      "basis": "1 of 14 construction areas \u2014 optional, enabled"
+    }
+  ],
+  "expected_flags": {
+    "critical": [
+      "289 of 718 torque connections used a wrench with no calibration certificate (0216, 0218, 0480, 0719, 4463, 5123)",
+      "90 welds at or above 20% SMYS have not received their required NDE (166 required, 76 done)",
+      "Sections 16, 18 and 19 are empty",
+      "3 welds have no welder stamp; 2 have no pipe grade so % of SMYS cannot be computed"
+    ],
+    "warning": [
+      "Section 20 holds an IFR drawing in an As-Built section",
+      "Section 5 PQR duplicates the Section 4 WPS",
+      "Section 22 covers 44 fewer isometrics than Section 21",
+      "13 of 21 populated pressure test folders hold certs but no result document",
+      "Section 2 contains a copy of the weld log instead of a facility overview",
+      "Keith Taylor WPQ expires 2025-12-30 and the job runs into 2026"
+    ],
+    "info": [
+      "All 1,259 CWI visual inspections recorded Pass",
+      "Torque log header reads 205 inspected; 211 rows carry an inspection date",
+      "Weld log and folder tree disagree about pressure test 15",
+      "Heat register denominator unverifiable \u2014 weld log has no heat number column",
+      "Wrench certificates 1583 and 3282 on file for wrenches never used"
+    ]
+  },
+  "source_files": {
+    "root": "OneDrive - Gusher Oil Field Services/05 - Projects/Fortress Job Book Tracker/1. Greeley Crescent Job book",
+    "weld_log": "12. Detailed Weld Log/DP-318 Weld Log UPDATED 6.16.xlsm  (sheet 'Weld Log', Excel Table1, range B3:U1322)",
+    "torque_log": "14. Detailed Torque Log/DP-318 Detail Torque Log Revised.xlsx  (sheet 'Torque Log', header row 17)",
+    "heat_tracker": "15. Material Test Reports/Heat Number Tracker.xlsx  (sheet 'Sheet1')",
+    "pressure_hold_data": "17. .../Testing Times and Pressures.xlsx",
+    "checklist": "1. Job Book Checklist/JOB BOOK CHECK LIST.pdf"
+  }
+}

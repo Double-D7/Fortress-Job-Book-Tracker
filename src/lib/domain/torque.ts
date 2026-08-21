@@ -45,6 +45,7 @@ export type WrenchCalibrationVerdict =
   | 'no_wrench_recorded'
   | 'unknown_wrench'      // id on the row matches no managed wrench
   | 'no_certificate'      // wrench exists, no calibration cert on file
+  | 'no_calibration_date' // cert is on file but carries no usable date
   | 'expired'             // cert lapsed before the work
   | 'not_yet_issued'      // cert dated after the work it certifies
   | 'no_torque_date'      // cannot evaluate
@@ -85,7 +86,11 @@ export function checkWrenchCalibration(
   const to = wrench.calibrationDueDate ?? null
   const withDates = { ...base, calibrationFrom: from, calibrationTo: to }
 
-  if (!wrench.certOnFile || !from) return { ...withDates, verdict: 'no_certificate' }
+  // Two different problems, and conflating them overstates the first: a
+  // missing certificate is a compliance failure, while a certificate on
+  // file whose date nobody has transcribed is a data-entry gap.
+  if (!wrench.certOnFile) return { ...withDates, verdict: 'no_certificate' }
+  if (!from) return { ...withDates, verdict: 'no_calibration_date' }
   if (!c.torqueDate) return { ...withDates, verdict: 'no_torque_date' }
   if (c.torqueDate < from) return { ...withDates, verdict: 'not_yet_issued' }
   if (to && c.torqueDate > to) return { ...withDates, verdict: 'expired' }
@@ -102,10 +107,21 @@ export function torqueWithinTolerance(
   c: TorqueConnection,
   tolerancePct: number,
 ): boolean | null {
-  if (c.requiredTorqueFtLb == null || c.actualTorqueFtLb == null) return null
-  if (c.requiredTorqueFtLb === 0) return c.actualTorqueFtLb === 0
-  const deviation = Math.abs(c.actualTorqueFtLb - c.requiredTorqueFtLb) / c.requiredTorqueFtLb
-  return deviation * 100 <= tolerancePct
+  if (c.actualTorqueFtLb == null) return null
+
+  // A facility log specifies a range (130-260 ft-lb), and anything inside
+  // it is in spec. Measuring a range against a percentage tolerance from
+  // its own minimum flagged almost every connection in the Greeley book —
+  // 710 of 718 — which is the signature of a wrong question, not of a
+  // catastrophically mis-torqued facility.
+  const min = c.requiredTorqueMinFtLb ?? c.requiredTorqueFtLb
+  const max = c.requiredTorqueMaxFtLb ?? c.requiredTorqueFtLb
+  if (min == null || max == null) return null
+  if (max > min) return c.actualTorqueFtLb >= min && c.actualTorqueFtLb <= max
+
+  // A point value keeps the percentage tolerance.
+  if (min === 0) return c.actualTorqueFtLb === 0
+  return (Math.abs(c.actualTorqueFtLb - min) / min) * 100 <= tolerancePct
 }
 
 export interface WrenchReconciliation {

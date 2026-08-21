@@ -12,7 +12,7 @@ import { notFound } from 'next/navigation'
 import { AlertTriangle, Info, TriangleAlert } from 'lucide-react'
 import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
 import { scoreBook, weightLoss } from '@/lib/domain/scoring'
-import { countBySeverity, evaluateFlags } from '@/lib/domain/flags'
+import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { xrayTotals } from '@/lib/domain/welders'
 import { torqueTotals } from '@/lib/domain/torque'
 import { reconcileHeats } from '@/lib/domain/reconcile'
@@ -37,7 +37,7 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
   if (!b) notFound()
 
   const score = scoreBook(b)
-  const flags = countBySeverity(evaluateFlags(b))
+  const flags = countBySeverity(aggregateFindings(evaluateFlags(b)))
   const xray = xrayTotals(b.welds, b.book, b.welders)
   const torque = torqueTotals(b.torqueConnections, b.book)
   const heats = reconcileHeats(b.welds, b.materialHeats)
@@ -64,6 +64,10 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
             <FlagRow icon={<AlertTriangle size={13} />} tone="critical" label="Critical" n={flags.critical} bookId={bookId} />
             <FlagRow icon={<TriangleAlert size={13} />} tone="progress" label="Warning" n={flags.warning} bookId={bookId} />
             <FlagRow icon={<Info size={13} />} tone="info" label="Info" n={flags.info} bookId={bookId} />
+            <p className="pt-1 text-2xs leading-relaxed text-ink-muted">
+              Findings, not records — one recurring problem is one finding. They cover{' '}
+              {num(flags.totalRecords)} record{flags.totalRecords === 1 ? '' : 's'} in total.
+            </p>
           </CardBody>
         </Card>
 

@@ -14,7 +14,7 @@
  */
 import { useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, Info, TriangleAlert } from 'lucide-react'
-import type { Finding } from '@/lib/domain/flags'
+import type { AggregatedFinding } from '@/lib/domain/flags'
 import type { FlagSeverity } from '@/lib/domain/types'
 import { Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState } from '@/components/ui/primitives'
 import { cn, num } from '@/lib/utils'
@@ -28,28 +28,19 @@ const SEVERITY_META: Record<FlagSeverity, { tone: 'critical' | 'progress' | 'inf
 export function FlagQueue({
   findings, counts, initialSeverity,
 }: {
-  findings: Finding[]
-  counts: { critical: number; warning: number; info: number; total: number }
+  findings: AggregatedFinding[]
+  counts: { critical: number; warning: number; info: number; total: number; totalRecords: number }
   initialSeverity: FlagSeverity | 'all'
 }) {
   const [severity, setSeverity] = useState<FlagSeverity | 'all'>(initialSeverity)
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  const groups = useMemo(() => {
-    const map = new Map<string, { ruleId: string; severity: FlagSeverity; items: Finding[] }>()
-    for (const f of findings) {
-      if (severity !== 'all' && f.severity !== severity) continue
-      // Truncation notices belong with the rule they summarize.
-      const key = f.ruleId.replace(/\.truncated$/, '')
-      const g = map.get(key) ?? { ruleId: key, severity: f.severity, items: [] }
-      g.items.push(f)
-      map.set(key, g)
-    }
-    const order: Record<FlagSeverity, number> = { critical: 0, warning: 1, info: 2 }
-    return [...map.values()].sort(
-      (a, b) => order[a.severity] - order[b.severity] || b.items.length - a.items.length,
-    )
-  }, [findings, severity])
+  // Findings arrive already aggregated by rule from the domain, so the
+  // queue shows one row per problem rather than one per record.
+  const groups = useMemo(
+    () => findings.filter((f) => severity === 'all' || f.severity === severity),
+    [findings, severity],
+  )
 
   return (
     <div className="space-y-4">
@@ -72,6 +63,10 @@ export function FlagQueue({
             </span>
           </button>
         ))}
+        <span className="ml-auto text-2xs text-ink-muted">
+          {num(counts.total)} finding{counts.total === 1 ? '' : 's'} across{' '}
+          {num(counts.totalRecords)} record{counts.totalRecords === 1 ? '' : 's'}
+        </span>
       </div>
 
       {groups.length === 0 ? (
@@ -81,46 +76,54 @@ export function FlagQueue({
           {groups.map((g) => {
             const meta = SEVERITY_META[g.severity]
             const open = expanded === g.ruleId
-            const first = g.items[0]!
             return (
               <Card key={g.ruleId}>
                 <CardHeader className="flex flex-wrap items-center gap-2">
                   <Chip tone={meta.tone} icon={meta.icon}>{meta.label}</Chip>
-                  <CardTitle className="mr-auto">{first.title}</CardTitle>
-                  {first.sectionNumber && (
-                    <Chip tone="idle">Section {first.sectionNumber}</Chip>
+                  <CardTitle className="mr-auto">{g.title}</CardTitle>
+                  {g.sectionNumber && <Chip tone="idle">Section {g.sectionNumber}</Chip>}
+                  {g.occurrences > 1 && (
+                    <span className="tnum text-xs text-ink-muted">
+                      {num(g.occurrences)} records
+                    </span>
                   )}
-                  <span className="tnum text-xs text-ink-muted">
-                    {num(g.items.length)} record{g.items.length === 1 ? '' : 's'}
-                  </span>
                   <Button
                     variant="ghost"
                     onClick={() => setExpanded(open ? null : g.ruleId)}
                     aria-expanded={open}
+                    disabled={g.occurrences === 1}
                   >
                     <ChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} />
-                    {open ? 'Hide' : 'Show'}
+                    {open ? 'Hide' : g.occurrences === 1 ? '' : 'Show records'}
                   </Button>
                 </CardHeader>
                 <CardBody className="space-y-3">
-                  <p className="text-xs leading-relaxed text-ink-secondary">{first.detail}</p>
+                  <p className="text-xs leading-relaxed text-ink-secondary">{g.detail}</p>
                   <p className="font-mono text-2xs text-ink-muted">{g.ruleId}</p>
 
                   {open && (
-                    <ul className="divide-y divide-hairline/60 rounded-md border border-hairline">
-                      {g.items.slice(0, 200).map((f) => (
-                        <li key={f.fingerprint} className="px-3 py-2">
-                          <div className="text-xs text-ink">{f.title}</div>
-                          <div className="mt-0.5 text-2xs leading-relaxed text-ink-muted">{f.detail}</div>
-                          {f.entityType && (
-                            <div className="mt-1 font-mono text-2xs text-ink-muted">
-                              {f.entityType}
-                              {f.entityId ? ` · ${f.entityId}` : ''}
-                            </div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <ul className="max-h-96 divide-y divide-hairline/60 overflow-y-auto rounded-md border border-hairline">
+                        {g.records.map((f) => (
+                          <li key={f.fingerprint} className="px-3 py-2">
+                            <div className="text-xs text-ink">{f.title}</div>
+                            <div className="mt-0.5 text-2xs leading-relaxed text-ink-muted">{f.detail}</div>
+                            {f.entityType && (
+                              <div className="mt-1 font-mono text-2xs text-ink-muted">
+                                {f.entityType}
+                                {f.entityId ? ` · ${f.entityId}` : ''}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      {g.recordsTruncated && (
+                        <p className="text-2xs text-ink-muted">
+                          Showing {num(g.records.length)} of {num(g.occurrences)} records. Filter the
+                          record grid to this condition for the rest.
+                        </p>
+                      )}
+                    </>
                   )}
 
                   <div className="flex flex-wrap items-center gap-2 pt-1">

@@ -78,6 +78,18 @@ export interface JobBook {
   torqueTolerancePct: number
   certExpiryWarningDays: number
   xrayCreditRule: 'all_passes' | 'root_welder' | 'cap_welder'
+  /** Section numbers of off-checklist optional sections enabled for this
+   *  job. An optional section not listed here is marked N/A. */
+  enabledOptionalSections?: string[]
+  /** Facility: design pressure used for the tier calculation where a weld
+   *  does not carry its own. */
+  defaultDesignPressurePsi?: number | null
+  /** Business unit as printed on the log header (e.g. "Chevron DJBU"). */
+  businessUnit?: string | null
+  qaqcRepresentative?: string | null
+  /** Facility: the construction areas the job is divided into. The
+   *  denominator for per-area sections such as coating inspection. */
+  constructionAreas?: string[]
 }
 
 export interface SectionDefinition {
@@ -95,6 +107,13 @@ export interface SectionDefinition {
   linkedRecordType?: string | null
   isRequired: boolean
   isSupplemental: boolean
+  /**
+   * Off the governing checklist but scored when a job enables it — the
+   * Greeley book's section 23 · Coating Inspection. Distinct from
+   * supplemental, which is never scored: an optional section carries real
+   * weight when enabled, and leaves the denominator entirely when not.
+   */
+  isOptional: boolean
   notes?: string | null
 }
 
@@ -159,6 +178,13 @@ export interface Welder {
   /** Misspellings observed in source logs, so an import resolves to one
    *  person instead of minting a new welder per typo. */
   nameAliases: string[]
+  /**
+   * When a stamp represents a two-man crew rather than a person — the
+   * Greeley log's `MR LC` — the welders it stands for. Such a stamp needs
+   * no qualification of its own, because its members hold theirs, but it
+   * also means the welds under it cannot be attributed to one man.
+   */
+  combinedOf?: string[]
 }
 
 export interface WelderQualification {
@@ -213,8 +239,16 @@ export interface Certificate {
 export interface WeldLine {
   id: string
   jobBookId: string
+  /**
+   * Flowline: the line code (FL1, FWT). Facility: the construction area
+   * (2100, 8400, REDLINE). One grouping entity, because everything that
+   * consumes it — the grid's selector, the per-group rollups — asks the
+   * same question either way.
+   */
   lineCode: string
   lineDescription?: string | null
+  /** 'line' for flowline books, 'construction_area' for facility books. */
+  groupingKind?: 'line' | 'construction_area'
   workbook?: string | null
   wellName?: string | null
   drillPadName?: string | null
@@ -239,12 +273,21 @@ export interface Weld {
   weldNumber: string
   sortOrder: number
   weldDate?: IsoDate | null
-  /** As printed, e.g. `HS2/HS2/CT/CT` — Root/Hot/Fill/Cap. */
+  /**
+   * Flowline books record four pass assignments, e.g. `HS2/HS2/CT/CT` —
+   * Root/Hot/Fill/Cap. Facility books record a single welder stamp per
+   * weld instead. Both shapes live here; `creditedWelders` reads whichever
+   * is populated, so the rollups do not branch on book type.
+   */
   welderPassAssignment?: string | null
   rootWelderId?: string | null
   hotWelderId?: string | null
   fillWelderId?: string | null
   capWelderId?: string | null
+  /** Facility: the welder stamp exactly as written on the log. */
+  welderStamp?: string | null
+  /** Facility: the stamp resolved to a managed welder. */
+  welderId?: string | null
   jointType?: JointType | null
   componentDescription?: string | null
   partLength?: string | null
@@ -263,6 +306,23 @@ export interface Weld {
   status: WeldStatus
   /** Internal only. */
   comments?: string | null
+
+  // ---- Facility books ---------------------------------------------------
+  /** Work is organised by construction area and equipment tag, not by line. */
+  constructionArea?: string | null
+  equipmentTag?: string | null
+  /** The isometric this weld appears on; the denominator for sections 21/22. */
+  isometricNumber?: string | null
+  /** Which pressure test pack covers this weld. */
+  pressureTestRef?: string | null
+  /**
+   * Inputs to the inspection-tier calculation. A facility weld log derives
+   * its NDE obligation from pipe engineering rather than a flat job-wide
+   * percentage, so these are per-weld rather than per-book.
+   */
+  pipeSizeSchedule?: string | null
+  pipeGrade?: string | null
+  designPressurePsi?: number | null
 }
 
 export interface TorqueConnection {
@@ -273,7 +333,13 @@ export interface TorqueConnection {
   flangePipeSize?: string | null
   boltDiameter?: string | null
   boltCount?: number | null
+  /** Point value, or the minimum of a range. Kept for flowline books and
+   *  for anything that wants a single number. */
   requiredTorqueFtLb?: number | null
+  /** Facility logs specify a range (`130-260`). A point value sets both
+   *  bounds, so "within spec" is one containment test either way. */
+  requiredTorqueMinFtLb?: number | null
+  requiredTorqueMaxFtLb?: number | null
   actualTorqueFtLb?: number | null
   wrenchId?: string | null
   /** The wrench identifier exactly as recorded, before resolution against
@@ -379,6 +445,19 @@ export interface UtReading {
   technicianId?: string | null
 }
 
+/** Coating inspection record, one per construction area (section 23). */
+export interface CoatingInspection {
+  id: string
+  jobBookId: string
+  constructionArea: string
+  inspectionDate?: IsoDate | null
+  inspector?: string | null
+  /** Structured readings, as opposed to photographs filed with no data. */
+  hasStructuredData: boolean
+  documentCount: number
+  notes?: string | null
+}
+
 export interface ComplianceFlag {
   id: string
   jobBookId: string
@@ -422,4 +501,5 @@ export interface JobBookBundle {
   pressureTests: PressureTest[]
   cpTestPoints: CpTestPoint[]
   utReadings: UtReading[]
+  coatingInspections?: CoatingInspection[]
 }

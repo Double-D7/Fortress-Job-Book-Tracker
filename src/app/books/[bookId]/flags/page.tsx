@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
-import { countBySeverity, evaluateFlags } from '@/lib/domain/flags'
+import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { FlagQueue } from '@/components/FlagQueue'
 
 export const dynamic = 'force-dynamic'
@@ -16,7 +16,7 @@ export default async function FlagsPage({
   const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
   if (!b) notFound()
 
-  const findings = evaluateFlags(b)
+  const findings = aggregateFindings(evaluateFlags(b))
   return (
     <FlagQueue
       findings={findings}
