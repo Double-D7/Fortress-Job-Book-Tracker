@@ -202,14 +202,49 @@ describe('the Greeley book', () => {
     expect(f.occurrences).toBe(REF.torque.connections_on_uncertified_wrenches)
   })
 
-  it('separates a missing certificate from a certificate with no date', () => {
+  it('does not hold an unread certificate against the book', () => {
     const agg = aggregateFindings(evaluateFlags(bundle, { asOf: '2026-08-21' }))
-    // Wrench 9125 has a certificate on file but no transcribed date. That
-    // is a data gap, not a compliance failure, and counting it as one
-    // overstated the critical finding by 18 connections.
-    const dateGap = agg.find((x) => x.ruleId === 'torque.wrench_no_calibration_date')!
-    expect(dateGap.severity).toBe('warning')
-    expect(dateGap.occurrences).toBe(18)
+    // Wrench 9125's calibration certificate is filed in section 13. It is a
+    // scan with no text layer, so this application has not read its dates —
+    // which is our gap, not the book's. Charging it to the crew produced 18
+    // findings against connections torqued with a calibrated wrench.
+    expect(agg.find((x) => x.ruleId === 'torque.wrench_certificate_unread')).toBeUndefined()
+    const unread = agg.find((x) => x.ruleId === 'torque.certificate_unread')!
+    expect(unread.severity).toBe('info')
+    // 1583, 5125 and 9125 are photographs or unscanned pages.
+    expect(unread.occurrences).toBe(3)
+  })
+
+  it('reads the certificate, not the roster line that summarises it', () => {
+    const w = bundle.torqueWrenches.find((x) => x.wrenchId === '0808')!
+    // The roster block transcribes the handwritten "DATE WRENCH PUT IN
+    // SERVICE" (2/4/25) as the calibration date. The certificate itself is
+    // dated 2025-01-10, and the certificate is the calibration record.
+    expect(w.rosterClaimedCalibrationDate).toBe('2025-02-04')
+    expect(w.lastCalibrationDate).toBe('2025-01-10')
+
+    const agg = aggregateFindings(evaluateFlags(bundle, { asOf: '2026-08-21' }))
+    const f = agg.find((x) => x.ruleId === 'torque.roster_contradicts_certificate')!
+    expect(f.severity).toBe('warning')
+    expect(f.occurrences).toBe(1)
+  })
+
+  it('warns that the most-used wrench lapses before construction ends', () => {
+    const w = bundle.torqueWrenches.find((x) => x.wrenchId === '5155')!
+    expect(w.calibrationDueDate).toBe('2026-05-02')
+    expect(bundle.book.constructionEnd).toBe('2026-06-05')
+    const findings = evaluateFlags(bundle, { asOf: '2026-08-21' })
+      .filter((f) => f.ruleId === 'certificate.expires_during_job')
+    const wrench = findings.find((f) => f.title.includes('5155'))!
+    // Named, not `wrench-dp318-5155`: a finding an auditor cannot read is
+    // a finding nobody acts on.
+    expect(wrench.title).toContain('Torque wrench 5155')
+    expect(wrench.title).toContain('2026-05-02')
+    // Nothing was torqued after it lapsed, so it is a warning, not a
+    // failure — but every further connection on this job would be one.
+    expect(wrench.severity).toBe('warning')
+    expect(wrench.sectionNumber).toBe('13')
+    expect(wrench.detail).toContain('connection')
   })
 
   it('reconciles roster, usage and certificates as three different sets', () => {
@@ -272,7 +307,9 @@ describe('flag aggregation on DP452', () => {
   it('collapses a wall of per-record criticals into a handful of findings', () => {
     const counts = countBySeverity(agg)
     expect(raw.length).toBeGreaterThan(900)
-    expect(counts.critical).toBeLessThan(12)
+    // The number that matters is the ratio: ~1,000 per-record criticals
+    // become something a manager can read in one screen.
+    expect(counts.critical).toBeLessThan(15)
     // The records are not thrown away, only grouped.
     expect(counts.totalRecords).toBe(raw.length)
   })

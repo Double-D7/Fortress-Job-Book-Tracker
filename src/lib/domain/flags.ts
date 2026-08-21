@@ -11,7 +11,7 @@
  * have it stay resolved, while a genuinely new occurrence still appears.
  */
 import type {
-  ComplianceFlag, FlagSeverity, IsoDate, JobBookBundle, Weld,
+  Certificate, ComplianceFlag, FlagSeverity, IsoDate, JobBookBundle, Weld,
 } from './types'
 import { today } from './dates'
 import { certValidOn, evaluateCert } from './certificates'
@@ -101,6 +101,78 @@ export function ruleWelderNotQualified(b: JobBookBundle): Finding[] {
 }
 
 /**
+ * A roster line that disagrees with the certificate it summarises.
+ *
+ * Torque logs carry a typed wrench roster in their header block, and it is
+ * a summary of the certificates filed in section 13 — not a second source.
+ * Where the two disagree, the certificate is the record and the roster line
+ * is a transcription error, which is worth surfacing precisely because it
+ * is invisible: the log looks internally consistent, and nothing downstream
+ * of it can tell that a date was copied off the wrong line.
+ *
+ * The Greeley book carries exactly one. Wrench 0808's roster line reads
+ * 2/4/25; the certificate is calibrated 2025-01-10 and carries a
+ * handwritten "DATE WRENCH PUT IN SERVICE: 2/4/25". Someone read the
+ * handwriting instead of the printed field.
+ */
+export function ruleRosterContradictsCertificate(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.torqueWrenches) {
+    const claimed = w.rosterClaimedCalibrationDate ?? null
+    const actual = w.lastCalibrationDate ?? null
+    if (!claimed || !actual || claimed === actual) continue
+    const used = b.torqueConnections.filter(
+      (c) => c.wrenchId === w.id || c.wrenchIdRaw === w.wrenchId,
+    ).length
+    out.push({
+      ruleId: 'torque.roster_contradicts_certificate',
+      severity: 'warning',
+      title: `Wrench ${w.wrenchId}: the log's roster date is not the certificate's`,
+      detail: `The torque log's roster block records wrench ${w.wrenchId} as last calibrated ` +
+        `${claimed}. Its certificate on file is dated ${actual}. The certificate is the ` +
+        `calibration record and is what this book scores against; the roster line is a ` +
+        `transcription and should be corrected. ${used} connection${used === 1 ? '' : 's'} ` +
+        `were torqued with this wrench.`,
+      entityType: 'torque_wrench', entityId: w.id, sectionNumber: '13',
+      fingerprint: fp('torque.roster_contradicts_certificate', w.id, claimed, actual),
+    })
+  }
+  return cap('torque.roster_contradicts_certificate', out)
+}
+
+/**
+ * A certificate that is filed but that this application has not read.
+ *
+ * Informational, and deliberately so. The book is not deficient — the page
+ * is in section 13 and ships with the turnover package. What is missing is
+ * our parse of it, which means the calibration window cannot be checked
+ * against the dates of the work. That is a gap in this application's
+ * coverage and it is reported as one, in our own name.
+ */
+export function ruleCalibrationCertificateUnread(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.torqueWrenches) {
+    if (!w.certOnFile || w.lastCalibrationDate) continue
+    const used = b.torqueConnections.filter(
+      (c) => c.wrenchId === w.id || c.wrenchIdRaw === w.wrenchId,
+    ).length
+    out.push({
+      ruleId: 'torque.certificate_unread',
+      severity: 'info',
+      title: `Wrench ${w.wrenchId}'s calibration certificate is on file but has not been read`,
+      detail: `The certificate is filed in section 13 and counts toward that section. Its ` +
+        `dates have not been loaded into this book, so the calibration window cannot be ` +
+        `checked against the ${used} connection${used === 1 ? '' : 's'} torqued with it. ` +
+        `This is an ingestion gap, not a deficiency in the book — the usual cause is a ` +
+        `photographed or unscanned page with no text to read.`,
+      entityType: 'torque_wrench', entityId: w.id, sectionNumber: '13',
+      fingerprint: fp('torque.certificate_unread', w.id),
+    })
+  }
+  return cap('torque.certificate_unread', out)
+}
+
+/**
  * A wrench whose calibration was expired, missing, or — the case this
  * application exists to catch — not yet issued on the date of the work.
  */
@@ -108,7 +180,14 @@ export function ruleWrenchCalibrationInvalid(b: JobBookBundle): Finding[] {
   const out: Finding[] = []
   for (const c of b.torqueConnections) {
     const check = checkWrenchCalibration(c, b.torqueWrenches)
-    if (check.verdict === 'valid' || check.verdict === 'no_torque_date') continue
+    // `certificate_unread` is not a finding against the book. The
+    // certificate is on file — it is the calibration record — and the only
+    // thing absent is this application's parse of it. Raising it as a
+    // deficiency invented 18 findings against wrench 9125 on the Greeley
+    // book, whose certificate is filed in section 13 and has been all
+    // along. It surfaces as an ingestion gap on the section instead.
+    if (check.verdict === 'valid' || check.verdict === 'no_torque_date' ||
+        check.verdict === 'certificate_unread') continue
 
     const label = c.wrenchIdRaw ?? 'unrecorded'
     let title: string
@@ -138,19 +217,13 @@ export function ruleWrenchCalibrationInvalid(b: JobBookBundle): Finding[] {
         detail = `Connection ${c.isoFlangeNumber} was torqued with wrench ${label}; no calibration ` +
           `certificate has been uploaded for it.`
         break
-      case 'no_calibration_date':
-        title = `Wrench ${label}'s certificate carries no recorded calibration date`
-        detail = `Connection ${c.isoFlangeNumber} was torqued with wrench ${label}. Its certificate ` +
-          `is on file, but no calibration date has been entered, so validity on the day of the ` +
-          `work cannot be checked.`
-        break
       default:
         title = `Connection ${c.isoFlangeNumber} records no wrench`
         detail = 'A torque connection must identify the wrench used.'
     }
     out.push({
       ruleId: `torque.wrench_${check.verdict}`,
-      severity: check.verdict === 'no_calibration_date' ? 'warning' : 'critical',
+      severity: 'critical',
       title, detail,
       entityType: 'torque_connection', entityId: c.id, sectionNumber: '13',
       fingerprint: fp(`torque.wrench_${check.verdict}`, c.id, label),
@@ -206,7 +279,7 @@ export function rulePressureTestNoRecorderCert(b: JobBookBundle): Finding[] {
   const out: Finding[] = []
   for (const t of b.pressureTests) {
     const cert = b.certificates.find((c) => c.id === t.recorderCertId)
-    const valid = cert && t.testDate
+    const valid = cert?.issueDate && t.testDate
       ? t.testDate >= cert.issueDate && (!cert.expiryDate || t.testDate <= cert.expiryDate)
       : false
     if (valid) continue
@@ -215,7 +288,7 @@ export function rulePressureTestNoRecorderCert(b: JobBookBundle): Finding[] {
       severity: 'critical',
       title: `Pressure test ${t.testIdentifier} has no valid recorder calibration certificate`,
       detail: cert
-        ? `Recorder ${t.recorderSerial ?? ''} certificate runs ${cert.issueDate} to ` +
+        ? `Recorder ${t.recorderSerial ?? ''} certificate runs ${cert.issueDate ?? 'an unread date'} to ` +
           `${cert.expiryDate ?? 'open'}, which does not cover the test date ${t.testDate}.`
         : `No recorder calibration certificate is linked to this test.`,
       entityType: 'pressure_test', entityId: t.id, sectionNumber: '17',
@@ -911,6 +984,61 @@ export function ruleWrongDocumentForSection(b: JobBookBundle): Finding[] {
   return out
 }
 
+/** Human name, work unit and home section for a certificate's subject. A
+ *  raw `wrench-dp318-5155` in a finding title tells a reader nothing. */
+function subjectOf(
+  b: JobBookBundle,
+  c: Certificate,
+): { name: string; workUnit: string; sectionNumber: string } {
+  switch (c.subjectType) {
+    case 'welder': {
+      const w = b.welders.find((x) => x.id === c.subjectId)
+      return { name: w?.fullName ?? c.subjectId, workUnit: 'weld', sectionNumber: '6' }
+    }
+    case 'cwi': {
+      const w = b.cwis.find((x) => x.id === c.subjectId)
+      return { name: w?.fullName ?? c.subjectId, workUnit: 'inspection', sectionNumber: '7' }
+    }
+    case 'ndt_technician': {
+      const t = b.ndtTechnicians.find((x) => x.id === c.subjectId)
+      return { name: t?.fullName ?? c.subjectId, workUnit: 'NDE report', sectionNumber: '8' }
+    }
+    case 'torque_wrench': {
+      const w = b.torqueWrenches.find((x) => x.id === c.subjectId)
+      return {
+        name: w ? `Torque wrench ${w.wrenchId}` : c.subjectId,
+        workUnit: 'connection', sectionNumber: '13',
+      }
+    }
+    default:
+      return { name: c.subjectId, workUnit: 'record', sectionNumber: '13' }
+  }
+}
+
+/** How much work this certificate was supposed to cover but did not. */
+function workRecordedAfter(b: JobBookBundle, c: Certificate, expiry: string): number {
+  switch (c.subjectType) {
+    case 'welder':
+      return b.welds.filter(
+        (w) => w.weldDate && w.weldDate > expiry && creditedWelders(w).includes(c.subjectId),
+      ).length
+    case 'ndt_technician':
+      return b.ndeReports.filter(
+        (r) => r.technicianId === c.subjectId && r.reportDate > expiry,
+      ).length
+    case 'torque_wrench': {
+      const w = b.torqueWrenches.find((x) => x.id === c.subjectId)
+      if (!w) return 0
+      return b.torqueConnections.filter(
+        (x) => (x.wrenchId === w.id || x.wrenchIdRaw === w.wrenchId) &&
+          !!x.torqueDate && x.torqueDate > expiry,
+      ).length
+    }
+    default:
+      return 0
+  }
+}
+
 /**
  * A certificate that expires inside the job's own working window.
  *
@@ -925,21 +1053,24 @@ export function ruleCertExpiresDuringJob(b: JobBookBundle): Finding[] {
   for (const c of b.certificates) {
     if (!c.expiryDate || c.expiryDate >= end) continue
     if (b.book.constructionStart && c.expiryDate < b.book.constructionStart) continue
-    const welder = b.welders.find((w) => w.id === c.subjectId)
-    const subject = welder?.fullName ?? c.subjectId
-    // Whether it actually bit is a separate question from whether it will.
-    const workAfter = b.welds.filter(
-      (w) => w.weldDate && w.weldDate > c.expiryDate! && creditedWelders(w).includes(c.subjectId),
-    ).length
+
+    // Every certificate subject covers a different kind of work, so "was
+    // anything done after it lapsed" is a different count for each — and
+    // the finding belongs in the section that holds the certificate, not
+    // uniformly in section 6.
+    const subject = subjectOf(b, c)
+    const workAfter = workRecordedAfter(b, c, c.expiryDate)
+    const unit = subject.workUnit
     out.push({
       ruleId: 'certificate.expires_during_job',
       severity: workAfter > 0 ? 'critical' : 'warning',
-      title: `${subject}'s ${c.certType} expires ${c.expiryDate}, before the job ends ${end}`,
+      title: `${subject.name}'s ${c.certType} expires ${c.expiryDate}, before the job ends ${end}`,
       detail: workAfter > 0
-        ? `${workAfter} weld(s) are recorded after that date and are not covered.`
+        ? `${workAfter} ${unit}${workAfter === 1 ? ' is' : 's are'} recorded after that date ` +
+          `and not covered.`
         : `No work is recorded after that date yet, so nothing is uncovered — but any further ` +
-          `work on this job would be.`,
-      entityType: 'certificate', entityId: c.id, sectionNumber: '6',
+          `${unit} on this job would be.`,
+      entityType: 'certificate', entityId: c.id, sectionNumber: subject.sectionNumber,
       fingerprint: fp('certificate.expires_during_job', c.id),
     })
   }
@@ -981,6 +1112,8 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
   const findings: Finding[] = [
     ...ruleWelderNotQualified(b),
     ...ruleWrenchCalibrationInvalid(b),
+    ...ruleRosterContradictsCertificate(b),
+    ...ruleCalibrationCertificateUnread(b),
     ...ruleNdeTechnicianNotCertified(b),
     ...ruleHeatWithoutMtr(b),
     ...rulePressureTestNoRecorderCert(b),
@@ -1092,8 +1225,10 @@ const RULE_SUMMARIES: Record<string, (n: number, sample: Finding) => string> = {
     `${n} connection${n === 1 ? '' : 's'} record a wrench that appears on no roster`,
   'torque.wrench_no_wrench_recorded': (n) =>
     `${n} connection${n === 1 ? '' : 's'} record no wrench at all`,
-  'torque.wrench_no_calibration_date': (n) =>
-    `${n} connection${n === 1 ? '' : 's'} used a wrench whose certificate carries no calibration date`,
+  'torque.roster_contradicts_certificate': (n) =>
+    `${n} wrench roster line${n === 1 ? '' : 's'} disagree with the certificate on file`,
+  'torque.certificate_unread': (n) =>
+    `${n} calibration certificate${n === 1 ? '' : 's'} on file have not been read into the book`,
   'torque.out_of_range': (n) =>
     `${n} connection${n === 1 ? '' : 's'} were torqued outside their required range`,
   'nde.technician_not_certified_on_report_date': (n) =>

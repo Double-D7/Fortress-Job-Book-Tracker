@@ -104,16 +104,30 @@ export default async function TorquePage({ params }: { params: Promise<{ bookId:
                 // Set membership is not the whole story: a wrench can be
                 // rostered, used and certified and still carry a calibration
                 // that does not cover the work it was used on.
+                // `certificate_unread` is excluded deliberately: it says
+                // this application has not read the certificate, not that
+                // the calibration failed to cover the work. Counting it
+                // here printed "calibration did not cover 18 of its
+                // connections" against a wrench that was calibrated.
                 const badDates = b.torqueConnections.filter(
                   (c) => c.wrenchIdRaw === id &&
-                    !['valid', 'no_torque_date'].includes(checkWrenchCalibration(c, b.torqueWrenches).verdict),
+                    !['valid', 'no_torque_date', 'certificate_unread']
+                      .includes(checkWrenchCalibration(c, b.torqueWrenches).verdict),
                 )
+                const unread = !!w?.certOnFile && !w.lastCalibrationDate
                 if (badDates.length && w?.certOnFile) {
                   const worst = checkWrenchCalibration(badDates[0]!, b.torqueWrenches).verdict
                   findings.push(
                     worst === 'not_yet_issued'
                       ? `calibration postdates ${badDates.length} of its connections`
                       : `calibration did not cover ${badDates.length} of its connections`,
+                  )
+                }
+                if (w?.rosterClaimedCalibrationDate && w.lastCalibrationDate &&
+                    w.rosterClaimedCalibrationDate !== w.lastCalibrationDate) {
+                  findings.push(
+                    `roster says ${w.rosterClaimedCalibrationDate}, certificate says ` +
+                    `${w.lastCalibrationDate}`,
                   )
                 }
                 return (
@@ -123,16 +137,27 @@ export default async function TorquePage({ params }: { params: Promise<{ bookId:
                     <Td>{w?.onRoster ? <Chip tone="complete">Yes</Chip> : <Chip tone="idle">No</Chip>}</Td>
                     <Td>{w?.certOnFile ? <Chip tone="complete">On file</Chip> : <Chip tone="critical">Missing</Chip>}</Td>
                     <Td className="tnum font-mono text-ink-secondary">
-                      {w?.lastCalibrationDate ? `${w.lastCalibrationDate} → ${w.calibrationDueDate ?? 'open'}` : '—'}
+                      {w?.lastCalibrationDate
+                        ? `${w.lastCalibrationDate} → ${w.calibrationDueDate ?? 'open'}`
+                        : w?.certOnFile
+                          // The certificate is filed; we have not read it.
+                          // A bare dash here reads as "no calibration",
+                          // which is the opposite of what is true.
+                          ? <span className="font-sans text-ink-muted">certificate not yet read</span>
+                          : '—'}
                     </Td>
                     <Td className="text-ink-secondary">
                       {findings.length
                         ? <span className="inline-flex items-center gap-1.5 text-status-progress">
                             <AlertTriangle size={12} />{findings.join('; ')}
                           </span>
-                        : <span className="inline-flex items-center gap-1.5 text-status-complete">
-                            <Check size={12} />consistent
-                          </span>}
+                        : unread
+                          ? <span className="text-ink-muted">
+                              certificate filed; dates not read into the book
+                            </span>
+                          : <span className="inline-flex items-center gap-1.5 text-status-complete">
+                              <Check size={12} />consistent
+                            </span>}
                     </Td>
                   </Tr>
                 )

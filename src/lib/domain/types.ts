@@ -243,10 +243,29 @@ export interface TorqueWrench {
   id: string
   wrenchId: string
   capacityFtLb?: number | null
+  /** From the calibration certificate, which is the calibration record. */
   lastCalibrationDate?: IsoDate | null
   calibrationDueDate?: IsoDate | null
   certDocumentId?: string | null
   certOnFile: boolean
+  /**
+   * Whether the certificate on file has actually been read.
+   *
+   * A filed certificate this application cannot yet parse — a photograph of
+   * paper, a scan with no OCR — is an unread record, not a missing one. The
+   * distinction has to survive into the domain, because scoring a wrench as
+   * uncalibrated on the strength of an unread page sends a crew to
+   * recalibrate equipment that was calibrated.
+   */
+  certRead?: boolean
+  /**
+   * What the log's own roster block claims the last calibration was.
+   *
+   * Recorded next to the certificate rather than instead of it, so the two
+   * can be compared. On the Greeley book one roster line transcribes the
+   * wrench's in-service date as its calibration date.
+   */
+  rosterClaimedCalibrationDate?: IsoDate | null
   /** Whether the wrench appears in the log's roster header block, as
    *  distinct from merely appearing on a connection row. */
   onRoster: boolean
@@ -259,7 +278,13 @@ export interface Certificate {
   subjectId: string
   certType: string
   issuingBody?: string | null
-  issueDate: IsoDate
+  /**
+   * Null where the certificate is on file but has not been read — a
+   * photograph of paper, a scan with no OCR. `certValidOn` refuses to
+   * certify anything against an unknown issue date, so an unread page can
+   * never silently pass as a valid one.
+   */
+  issueDate: IsoDate | null
   expiryDate?: IsoDate | null
   documentId?: string | null
   verifiedBy?: string | null

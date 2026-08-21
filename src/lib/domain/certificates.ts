@@ -55,6 +55,10 @@ export function certValidOn(
         c.subjectType === subjectType &&
         c.subjectId === subjectId &&
         (!certType || c.certType === certType) &&
+        // No issue date means the certificate has not been read. An
+        // unbounded window would make every unread page certify every
+        // date, which is exactly backwards.
+        !!c.issueDate &&
         isWithin(workDate, c.issueDate, c.expiryDate ?? null),
     ) ?? null
   )
@@ -70,7 +74,8 @@ export function certHistory(
 ): Certificate[] {
   return certs
     .filter((c) => c.subjectType === subjectType && c.subjectId === subjectId)
-    .sort((a, b) => (a.issueDate < b.issueDate ? 1 : -1))
+    // Unread certificates sort last: they carry no date to order by.
+    .sort((a, b) => (a.issueDate ?? '') < (b.issueDate ?? '') ? 1 : -1)
 }
 
 export interface UpcomingExpiry {

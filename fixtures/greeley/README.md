@@ -9,6 +9,43 @@ without a live OneDrive connection. `src/lib/import/cellDump.ts` parses it
 back into rows and hands them to the same importer that SheetJS feeds when
 a user uploads the file through the app.
 
+## The calibration certificates in section 13
+
+Section 13 holds six torque-wrench calibration certificates: `0808`,
+`1583`, `3282`, `5155`, `5125` and `9125`. **The certificate is the
+calibration record.** The torque log's roster header block is a summary of
+these pages typed by hand; where the two disagree, the certificate wins.
+
+Three carry a text layer and have been read:
+
+| Wrench | Calibrated | Due | Range | Cert no. |
+|---|---|---|---|---|
+| 3282 | 2024-12-06 | 2025-12-06 | 30–250 lb.ft | WH400-241206090106 |
+| 0808 | 2025-01-10 | *(blank)* | 200–1000 lb.ft | M1-250110135605 |
+| 5155 | 2025-05-02 | 2026-05-02 | 30–250 lb.ft | WH400-250502083820 |
+
+Three are photographs of paper or scans with no OCR — `1583`, `5125` and
+`9125`. They are recorded as **unread**, not as absent. They are filed,
+they count toward section 13, and they ship with the turnover package; what
+is missing is this application's parse of the page. Reading them needs OCR
+or someone keying the four printed fields.
+
+Two things fell out of reading the three that are legible:
+
+- **Wrench 0808's roster line is wrong.** The log records 2/4/25. That is
+  the handwritten *"DATE WRENCH PUT IN SERVICE: 2/4/25 NCC"* on the
+  certificate; the wrench was calibrated 2025-01-10, 25 days earlier.
+  Raised as `torque.roster_contradicts_certificate`.
+- **Wrench 5155's calibration lapses before the job ends.** Due 2026-05-02
+  against a construction end of 2026-06-05, on the wrench that torqued 287
+  of the book's 718 connections. Nothing is uncovered yet; everything
+  torqued with it after 2026-05-02 would be. Raised as
+  `certificate.expires_during_job`.
+
+Wrench 0808's certificate carries **no due date at all** and states its
+frequency as `n/a`. That is left blank rather than inferred: an invented
+due date invents an expiry, and an invented expiry condemns real work.
+
 ## What is missing, and why
 
 **`12. Detailed Weld Log/DP-318 Weld Log UPDATED 6.16.xlsm` could not be

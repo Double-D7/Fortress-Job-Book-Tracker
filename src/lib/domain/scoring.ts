@@ -388,10 +388,11 @@ function scoreEquipmentCerts(
              denominator: used.length, detail: missing.join(', ') }]
         : []),
       ...(undated.length
-        ? [{ label: 'Certificate on file but no calibration date recorded',
+        ? [{ label: 'Certificate on file but not yet read into the book',
              numerator: undated.length, denominator: certified.length,
-             detail: `${undated.join(', ')} — validity on the day of work cannot be checked ` +
-               `until the date is entered.` }]
+             detail: `${undated.join(', ')} — the certificate is filed and counts toward this ` +
+               `section; its dates have not been loaded, so the calibration window cannot be ` +
+               `checked against the dates of the work.` }]
         : []),
     ],
     explanation: used.length === 0

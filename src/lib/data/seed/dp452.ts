@@ -529,22 +529,22 @@ export function buildDp452Bundle(): JobBookBundle {
       // 2024 work it is supposed to cover.
       lastCalibrationDate: id === '1304' ? '2025-07-10' : '2024-04-18',
       calibrationDueDate: id === '1304' ? '2026-07-10' : '2025-04-18',
-      certDocumentId: `doc-twq-${id}`, certOnFile: true, onRoster: true,
+      certDocumentId: `doc-twq-${id}`, certOnFile: true, certRead: true, onRoster: true,
     })),
     // Used on connections, certified, but absent from the roster header.
     { id: 'wrench-0534', wrenchId: '0534', capacityFtLb: 250,
       lastCalibrationDate: '2024-05-02', calibrationDueDate: '2025-05-02',
-      certDocumentId: 'doc-twq-0534', certOnFile: true, onRoster: false },
+      certDocumentId: 'doc-twq-0534', certOnFile: true, certRead: true, onRoster: false },
     // Used on two connections; on no roster and holding no certificate.
     // Differs from rostered wrench 0289 by a single character.
     { id: 'wrench-0284', wrenchId: '0284', capacityFtLb: null,
       lastCalibrationDate: null, calibrationDueDate: null,
-      certDocumentId: null, certOnFile: false, onRoster: false },
+      certDocumentId: null, certOnFile: false, certRead: false, onRoster: false },
     // Certificates on file for equipment that never touched this job.
     ...WRENCH_CERT_ONLY.map((id) => ({
       id: `wrench-${id}`, wrenchId: id, capacityFtLb: 250,
       lastCalibrationDate: '2024-03-11', calibrationDueDate: '2025-03-11',
-      certDocumentId: `doc-twq-${id}`, certOnFile: true, onRoster: false,
+      certDocumentId: `doc-twq-${id}`, certOnFile: true, certRead: true, onRoster: false,
     })),
   ]
 

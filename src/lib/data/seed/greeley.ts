@@ -101,6 +101,96 @@ const SECTION_SOURCE: Record<string, {
 const CERTS_ON_FILE = ['0808', '1583', '3282', '5155', '9125', '5125'] as const
 
 /**
+ * What the six certificates in section 13 actually say.
+ *
+ * Transcribed from the certificate pages themselves, which are the
+ * calibration record — the torque log's roster block is a summary of them
+ * typed by hand, and where the two disagree the certificate wins.
+ *
+ * Three pages carry a text layer and were read directly. Three are
+ * photographs of paper with no text layer and no OCR; they are recorded as
+ * `unread` rather than as absent, because a filed certificate that this
+ * application cannot yet parse is an ingestion gap, not a wrench without a
+ * calibration.
+ *
+ * The 0808 entry is the reason this table exists. Its roster line reads
+ * 2/4/25, which is the handwritten "DATE WRENCH PUT IN SERVICE" on the
+ * certificate; the wrench was calibrated 2025-01-10, almost four weeks
+ * earlier. Nothing was wrong in the field — the transcription was wrong.
+ */
+export interface FiledCalibrationCertificate {
+  wrenchId: string
+  read: 'text' | 'unread'
+  serialNumber: string | null
+  certificateNumber: string | null
+  manufacturer: string | null
+  model: string | null
+  rangeLabel: string | null
+  dateCalibrated: string | null
+  calibrationDueDate: string | null
+  calibrationFrequency: string | null
+  finalStatus: 'pass' | 'fail' | null
+  /** Dates printed on the page that are not the calibration date. */
+  annotations: string[]
+  note: string | null
+}
+
+export const GREELEY_CALIBRATION_CERTIFICATES: FiledCalibrationCertificate[] = [
+  {
+    wrenchId: '3282', read: 'text',
+    serialNumber: '608243282', certificateNumber: 'WH400-241206090106',
+    manufacturer: 'Gearwrench', model: '85066', rangeLabel: '30-250 Lb.ft',
+    dateCalibrated: '2024-12-06', calibrationDueDate: '2025-12-06',
+    calibrationFrequency: '1 Year', finalStatus: 'pass',
+    annotations: [], note: null,
+  },
+  {
+    wrenchId: '0808', read: 'text',
+    serialNumber: '0324600808', certificateNumber: 'M1-250110135605',
+    manufacturer: 'HYTORC', model: 'MW-006-100-MFRMH', rangeLabel: '200-1000 Lb.ft',
+    dateCalibrated: '2025-01-10', calibrationDueDate: null,
+    calibrationFrequency: 'n/a', finalStatus: 'pass',
+    annotations: ['DATE WRENCH PUT IN SERVICE: 2/4/25 NCC (handwritten)'],
+    note: 'Due date left blank on the certificate and frequency stated as n/a, ' +
+      'so the calibration has no stated end. Not inferred.',
+  },
+  {
+    wrenchId: '5155', read: 'text',
+    serialNumber: '0125115155', certificateNumber: 'WH400-250502083820',
+    manufacturer: 'HYTORC', model: 'MW-008-250-MFRMH', rangeLabel: '30-250 Lb.ft',
+    dateCalibrated: '2025-05-02', calibrationDueDate: '2026-05-02',
+    calibrationFrequency: '1 Year', finalStatus: 'pass',
+    annotations: ['Receipt Date 05-02-2025', "Handwritten: Jessie's Truck"],
+    note: null,
+  },
+  {
+    wrenchId: '1583', read: 'unread',
+    serialNumber: null, certificateNumber: null, manufacturer: null, model: null,
+    rangeLabel: null, dateCalibrated: null, calibrationDueDate: null,
+    calibrationFrequency: null, finalStatus: null, annotations: [],
+    note: 'Photograph of paper, no text layer. Filed and counted; not yet read.',
+  },
+  {
+    wrenchId: '5125', read: 'unread',
+    serialNumber: null, certificateNumber: null, manufacturer: null, model: null,
+    rangeLabel: null, dateCalibrated: null, calibrationDueDate: null,
+    calibrationFrequency: null, finalStatus: null, annotations: [],
+    note: 'Photograph of paper, no text layer. Filed and counted; not yet read.',
+  },
+  {
+    wrenchId: '9125', read: 'unread',
+    serialNumber: null, certificateNumber: null, manufacturer: null, model: null,
+    rangeLabel: null, dateCalibrated: null, calibrationDueDate: null,
+    calibrationFrequency: null, finalStatus: null, annotations: [],
+    note: 'Scanned PDF with no text layer and no OCR. Filed and counted; not yet read.',
+  },
+]
+
+const CERT_BY_WRENCH = new Map(
+  GREELEY_CALIBRATION_CERTIFICATES.map((c) => [c.wrenchId, c]),
+)
+
+/**
  * Welder roster, from the weld log's overview sheet.
  *
  * `MR LC` is a combined stamp for a two-man crew, which is why ten stamps
@@ -303,17 +393,22 @@ export function buildGreeleyBundle(): JobBookBundle {
   const torqueWrenches: TorqueWrench[] = allWrenchIds.map((id) => {
     const rosterEntry = rosterById.get(id)
     const certOnFile = (CERTS_ON_FILE as readonly string[]).includes(id)
+    const cert = CERT_BY_WRENCH.get(id)
     return {
       id: `wrench-dp318-${id}`,
       wrenchId: id,
       capacityFtLb: null,
-      // Only a wrench with a certificate actually on file has a calibration
-      // window this application will honour. The roster's claim is recorded
-      // separately and compared, never trusted.
-      lastCalibrationDate: certOnFile ? rosterEntry?.lastCalibrationDate ?? null : null,
-      calibrationDueDate: null,
+      // The certificate is the calibration record. The roster's typed
+      // summary is kept beside it for comparison, never used in its place:
+      // for wrench 0808 the roster line is the in-service date, not the
+      // calibration date, and taking it would have put the window four
+      // weeks late.
+      lastCalibrationDate: cert?.dateCalibrated ?? null,
+      calibrationDueDate: cert?.calibrationDueDate ?? null,
+      rosterClaimedCalibrationDate: rosterEntry?.lastCalibrationDate ?? null,
       certDocumentId: certOnFile ? `doc-dp318-cert-${id}` : null,
       certOnFile,
+      certRead: cert?.read === 'text',
       onRoster: !!rosterEntry,
     }
   })
@@ -355,9 +450,14 @@ export function buildGreeleyBundle(): JobBookBundle {
     ...CERTS_ON_FILE.map((id) => ({
       id: `cert-dp318-twq-${id}`, jobBookId: book.id,
       subjectType: 'torque_wrench' as const, subjectId: `wrench-dp318-${id}`,
-      certType: 'Torque wrench calibration', issuingBody: 'HYTORC / UNEX',
-      issueDate: rosterById.get(id)?.lastCalibrationDate ?? '2025-01-01',
-      expiryDate: null, documentId: `doc-dp318-cert-${id}`,
+      certType: 'Torque wrench calibration',
+      issuingBody: CERT_BY_WRENCH.get(id)?.manufacturer ?? 'HYTORC / UNEX',
+      // Blank where the page has not been read. A certificate whose date
+      // this application has not yet parsed is unread, and an invented
+      // issue date would make it look verified.
+      issueDate: CERT_BY_WRENCH.get(id)?.dateCalibrated ?? '',
+      expiryDate: CERT_BY_WRENCH.get(id)?.calibrationDueDate ?? null,
+      documentId: `doc-dp318-cert-${id}`,
       verifiedBy: null, verifiedAt: null,
     })),
   ]

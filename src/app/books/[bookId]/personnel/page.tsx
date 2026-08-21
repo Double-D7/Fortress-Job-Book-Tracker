@@ -141,7 +141,7 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
                   const chip = CERT_CHIP[e.status]
                   const reports = b.ndeReports.filter((r) => r.technicianId === t.id)
                   const uncovered = reports.filter(
-                    (r) => !cert || r.reportDate < cert.issueDate ||
+                    (r) => !cert?.issueDate || r.reportDate < cert.issueDate ||
                       (cert.expiryDate ? r.reportDate > cert.expiryDate : false),
                   )
                   return (
@@ -195,12 +195,28 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
                       {w.capacityFtLb ? `${num(w.capacityFtLb)} ft-lb` : '—'}
                     </Td>
                     <Td className="tnum text-right font-mono">{uses ? num(uses) : '—'}</Td>
-                    <Td className="tnum font-mono text-ink-secondary">{w.lastCalibrationDate ?? '—'}</Td>
-                    <Td className="tnum font-mono text-ink-secondary">{w.calibrationDueDate ?? '—'}</Td>
+                    <Td className="tnum font-mono text-ink-secondary">
+                      {w.lastCalibrationDate ?? '—'}
+                    </Td>
+                    <Td className="tnum font-mono text-ink-secondary">
+                      {w.calibrationDueDate ?? (w.lastCalibrationDate
+                        ? <span className="font-sans text-ink-muted">open</span>
+                        : '—')}
+                    </Td>
                     <Td className="space-x-1">
-                      <Chip tone={chip.tone}>{chip.label}</Chip>
+                      {/* An unread certificate is filed, not missing. Showing
+                          it as "missing" was this application telling a crew
+                          their calibrated wrench had no calibration. */}
+                      {w.certOnFile && !w.lastCalibrationDate
+                        ? <Chip tone="info">Filed, not read</Chip>
+                        : <Chip tone={chip.tone}>{chip.label}</Chip>}
                       {!w.onRoster && uses > 0 && <Chip tone="progress">Not on roster</Chip>}
                       {w.certOnFile && uses === 0 && <Chip tone="info">Never used</Chip>}
+                      {w.rosterClaimedCalibrationDate && w.lastCalibrationDate &&
+                        w.rosterClaimedCalibrationDate !== w.lastCalibrationDate &&
+                        <Chip tone="progress">
+                          Roster says {w.rosterClaimedCalibrationDate}
+                        </Chip>}
                     </Td>
                   </Tr>
                 )

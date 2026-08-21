@@ -62,6 +62,8 @@ export function parseLooseDate(v: unknown): IsoDate | null {
   }
   const s = String(v).trim()
   if (isIsoDate(s)) return s
+  const named = parseNamedMonthDate(s)
+  if (named) return named
   const m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})$/)
   if (!m) return null
   const [, mo, da, yrRaw] = m as unknown as [string, string, string, string]
@@ -71,4 +73,38 @@ export function parseLooseDate(v: unknown): IsoDate | null {
   const day = Number(da)
   if (month < 1 || month > 12 || day < 1 || day > 31) return null
   return `${String(yr).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+}
+
+/**
+ * `December 6, 2024`, `May 2 2026`, `6 Dec 2024`.
+ *
+ * Calibration certificates print month names where the workbooks print
+ * slashes, so the loose parser has to read both. Matched on the first three
+ * letters, which covers `Sept` as well as `Sep`.
+ */
+export function parseNamedMonthDate(s: string): IsoDate | null {
+  const cleaned = s.trim().replace(/[,]/g, ' ').replace(/\s+/g, ' ')
+  let month: number | undefined
+  let day: number | undefined
+  let year: number | undefined
+
+  const mdy = /^([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)? (\d{4})$/.exec(cleaned)
+  const dmy = /^(\d{1,2})(?:st|nd|rd|th)? ([A-Za-z]{3,9})\.? (\d{4})$/.exec(cleaned)
+  if (mdy) {
+    month = MONTHS[mdy[1]!.slice(0, 3).toLowerCase()]
+    day = Number(mdy[2])
+    year = Number(mdy[3])
+  } else if (dmy) {
+    day = Number(dmy[1])
+    month = MONTHS[dmy[2]!.slice(0, 3).toLowerCase()]
+    year = Number(dmy[3])
+  }
+  if (!month || !day || !year) return null
+  if (day < 1 || day > 31) return null
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
