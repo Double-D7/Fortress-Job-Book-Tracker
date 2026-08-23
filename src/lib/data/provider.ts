@@ -15,6 +15,7 @@
 import type { JobBookBundle, UserRole } from '@/lib/domain/types'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { applyComputedScores } from '@/lib/domain/scoring'
+import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -54,11 +55,34 @@ export interface CreateResult {
   warnings?: { field: string; message: string }[]
 }
 
+export interface UploadResult {
+  ok: boolean
+  /** What was actually written, in the order supplied. */
+  added: { originalFilename: string; normalizedFilename: string; sha256: string }[]
+  /** Files the preview refused, with the reason. */
+  rejected: { originalFilename: string; reason: string }[]
+  error?: string
+}
+
 export interface DataProvider {
   listJobBooks(viewer: Viewer): Promise<JobBookSummary[]>
   getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null>
   createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult>
   listClientOrgs(viewer: Viewer): Promise<{ id: string; name: string }[]>
+  /**
+   * Add documents to one section.
+   *
+   * Runs the same `previewUploads` the tech saw before pressing the button,
+   * against the book as it is *now* rather than as it was when the preview
+   * rendered — otherwise two techs uploading the same file a minute apart
+   * both pass a preview taken before the other's commit.
+   */
+  addDocuments(
+    viewer: Viewer,
+    jobBookId: string,
+    sectionNumber: string,
+    files: PrepareInput[],
+  ): Promise<UploadResult>
 }
 
 /** The demo/seed provider. Builds the reference book once per process. */
@@ -156,6 +180,98 @@ class SeedProvider implements DataProvider {
     orgs.set('org-devon', 'Devon Energy')
     return [...orgs.entries()].map(([id, name]) => ({ id, name }))
                               .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  async addDocuments(
+    viewer: Viewer,
+    jobBookId: string,
+    sectionNumber: string,
+    files: PrepareInput[],
+  ): Promise<UploadResult> {
+    // Mirrors the RLS write predicate. The database is the control; this
+    // keeps a read-only viewer from reaching a button that would fail.
+    const WRITERS = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, added: [], rejected: [], error: 'Not permitted to upload to this book.' }
+    }
+
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) {
+      return { ok: false, added: [], rejected: [], error: 'Job book not found.' }
+    }
+
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+    const section = def && b.sections.find((x) => x.sectionDefinitionId === def.id)
+    if (!def || !section) {
+      return { ok: false, added: [], rejected: [], error: `No section ${sectionNumber} in this book.` }
+    }
+
+    const preview = previewUploads(files, {
+      book: b.book, section: def, sectionId: section.id,
+      existing: b.documents, expectedCount: section.expectedCount ?? null,
+    })
+
+    const now = new Date().toISOString()
+    const added: UploadResult['added'] = []
+    const rejected: UploadResult['rejected'] = []
+    const documents = [...b.documents]
+
+    for (const p of preview.files) {
+      if (!p.willBeAdded) {
+        rejected.push({
+          originalFilename: p.originalFilename,
+          reason: p.issues.find((i) => i.blocking)?.message ?? 'Rejected.',
+        })
+        continue
+      }
+      // A superseded document is marked, never removed. The turnover
+      // package ships the current revision; the audit trail keeps both.
+      if (p.supersedesDocumentId) {
+        const i = documents.findIndex((d) => d.id === p.supersedesDocumentId)
+        if (i >= 0) documents[i] = { ...documents[i]!, isSuperseded: true }
+      }
+      documents.push({
+        id: `doc-${jobBookId}-${p.sha256.slice(0, 16)}`,
+        jobBookId,
+        sectionId: section.id,
+        originalFilename: p.originalFilename,
+        normalizedFilename: p.normalizedFilename,
+        storagePath: `${jobBookId}/${sectionNumber}/${p.sha256}`,
+        mimeType: p.mimeType,
+        byteSize: p.byteSize,
+        sha256: p.sha256,
+        version: p.version,
+        supersedesDocumentId: p.supersedesDocumentId,
+        isSuperseded: false,
+        visibility: 'internal',
+        uploadedBy: viewer.id,
+        uploadedAt: now,
+      })
+      added.push({
+        originalFilename: p.originalFilename,
+        normalizedFilename: p.normalizedFilename,
+        sha256: p.sha256,
+      })
+    }
+
+    // Uploading is evidence arriving, so the section is no longer untouched
+    // and its folder is no longer unread.
+    const sections = b.sections.map((x) =>
+      x.id !== section.id ? x : {
+        ...x,
+        status: x.status === 'not_started' && added.length ? 'in_progress' as const : x.status,
+        ingestionStatus: added.length ? 'imported' as const : x.ingestionStatus,
+      },
+    )
+
+    // Re-stamped, so the cached percentage moves with the evidence rather
+    // than going stale the moment a file lands.
+    const updated = applyComputedScores({ ...b, documents, sections })
+    if (this.created.has(jobBookId)) this.created.set(jobBookId, updated)
+    else if (this.cache) this.cache[idx] = updated
+
+    return { ok: true, added, rejected }
   }
 
   async createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult> {

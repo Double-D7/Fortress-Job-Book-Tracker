@@ -142,6 +142,9 @@ export interface JobBookSection {
    * which returns exactly this number to an operator.
    */
   computedPct: number
+  /** Cache of the same score over evidence collected rather than approved.
+   *  Never below `computedPct`; the gap is work awaiting a signature. */
+  collectedPct?: number
   /** When `computedPct` was last written. A cache with no timestamp cannot
    *  be told apart from a current one. */
   computedAt?: string | null

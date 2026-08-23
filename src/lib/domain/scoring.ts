@@ -47,6 +47,22 @@ export interface SectionScore {
   /** 0–100. Zero for an N/A or supplemental section, which is why
    *  `countsTowardTotal` exists separately. */
   pct: number
+  /**
+   * 0–100, counting evidence that is *in the book* whether or not it has
+   * been approved yet.
+   *
+   * `pct` is the compliance answer and does not move until a second person
+   * approves the document — that is the two-person control, and softening
+   * it would make the headline figure a claim nobody had checked. But a
+   * tech who uploads all eleven drawings and watches the section sit at 0%
+   * has no way to tell a working upload from a broken one, and will stop
+   * trusting the screen. So both numbers are carried: what has been
+   * collected, and what has been accepted.
+   *
+   * Absent for sections with no approval gate, where collected and
+   * accepted are the same thing. Read it through `collectedOf`.
+   */
+  collectedPct?: number
   countsTowardTotal: boolean
   inputs: ScoreInput[]
   /** One line a manager can read without drilling in. */
@@ -68,12 +84,23 @@ export interface BookScore {
   /** True when the overall figure understates the book because content
    *  exists that has not been ingested. */
   isLowerBound: boolean
+  /**
+   * The same weighted figure over evidence *collected* rather than
+   * approved. Never below `overallPct`; the gap between them is work
+   * sitting in the book waiting on a second signature, which is a
+   * scheduling problem rather than a missing-evidence one.
+   */
+  collectedPct: number
   sections: SectionScore[]
   /** Sections carrying weight that scored zero — the "what is missing"
    *  answer, in weight order. */
   missingSections: { sectionNumber: string; title: string; weight: number }[]
   computedAt: string
 }
+
+/** Evidence collected, approved or not. Falls back to the compliance score
+ *  for the section types where the two cannot differ. */
+export const collectedOf = (s: SectionScore): number => s.collectedPct ?? s.pct
 
 const pct = (n: number, d: number) => (d > 0 ? Math.min(1, n / d) * 100 : 0)
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -204,7 +231,11 @@ export function scoreSection(
         })
       }
       return {
-        ...base, pct: pct(approved.length, required), countsTowardTotal: true, inputs,
+        ...base,
+        pct: pct(approved.length, required),
+        collectedPct: pct(present.length, required),
+        countsTowardTotal: true,
+        inputs,
         explanation: approved.length === 0 && present.length === 0
           ? `No documents uploaded; ${required} required.`
           : `${approved.length} of ${required} required document(s) approved` +
@@ -700,6 +731,7 @@ function cachedSectionScore(
     sourceFileCount: section.sourceFileCount ?? null,
     sourceBytes: section.sourceBytes ?? null,
     pct: section.computedPct,
+    collectedPct: section.collectedPct ?? section.computedPct,
     countsTowardTotal: section.status !== 'na' && !def.isSupplemental && def.weight > 0,
     inputs: [],
     explanation: `Computed ${section.computedAt.slice(0, 10)} from the complete record.`,
@@ -737,7 +769,12 @@ export function applyComputedScores(bundle: JobBookBundle): JobBookBundle {
       const def = defsById.get(section.sectionDefinitionId)
       const sc = def ? byNumber.get(def.sectionNumber) : undefined
       if (!sc) return section
-      return { ...section, computedPct: sc.pct, computedAt: score.computedAt }
+      return {
+        ...section,
+        computedPct: sc.pct,
+        collectedPct: collectedOf(sc),
+        computedAt: score.computedAt,
+      }
     }),
   }
 }
@@ -799,6 +836,7 @@ export function scoreBook(bundle: JobBookBundle): BookScore {
   const counted = scores.filter((s) => s.countsTowardTotal && s.weight > 0)
   const weightAvailable = counted.reduce((s, x) => s + x.weight, 0)
   const weightApplied = counted.reduce((s, x) => s + (x.pct / 100) * x.weight, 0)
+  const weightCollected = counted.reduce((s, x) => s + (collectedOf(x) / 100) * x.weight, 0)
 
   const notImported = counted
     .filter((s) => s.ingestionStatus === 'not_imported')
@@ -813,6 +851,7 @@ export function scoreBook(bundle: JobBookBundle): BookScore {
       : 100,
     weightNotImported: round2(notImported),
     isLowerBound: notImported > 0,
+    collectedPct: weightAvailable > 0 ? round2((weightCollected / weightAvailable) * 100) : 0,
     sections: scores,
     // "Missing" means we looked and it is not there. A section nobody has
     // read yet is not missing; it is unread, and it is reported separately.

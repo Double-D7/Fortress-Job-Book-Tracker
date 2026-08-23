@@ -11,7 +11,7 @@ Checklist` that governs it.
 ```bash
 npm install
 npm run dev          # http://localhost:3000 — runs on the DP452 reference book
-npm test             # 173 tests, including the §11 acceptance criteria
+npm test             # 254 tests, including the §11 acceptance criteria
 npm run ingest -- "<path to a job book folder>"   # read a real book off disk
 npm run seed:verify     # DP452 figures against the source brief
 npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
@@ -20,6 +20,36 @@ npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
 No database is needed to run or test: the app ships with two books as an
 in-memory provider, and every screen runs the same scoring and flag code
 the persistent provider will.
+
+### The loop it is built around
+
+Three steps, and nothing else is required to use it:
+
+1. **The template.** 22 checklist sections, titles transcribed verbatim
+   from the governing PDF. Data, not code paths.
+2. **Declare the scope.** At setup the tech enters how many of each thing
+   the job holds — 11 drawings, 8 welders, 2,342 joints, 4 wrenches. Only
+   the job number and the operator are actually required; every other
+   field has a default. That declared count becomes the denominator of
+   every percentage from then on, which is what stops 100 entered joints
+   out of a real 2,342 reading as 100%.
+3. **Upload as it comes in.** Each section takes files directly
+   (`/books/<id>/sections/<n>`). They are hashed on the server and checked
+   against the whole book *before* anything is filed, so a duplicate, an
+   empty scan, or a filename naming another job is caught in the preview
+   rather than by a flag a week later. The count moves as the files land.
+
+Everything else in the app — flags, reconciliation, the export package —
+reads what those three steps produce.
+
+### Two numbers, not one
+
+A section scores on documents a second person has **approved**. That is the
+two-person control and it does not bend. But a tech who uploads eleven
+drawings and watches the section sit at 0% cannot tell a working upload
+from a broken one, so both figures are shown: `0% · 100% collected,
+awaiting approval`. The gap is a queue of signatures, not missing work,
+and the two need different actions.
 
 ### The two books are not the same kind of thing
 

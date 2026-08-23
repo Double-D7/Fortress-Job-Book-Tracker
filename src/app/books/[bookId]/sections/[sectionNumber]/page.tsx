@@ -1,16 +1,20 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft, Upload } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
-import { scoreSection } from '@/lib/domain/scoring'
+import { collectedOf, scoreSection } from '@/lib/domain/scoring'
 import { evaluateFlags } from '@/lib/domain/flags'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, ProgressBar,
   Table, Td, Th, Tr, bandTone,
 } from '@/components/ui/primitives'
+import { SectionUpload } from '@/components/SectionUpload'
 import { bytes, num, pct } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
+
+/** Mirrors the RLS write predicate; the database remains the control. */
+const CAN_UPLOAD = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
 
 /**
  * Section detail.
@@ -71,7 +75,19 @@ export default async function SectionDetail({
                 {score.countsTowardTotal && def.weight > 0 ? pct(score.pct) : '—'}
               </div>
               {score.countsTowardTotal && def.weight > 0 && (
-                <ProgressBar value={score.pct} className="mt-2 w-32" />
+                <>
+                  <ProgressBar value={score.pct} className="mt-2 w-32" />
+                  {/* Evidence in the book but not yet approved. Shown because
+                      a tech who uploads eleven drawings and watches the
+                      headline stay at 0% cannot tell a working upload from a
+                      broken one — and will stop trusting the screen. */}
+                  {collectedOf(score) > score.pct && (
+                    <div className="mt-1.5 text-2xs text-ink-secondary">
+                      <span className="tnum font-medium text-ink">{pct(collectedOf(score))}</span>
+                      {' '}collected, awaiting approval
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -108,10 +124,16 @@ export default async function SectionDetail({
         </Card>
       )}
 
+      <SectionUpload
+        bookId={bookId}
+        sectionNumber={number}
+        sectionTitle={def.title}
+        canUpload={CAN_UPLOAD.has(DEMO_VIEWER.role)}
+      />
+
       <Card>
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>Documents ({num(docs.length)})</CardTitle>
-          <Button variant="secondary"><Upload size={13} /> Upload</Button>
         </CardHeader>
         <CardBody className={docs.length ? 'p-0' : undefined}>
           {docs.length === 0 ? (

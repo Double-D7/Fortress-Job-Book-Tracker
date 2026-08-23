@@ -19,7 +19,25 @@
 -- ---------------------------------------------------------------------
 
 alter table job_book_section
-  add column computed_at timestamptz;
+  add column computed_at timestamptz,
+  -- Collected evidence, cached beside approved evidence.
+  --
+  -- A section scores on documents a second person has *approved* — that is
+  -- the two-person control, and it does not bend. But a tech who uploads
+  -- eleven drawings and watches the section sit at 0% cannot tell a working
+  -- upload from a broken one, and will stop trusting the screen. Both
+  -- figures are carried so it can say "100% collected, awaiting approval"
+  -- instead of an unexplained zero.
+  add column collected_pct numeric(5,2) not null default 0;
+
+comment on column job_book_section.collected_pct is
+  'Cache of the same score over evidence collected rather than approved. '
+  'Never below computed_pct; the gap is work awaiting a signature.';
+
+-- Approved evidence is a subset of collected evidence, always.
+alter table job_book_section
+  add constraint collected_at_least_approved
+  check (collected_pct >= computed_pct);
 
 comment on column job_book_section.computed_pct is
   'Cache of the derived completion score. Authoritative source is the '
@@ -40,8 +58,9 @@ alter table job_book_section
 -- percentage with a fresh timestamp would be indistinguishable from a
 -- computed one, so the timestamp is set here rather than by the caller.
 create or replace function set_section_score(
-  p_section_id uuid,
-  p_pct        numeric
+  p_section_id    uuid,
+  p_pct           numeric,
+  p_collected_pct numeric default null
 ) returns void
 language plpgsql
 security definer
@@ -52,8 +71,9 @@ begin
     raise exception 'computed_pct must be between 0 and 100, got %', p_pct;
   end if;
   update job_book_section
-     set computed_pct = round(p_pct, 2),
-         computed_at  = now()
+     set computed_pct  = round(p_pct, 2),
+         collected_pct = round(greatest(coalesce(p_collected_pct, p_pct), p_pct), 2),
+         computed_at   = now()
    where id = p_section_id
      and can_write_job_book(job_book_id);
   if not found then
@@ -62,15 +82,15 @@ begin
 end;
 $$;
 
-revoke all on function set_section_score(uuid, numeric) from public;
-grant execute on function set_section_score(uuid, numeric) to authenticated;
+revoke all on function set_section_score(uuid, numeric, numeric) from public;
+grant execute on function set_section_score(uuid, numeric, numeric) to authenticated;
 
 -- The client view carries the timestamp too. An operator reading a
 -- percentage is entitled to know when it was last worked out.
 drop view if exists client_section_v;
 create view client_section_v with (security_invoker = true) as
   select id, job_book_id, section_definition_id, status, na_reason,
-         approved_at, computed_pct, computed_at
+         approved_at, computed_pct, collected_pct, computed_at
     from job_book_section;
 
 comment on view client_section_v is

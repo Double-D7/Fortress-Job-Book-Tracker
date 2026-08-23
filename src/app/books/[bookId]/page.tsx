@@ -58,6 +58,16 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
               across {score.sections.filter((s) => s.countsTowardTotal && s.weight > 0).length} scoring
               sections.
             </p>
+            {/* Evidence collected but not yet approved. It is not completion
+                — a second person has to accept it — but it is the difference
+                between a book that is behind and one that is merely waiting
+                on signatures, and those need different actions. */}
+            {score.collectedPct > score.overallPct && (
+              <p className="mt-2 text-center text-2xs leading-relaxed text-ink-secondary">
+                <span className="tnum font-medium text-ink">{score.collectedPct}%</span> collected —
+                the gap is evidence in the book awaiting approval, not work outstanding.
+              </p>
+            )}
             {/* A percentage computed over content nobody has read is a
                 floor, not a verdict, and saying so is the difference
                 between a useful number and a misleading one. */}
