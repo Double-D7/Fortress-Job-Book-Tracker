@@ -8,6 +8,13 @@ Everything below is done once.
 
 ---
 
+> **Already done for the Fortress org.** The project
+> `Fortress Job Book Tracker` (`vuggctigvwgaxsmwdhxt`, us-west-2) exists,
+> all twelve migrations are applied, the bucket is private, and
+> david.devitt@fortressds.com is the first admin. Steps 1–3 and 5 below are
+> a record of what was done, and what to repeat for a second environment.
+> **What is left is step 4 (sign-in) and step 6 (deploy).**
+
 ## 1. Create the Supabase project
 
 <https://supabase.com/dashboard> → **New project**. Pick a region near the
