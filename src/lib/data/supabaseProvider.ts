@@ -16,7 +16,7 @@
  */
 import type { JobBookBundle, UserRole } from '@/lib/domain/types'
 import type {
-  CreateResult, DataProvider, JobBookSummary, UploadResult, Viewer,
+  ActionResult, CreateResult, DataProvider, JobBookSummary, UploadResult, Viewer,
 } from './provider'
 import { redactForViewer } from './provider'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
@@ -210,6 +210,100 @@ export class SupabaseProvider implements DataProvider {
     const { data } = await supabase
       .from('client_org').select('id, name').is('deleted_at', null).order('name')
     return (data ?? []).map((o) => ({ id: o.id as string, name: o.name as string }))
+  }
+
+  async markSectionReady(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult> {
+    const supabase = await createClient()
+    const found = await this.sectionRow(supabase, viewer, jobBookId, sectionNumber)
+    if ('error' in found) return { ok: false, error: found.error }
+
+    const { error } = await supabase.from('job_book_section').update({
+      status: 'ready_for_review',
+      ready_for_review_by: viewer.id,
+      ready_for_review_at: new Date().toISOString(),
+    }).eq('id', found.id)
+
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async approveSection(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult> {
+    const supabase = await createClient()
+    const found = await this.sectionRow(supabase, viewer, jobBookId, sectionNumber)
+    if ('error' in found) return { ok: false, error: found.error }
+
+    // Through the function, never a direct UPDATE. The two-person rule and
+    // the role check live inside it, and it writes the audit row.
+    const { error } = await supabase.rpc('approve_section', { p_section_id: found.id })
+    if (!error) {
+      await this.refreshScores(jobBookId, viewer)
+      return { ok: true }
+    }
+    // The function raises in the words an auditor would use; pass them
+    // through rather than replacing them with something vaguer.
+    return { ok: false, error: error.message.replace(/^.*?:\s*/, '') }
+  }
+
+  async resolveFlag(
+    viewer: Viewer, jobBookId: string, fingerprint: string,
+    state: 'resolved' | 'dismissed' | 'acknowledged', note: string,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to work on this book.' }
+    }
+    if (state !== 'acknowledged' && !note.trim()) {
+      return { ok: false, error: 'A resolution needs a note saying why.' }
+    }
+    const supabase = await createClient()
+
+    // Findings are derived, not stored, so the row may not exist yet. The
+    // upsert is keyed on (job_book_id, fingerprint) — the same stable
+    // fingerprint the engine produces — so resolving the same finding twice
+    // updates one row rather than making two.
+    const { error } = await supabase.from('compliance_flag').upsert({
+      job_book_id: jobBookId,
+      fingerprint,
+      state,
+      resolution_note: state === 'acknowledged' ? null : note.trim(),
+      resolved_by: state === 'acknowledged' ? null : viewer.id,
+      resolved_at: state === 'acknowledged' ? null : new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: 'job_book_id,fingerprint' })
+
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  /** The section row id for a book + section number, or why not. */
+  private async sectionRow(
+    supabase: Client, viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<{ id: string } | { error: string }> {
+    if (!WRITERS.has(viewer.role)) return { error: 'Not permitted to work on this book.' }
+
+    const { data } = await supabase
+      .from('job_book')
+      .select('book_template_id')
+      .eq('id', jobBookId)
+      .maybeSingle()
+    if (!data) return { error: 'Job book not found.' }
+
+    const { data: def } = await supabase
+      .from('section_definition').select('id')
+      .eq('book_template_id', data.book_template_id as string)
+      .eq('section_number', sectionNumber)
+      .maybeSingle()
+    if (!def) return { error: `No section ${sectionNumber} in this book.` }
+
+    const { data: section } = await supabase
+      .from('job_book_section').select('id')
+      .eq('job_book_id', jobBookId)
+      .eq('section_definition_id', def.id as string)
+      .maybeSingle()
+    if (!section) return { error: `Section ${sectionNumber} is not on this book.` }
+
+    return { id: section.id as string }
   }
 
   async createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult> {

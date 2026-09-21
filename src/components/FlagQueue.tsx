@@ -13,7 +13,8 @@
  * clicked resolve" is not an answer.
  */
 import { useMemo, useState } from 'react'
-import { AlertTriangle, ChevronDown, Info, TriangleAlert } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { AlertTriangle, Check, ChevronDown, Info, Loader2, TriangleAlert } from 'lucide-react'
 import type { AggregatedFinding } from '@/lib/domain/flags'
 import type { FlagSeverity } from '@/lib/domain/types'
 import { Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState } from '@/components/ui/primitives'
@@ -26,14 +27,45 @@ const SEVERITY_META: Record<FlagSeverity, { tone: 'critical' | 'progress' | 'inf
 }
 
 export function FlagQueue({
-  findings, counts, initialSeverity,
+  bookId, findings, counts, initialSeverity,
 }: {
+  bookId: string
   findings: AggregatedFinding[]
   counts: { critical: number; warning: number; info: number; total: number; totalRecords: number }
   initialSeverity: FlagSeverity | 'all'
 }) {
+  const router = useRouter()
   const [severity, setSeverity] = useState<FlagSeverity | 'all'>(initialSeverity)
   const [expanded, setExpanded] = useState<string | null>(null)
+  // Keyed by fingerprint: the note being typed, what is in flight, and
+  // what each attempt said.
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const [outcome, setOutcome] = useState<Record<string, { ok: boolean; message: string }>>({})
+
+  async function act(fingerprint: string, state: 'resolved' | 'dismissed') {
+    setBusy(fingerprint)
+    setOutcome((o) => ({ ...o, [fingerprint]: undefined as never }))
+    try {
+      const res = await fetch(`/api/books/${bookId}/flags`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fingerprint, state, note: notes[fingerprint] ?? '' }),
+      })
+      const json = await res.json()
+      setOutcome((o) => ({ ...o, [fingerprint]: {
+        ok: !!json.ok,
+        message: json.ok
+          ? state === 'resolved' ? 'Resolved.' : 'Dismissed.'
+          : json.error ?? 'That did not go through.',
+      } }))
+      if (json.ok) router.refresh()
+    } catch {
+      setOutcome((o) => ({ ...o, [fingerprint]:
+        { ok: false, message: 'Could not reach the server.' } }))
+    } finally {
+      setBusy(null)
+    }
+  }
 
   // Findings arrive already aggregated by rule from the domain, so the
   // queue shows one row per problem rather than one per record.
@@ -126,14 +158,54 @@ export function FlagQueue({
                     </>
                   )}
 
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <input
-                      placeholder="Resolution note (required)"
-                      aria-label={`Resolution note for ${g.ruleId}`}
-                      className="min-w-0 flex-1 rounded-md border border-hairline bg-surface-raised px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-muted"
-                    />
-                    <Button variant="secondary">Assign</Button>
-                    <Button variant="primary">Resolve</Button>
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        placeholder="Resolution note (required)"
+                        aria-label={`Resolution note for ${g.ruleId}`}
+                        value={notes[g.fingerprint] ?? ''}
+                        onChange={(e) =>
+                          setNotes((n) => ({ ...n, [g.fingerprint]: e.target.value }))}
+                        className="min-w-0 flex-1 rounded-md border border-hairline bg-surface-raised px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-muted"
+                      />
+                      {/* Dismissed and resolved are different claims. One says
+                          the problem was fixed; the other says it was never a
+                          problem. Both need a note, and an auditor reading the
+                          book later can tell which was meant. */}
+                      <Button
+                        variant="secondary"
+                        disabled={busy !== null || !(notes[g.fingerprint] ?? '').trim()}
+                        onClick={() => void act(g.fingerprint, 'dismissed')}
+                      >
+                        Not a problem
+                      </Button>
+                      <Button
+                        variant="primary"
+                        disabled={busy !== null || !(notes[g.fingerprint] ?? '').trim()}
+                        onClick={() => void act(g.fingerprint, 'resolved')}
+                      >
+                        {busy === g.fingerprint
+                          ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                          : 'Resolve'}
+                      </Button>
+                    </div>
+                    {!(notes[g.fingerprint] ?? '').trim() && (
+                      <p className="text-2xs text-ink-muted">
+                        A note is required — the database refuses a resolution without one,
+                        because an auditor will ask why this was closed.
+                      </p>
+                    )}
+                    {outcome[g.fingerprint] && (
+                      <p className={cn(
+                        'flex items-start gap-1.5 text-2xs leading-relaxed',
+                        outcome[g.fingerprint]!.ok ? 'text-status-complete' : 'text-status-critical',
+                      )}>
+                        {outcome[g.fingerprint]!.ok
+                          ? <Check size={12} className="mt-px shrink-0" />
+                          : <AlertTriangle size={12} className="mt-px shrink-0" />}
+                        {outcome[g.fingerprint]!.message}
+                      </p>
+                    )}
                   </div>
                 </CardBody>
               </Card>

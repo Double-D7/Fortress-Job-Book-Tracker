@@ -8,6 +8,7 @@ import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, ProgressBar,
   Table, Td, Th, Tr, bandTone,
 } from '@/components/ui/primitives'
+import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
 import { bytes, num, pct } from '@/lib/utils'
 
@@ -215,24 +216,13 @@ export default async function SectionDetail({
             themselves. The rule is enforced in the database, so it holds for any caller — not
             only for this screen.
           </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" disabled={section.status === 'approved'}>
-              Mark ready for review
-            </Button>
-            <Button variant="primary" disabled={!canApprove || isOwnSubmission || section.status === 'na'}>
-              Approve section
-            </Button>
-            {!canApprove && (
-              <span className="text-2xs text-ink-muted">
-                Approval requires a QA/QC Manager or Admin.
-              </span>
-            )}
-            {isOwnSubmission && (
-              <span className="text-2xs text-status-progress">
-                You submitted this section, so you cannot approve it.
-              </span>
-            )}
-          </div>
+          <SectionSignOff
+            bookId={bookId}
+            sectionNumber={number}
+            status={section.status}
+            canApprove={canApprove}
+            isOwnSubmission={isOwnSubmission}
+          />
         </CardBody>
       </Card>
     </div>

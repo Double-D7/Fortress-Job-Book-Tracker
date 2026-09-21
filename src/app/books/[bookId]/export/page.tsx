@@ -1,5 +1,5 @@
 import { notFound, redirect} from 'next/navigation'
-import { Download, FileArchive, FileText } from 'lucide-react'
+import { Download, FileArchive } from 'lucide-react'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { scoreBook } from '@/lib/domain/scoring'
 import { countBySeverity, evaluateFlags } from '@/lib/domain/flags'
@@ -78,15 +78,25 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
             </div>
           )}
 
+          {/* Real links, not buttons: a download is a navigation, and an
+              anchor gets the browser's own progress and retry for free.
+              The PDF package is deliberately absent rather than present
+              and broken — see below. */}
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary"><FileText size={13} /> Generate bookmarked PDF package</Button>
-            <Button variant="secondary"><FileArchive size={13} /> Original files (ZIP)</Button>
-            <Button variant="secondary"><Download size={13} /> Noble-format Excel logs</Button>
+            <a href={`/api/books/${bookId}/export?format=zip`} download>
+              <Button variant="primary"><FileArchive size={13} /> Approved documents (ZIP)</Button>
+            </a>
+            <a href={`/api/books/${bookId}/export?format=xlsx`} download>
+              <Button variant="secondary"><Download size={13} /> Noble-format Excel logs</Button>
+            </a>
           </div>
           <p className="text-2xs leading-relaxed text-ink-muted">
-            The PDF package carries a cover sheet, an auto-generated table of contents keyed to the
-            section numbering below, every approved document in section order, and a signed
-            completeness report reproducing this page's figures.
+            The ZIP carries every <strong className="text-ink-secondary">approved</strong> document
+            filed under its section number, plus a completeness report reproducing this page's
+            figures — including, where it applies, that the percentage is a lower bound. Anything
+            with a record but no readable file is listed in the package rather than quietly left
+            out. The Excel export is the weld and torque logs in the Noble column order, for an
+            operator who wants the data rather than the paper.
           </p>
         </CardBody>
       </Card>

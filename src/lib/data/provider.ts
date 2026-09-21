@@ -40,6 +40,15 @@ export interface JobBookSummary {
 /** Statuses at or past hand-over. Countdowns stop here. */
 const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
 
+/** Mirrors the RLS write predicate and `approve_section()`'s role check.
+ *  Courtesy, not control — the database refuses either way. */
+const WRITER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
+  'fortress_admin', 'qaqc_manager', 'qaqc_tech',
+])
+const APPROVER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
+  'fortress_admin', 'qaqc_manager',
+])
+
 export interface Viewer {
   id: string
   email: string
@@ -64,7 +73,39 @@ export interface UploadResult {
   error?: string
 }
 
+export interface ActionResult {
+  ok: boolean
+  error?: string
+}
+
 export interface DataProvider {
+  /**
+   * Mark a section ready for a second person to review.
+   *
+   * Records who submitted it, which is half of the two-person control —
+   * `approve_section()` refuses anyone whose id matches.
+   */
+  markSectionReady(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult>
+
+  /**
+   * Approve a section. Always routed through the database function, never
+   * through a direct UPDATE: the rule that an approver may not be the
+   * submitter lives there so it holds for any caller, and reimplementing it
+   * here would create a second copy to drift from the first.
+   */
+  approveSection(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult>
+
+  /** Resolve or dismiss a flag. The note is not optional — the database
+   *  constraint refuses a resolution without one, because auditors ask. */
+  resolveFlag(
+    viewer: Viewer, jobBookId: string, fingerprint: string,
+    state: 'resolved' | 'dismissed' | 'acknowledged', note: string,
+  ): Promise<ActionResult>
+
   listJobBooks(viewer: Viewer): Promise<JobBookSummary[]>
   getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null>
   createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult>
@@ -97,6 +138,9 @@ class SeedProvider implements DataProvider {
    * cannot exist without the other.
    */
   private created = new Map<string, JobBookBundle>()
+  /** Flag resolutions, per process. See `resolveFlag`. */
+  private flagStates = new Map<string,
+    { state: string; note: string; by: string; at: string }>()
 
   private seeded(): JobBookBundle[] {
     // Stamped, not raw. `computedPct` is a cache the client-facing views
@@ -274,6 +318,100 @@ class SeedProvider implements DataProvider {
     return { ok: true, added, rejected }
   }
 
+  private findSection(jobBookId: string, sectionNumber: string) {
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b) return null
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+    const section = def && b.sections.find((x) => x.sectionDefinitionId === def.id)
+    if (!def || !section) return null
+    return { b, idx, def, section }
+  }
+
+  private commit(jobBookId: string, idx: number, updated: JobBookBundle) {
+    const stamped = applyComputedScores(updated)
+    if (this.created.has(jobBookId)) this.created.set(jobBookId, stamped)
+    else if (this.cache) this.cache[idx] = stamped
+  }
+
+  async markSectionReady(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult> {
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to work on this book.' }
+    }
+    const found = this.findSection(jobBookId, sectionNumber)
+    if (!found) return { ok: false, error: 'Section not found.' }
+    const { b, idx, section } = found
+    if (section.status === 'approved') {
+      return { ok: false, error: 'This section is already approved.' }
+    }
+    this.commit(jobBookId, idx, {
+      ...b,
+      sections: b.sections.map((x) => x.id !== section.id ? x : {
+        ...x,
+        status: 'ready_for_review' as const,
+        readyForReviewBy: viewer.id,
+        readyForReviewAt: new Date().toISOString(),
+      }),
+    })
+    return { ok: true }
+  }
+
+  async approveSection(
+    viewer: Viewer, jobBookId: string, sectionNumber: string,
+  ): Promise<ActionResult> {
+    const found = this.findSection(jobBookId, sectionNumber)
+    if (!found) return { ok: false, error: 'Section not found.' }
+    const { b, idx, section } = found
+
+    // The same three refusals `approve_section()` makes, in the same order,
+    // so the demo behaves like the real thing rather than merely looking
+    // like it.
+    if (!APPROVER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Section approval requires a QA/QC Manager or Admin.' }
+    }
+    if (section.readyForReviewBy === viewer.id) {
+      return { ok: false, error: 'A section may not be approved by the person who submitted it.' }
+    }
+    if (section.status === 'na') {
+      return { ok: false, error: 'This section is marked not applicable.' }
+    }
+    this.commit(jobBookId, idx, {
+      ...b,
+      sections: b.sections.map((x) => x.id !== section.id ? x : {
+        ...x,
+        status: 'approved' as const,
+        approvedBy: viewer.id,
+        approvedAt: new Date().toISOString(),
+      }),
+    })
+    return { ok: true }
+  }
+
+  async resolveFlag(
+    viewer: Viewer, jobBookId: string, fingerprint: string,
+    state: 'resolved' | 'dismissed' | 'acknowledged', note: string,
+  ): Promise<ActionResult> {
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to work on this book.' }
+    }
+    // Mirrors the resolution_has_note constraint. Auditors ask why a
+    // finding was closed, and "it was closed" is not an answer.
+    if (state !== 'acknowledged' && !note.trim()) {
+      return { ok: false, error: 'A resolution needs a note saying why.' }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    if (idx < 0) return { ok: false, error: 'Job book not found.' }
+
+    // The seed provider holds no flag table — findings are derived on every
+    // request. Resolutions are kept per process so the queue behaves, and
+    // the persistent provider writes them properly.
+    const key = `${jobBookId}:${fingerprint}`
+    this.flagStates.set(key, { state, note: note.trim(), by: viewer.id, at: new Date().toISOString() })
+    return { ok: true }
+  }
+
   async createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult> {
     // Mirrors the role check in `create_job_book()`. The database is the
     // control; this is the courtesy that stops a tech reaching a form they
@@ -393,6 +531,7 @@ export function getDataProvider(): DataProvider {
     const { SupabaseProvider } = require('./supabaseProvider') as
       typeof import('./supabaseProvider')
     provider = new SupabaseProvider()
+    return provider
   } else {
     provider = new SeedProvider()
   }

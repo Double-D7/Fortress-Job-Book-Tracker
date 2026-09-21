@@ -24,6 +24,7 @@ export default async function FlagsPage({
   const findings = aggregateFindings(evaluateFlags(b))
   return (
     <FlagQueue
+      bookId={bookId}
       findings={findings}
       counts={countBySeverity(findings)}
       initialSeverity={severity === 'critical' || severity === 'warning' || severity === 'info' ? severity : 'all'}
