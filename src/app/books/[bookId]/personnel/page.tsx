@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { notFound, redirect} from 'next/navigation'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { certHistory, evaluateCert, upcomingExpiries } from '@/lib/domain/certificates'
 import { continuityStatus, qualifiedOn, rollupByWelder } from '@/lib/domain/welders'
 import { reconcileWrenches } from '@/lib/domain/torque'
@@ -25,8 +25,13 @@ const CERT_CHIP = {
  * they answer different questions and a book can fail either one.
  */
 export default async function PersonnelPage({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const asOf = b.book.dataAsOfDate ?? new Date().toISOString().slice(0, 10)

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { redirect } from 'next/navigation'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import type { NewJobBookInput } from '@/lib/domain/scaffold'
 
 /**
@@ -20,6 +21,13 @@ export async function POST(request: Request) {
     )
   }
 
-  const result = await getDataProvider().createJobBook(DEMO_VIEWER, input)
+  const viewer = await currentViewer()
+  if (!viewer) {
+    return NextResponse.json(
+      { ok: false, errors: [{ field: 'auth', message: 'Not signed in.' }] }, { status: 401 },
+    )
+  }
+
+  const result = await getDataProvider().createJobBook(viewer, input)
   return NextResponse.json(result, { status: result.ok ? 201 : 422 })
 }

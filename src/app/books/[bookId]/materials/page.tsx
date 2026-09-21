@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { notFound, redirect} from 'next/navigation'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { reconcileHeats } from '@/lib/domain/reconcile'
 import {
   Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Metric, Table, Td, Th, Tr,
@@ -17,8 +17,13 @@ export const dynamic = 'force-dynamic'
  * filename — neither question can be answered at all.
  */
 export default async function MaterialsPage({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const rec = reconcileHeats(b.welds, b.materialHeats)

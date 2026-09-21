@@ -96,6 +96,15 @@ export interface PrepareInput {
   byteSize: number
   sha256: string
   mimeType?: string | null
+  /**
+   * The file's contents, when the caller has them.
+   *
+   * Carried on the input rather than the result so this module stays what
+   * it is — a pure decision over metadata, testable without a byte of real
+   * file. A provider that has to write the object finds the bytes here by
+   * hash; nothing in this file reads them.
+   */
+  bytes?: Uint8Array
 }
 
 /**

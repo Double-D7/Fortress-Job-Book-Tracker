@@ -370,14 +370,56 @@ export function redactForViewer(viewer: Viewer, b: JobBookBundle): JobBookBundle
 
 let provider: DataProvider | null = null
 
+/**
+ * Which provider is serving this process.
+ *
+ * `seed` is the in-memory reference book — no database, no credentials,
+ * every screen reachable. `supabase` is the persistent one. The default is
+ * deliberately `seed`: a missing environment variable should start a
+ * working demo, not a broken production instance that appears to lose
+ * every upload.
+ */
+export function providerKind(): 'seed' | 'supabase' {
+  return process.env.DATA_PROVIDER === 'supabase' ? 'supabase' : 'seed'
+}
+
 export function getDataProvider(): DataProvider {
-  if (!provider) provider = new SeedProvider()
+  if (provider) return provider
+  if (providerKind() === 'supabase') {
+    // Required at the point of use rather than imported at module load, so
+    // a seed-mode process never evaluates the Supabase client and never
+    // needs its environment variables.
+
+    const { SupabaseProvider } = require('./supabaseProvider') as
+      typeof import('./supabaseProvider')
+    provider = new SupabaseProvider()
+  } else {
+    provider = new SeedProvider()
+  }
   return provider
 }
 
-/** The signed-in viewer. Wired to Supabase Auth in `lib/supabase/server.ts`;
- *  the seed provider runs as a QA/QC manager so every screen is reachable
- *  in development. */
+/**
+ * The viewer for the current request.
+ *
+ * In `supabase` mode this is the signed-in user, resolved from the session
+ * cookie through `app_user`; a request with no session gets null and the
+ * caller sends them to sign in. In `seed` mode there is no auth and no
+ * database, so the demo viewer stands in — which is safe precisely because
+ * seed mode holds no real book.
+ *
+ * Nothing downstream may assume a viewer: returning null is how an
+ * unauthenticated request is supposed to end.
+ */
+export async function currentViewer(): Promise<Viewer | null> {
+  if (providerKind() !== 'supabase') return DEMO_VIEWER
+
+  const { getViewer } = await import('@/lib/supabase/server')
+  return getViewer()
+}
+
+/** The stand-in viewer for seed mode. Never reached when a database is
+ *  configured — see `currentViewer`. */
 export const DEMO_VIEWER: Viewer = {
   id: 'user-mgr-1',
   email: 'david.devitt@fortressds.com',

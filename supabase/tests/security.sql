@@ -204,6 +204,39 @@ begin
 end $$;
 
 \echo ''
+\echo 'Document files are as protected as the rows'
+-- A job book's files ARE the confidential material. A bucket left readable
+-- would make every policy above decorative, so the objects are checked the
+-- same way the rows are.
+insert into storage.objects (bucket_id, name) values
+  ('job-book-documents','dddddddd-0000-0000-0000-000000000001/13/'||repeat('a',64)),
+  ('job-book-documents','dddddddd-0000-0000-0000-000000000002/13/'||repeat('b',64))
+on conflict do nothing;
+
+do $$ begin
+  perform assert(
+    (select public from storage.buckets where id = 'job-book-documents') = false,
+    'the document bucket is private, so no file has a permanent public URL');
+  perform assert(
+    as_user('11111111-1111-1111-1111-111111111111',
+      'select count(*)::text from storage.objects') = '1',
+    'a client user can reach only their own operator''s files');
+  perform assert(
+    as_user('22222222-2222-2222-2222-222222222222',
+      'select count(*)::text from storage.objects') = '1',
+    'and the other operator only theirs');
+  perform assert(
+    as_user('33333333-3333-3333-3333-333333333333',
+      'select count(*)::text from storage.objects') = '0',
+    'a tech with no assignment reaches no files at all');
+  perform assert(
+    refused('11111111-1111-1111-1111-111111111111',
+      'insert into storage.objects (bucket_id, name) values (''job-book-documents'',
+        ''dddddddd-0000-0000-0000-000000000001/13/''||repeat(''c'',64))'),
+    'a client user cannot upload into a book they can only read');
+end $$;
+
+\echo ''
 \echo 'Row Level Security is on, and forced, everywhere'
 do $$ begin
   perform assert(

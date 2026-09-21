@@ -1,7 +1,7 @@
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { notFound, redirect} from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { collectedOf, scoreSection } from '@/lib/domain/scoring'
 import { evaluateFlags } from '@/lib/domain/flags'
 import {
@@ -26,9 +26,14 @@ const CAN_UPLOAD = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
 export default async function SectionDetail({
   params,
 }: { params: Promise<{ bookId: string; sectionNumber: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId, sectionNumber } = await params
   const number = decodeURIComponent(sectionNumber)
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const def = b.sectionDefinitions.find((d) => d.sectionNumber === number)
@@ -40,8 +45,8 @@ export default async function SectionDetail({
   const docs = b.documents.filter((d) => d.sectionId === section.id && !d.deletedAt)
   const flags = evaluateFlags(b).filter((f) => f.sectionNumber === number)
 
-  const canApprove = DEMO_VIEWER.role === 'qaqc_manager' || DEMO_VIEWER.role === 'fortress_admin'
-  const isOwnSubmission = section.readyForReviewBy === DEMO_VIEWER.id
+  const canApprove = viewer.role === 'qaqc_manager' || viewer.role === 'fortress_admin'
+  const isOwnSubmission = section.readyForReviewBy === viewer.id
 
   return (
     <div className="space-y-4">
@@ -128,7 +133,7 @@ export default async function SectionDetail({
         bookId={bookId}
         sectionNumber={number}
         sectionTitle={def.title}
-        canUpload={CAN_UPLOAD.has(DEMO_VIEWER.role)}
+        canUpload={CAN_UPLOAD.has(viewer.role)}
       />
 
       <Card>

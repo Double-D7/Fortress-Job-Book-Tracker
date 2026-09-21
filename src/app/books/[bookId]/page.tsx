@@ -8,9 +8,9 @@
  * missing CWI initials" without another click.
  */
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { notFound, redirect} from 'next/navigation'
 import { AlertTriangle, Info, TriangleAlert } from 'lucide-react'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { scoreBook, weightLoss } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { xrayTotals } from '@/lib/domain/welders'
@@ -32,8 +32,13 @@ const SECTION_STATUS: Record<string, { label: string; tone: 'complete' | 'progre
 }
 
 export default async function BookOverview({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const score = scoreBook(b)

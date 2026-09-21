@@ -1,6 +1,6 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect} from 'next/navigation'
 import { AlertTriangle, Check } from 'lucide-react'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { checkWrenchCalibration, reconcileWrenches, torqueTotals } from '@/lib/domain/torque'
 import { torqueCompleteness } from '@/lib/domain/completeness'
 import { TorqueGrid } from '@/components/TorqueGrid'
@@ -20,8 +20,13 @@ const VERDICT_LABEL: Record<string, { label: string; tone: 'complete' | 'critica
 }
 
 export default async function TorquePage({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const totals = torqueTotals(b.torqueConnections, b.book)

@@ -6,8 +6,9 @@
  * be got wrong.
  */
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import { AlertTriangle, CalendarClock, Plus } from 'lucide-react'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import {
   Button, Card, Chip, EmptyState, ProgressBar, Ring, SectionHeading, bandTone,
 } from '@/components/ui/primitives'
@@ -25,7 +26,12 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 export default async function PortfolioPage() {
-  const books = await getDataProvider().listJobBooks(DEMO_VIEWER)
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
+  const books = await getDataProvider().listJobBooks(viewer)
 
   return (
     <>

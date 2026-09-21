@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
+import { redirect } from 'next/navigation'
 import { createHash } from 'node:crypto'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 
 /**
@@ -53,6 +54,10 @@ async function readForm(request: Request): Promise<
       byteSize: buf.byteLength,
       sha256: createHash('sha256').update(buf).digest('hex'),
       mimeType: f.type || null,
+      // Carried through to the provider, which writes the object. The seed
+      // provider ignores them; the persistent one cannot store a document
+      // it was only told the size of.
+      bytes: new Uint8Array(buf),
     })
   }
   return { ok: true, files }
@@ -69,7 +74,10 @@ export async function PUT(
   const read = await readForm(request)
   if (!read.ok) return NextResponse.json({ ok: false, error: read.error }, { status: 400 })
 
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const viewer = await currentViewer()
+  if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
+
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) return NextResponse.json({ ok: false, error: 'Job book not found.' }, { status: 404 })
 
   const def = b.sectionDefinitions.find((d) => d.sectionNumber === number)
@@ -98,8 +106,11 @@ export async function POST(
   const read = await readForm(request)
   if (!read.ok) return NextResponse.json({ ok: false, error: read.error }, { status: 400 })
 
+  const viewer = await currentViewer()
+  if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
+
   const result = await getDataProvider().addDocuments(
-    DEMO_VIEWER, bookId, decodeURIComponent(sectionNumber), read.files,
+    viewer, bookId, decodeURIComponent(sectionNumber), read.files,
   )
   return NextResponse.json(result, { status: result.ok ? 201 : 422 })
 }

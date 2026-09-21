@@ -1,13 +1,18 @@
-import { notFound } from 'next/navigation'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { notFound, redirect} from 'next/navigation'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { BookNav } from '@/components/BookNav'
 import { Chip } from '@/components/ui/primitives'
 
 export default async function BookLayout({
   children, params,
 }: { children: React.ReactNode; params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const bundle = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const bundle = await getDataProvider().getBundle(viewer, bookId)
   if (!bundle) notFound()
 
   const { book, clientOrg } = bundle

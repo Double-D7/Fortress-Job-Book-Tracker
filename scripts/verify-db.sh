@@ -59,6 +59,18 @@ do $$ begin
   create role authenticated; exception when duplicate_object then null; end $$;
 do $$ begin
   create role service_role;  exception when duplicate_object then null; end $$;
+
+-- Supabase Storage. Stubbed to the shape the migrations touch so the
+-- document-bucket policies can be applied and checked here too; the real
+-- thing carries far more, none of which these migrations depend on.
+create schema if not exists storage;
+create table if not exists storage.buckets (
+  id text primary key, name text not null, public boolean not null default false,
+  file_size_limit bigint);
+create table if not exists storage.objects (
+  id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets(id),
+  name text not null, owner uuid, created_at timestamptz default now());
+alter table storage.objects enable row level security;
 SQL
 
 echo "Applying migrations…"
@@ -77,6 +89,10 @@ grant all on all tables in schema public to anon, authenticated;
 grant all on all sequences in schema public to anon, authenticated;
 grant execute on all functions in schema public to anon, authenticated;
 revoke update, delete, truncate on audit_event from anon, authenticated;
+-- Supabase grants these on the storage schema; RLS is what decides which
+-- objects are actually visible.
+grant usage on schema storage to anon, authenticated;
+grant all on all tables in schema storage to anon, authenticated;
 SQL
 
 echo ""

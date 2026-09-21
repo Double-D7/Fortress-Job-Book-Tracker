@@ -1,13 +1,18 @@
-import { notFound } from 'next/navigation'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { notFound, redirect} from 'next/navigation'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { collateSectionNumber } from '@/lib/domain/scoring'
 import { DocumentLibrary } from '@/components/DocumentLibrary'
 
 export const dynamic = 'force-dynamic'
 
 export default async function DocumentsPage({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const defById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))

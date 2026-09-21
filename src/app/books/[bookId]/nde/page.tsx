@@ -1,6 +1,6 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect} from 'next/navigation'
 import { AlertTriangle } from 'lucide-react'
-import { DEMO_VIEWER, getDataProvider } from '@/lib/data/provider'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { reconcileNde } from '@/lib/domain/reconcile'
 import { certValidOn } from '@/lib/domain/certificates'
 import { isWithin } from '@/lib/domain/dates'
@@ -12,8 +12,13 @@ import { num } from '@/lib/utils'
 export const dynamic = 'force-dynamic'
 
 export default async function NdePage({ params }: { params: Promise<{ bookId: string }> }) {
+  // No session means no data. Sending an unauthenticated request to the
+  // sign-in page is the only correct ending; rendering a shell with empty
+  // tables would look like a book with nothing in it.
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
   const { bookId } = await params
-  const b = await getDataProvider().getBundle(DEMO_VIEWER, bookId)
+  const b = await getDataProvider().getBundle(viewer, bookId)
   if (!b) notFound()
 
   const rec = reconcileNde(b.welds, b.ndeReports)
