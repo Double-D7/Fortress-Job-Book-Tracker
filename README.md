@@ -18,6 +18,9 @@ npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
 npm run verify:db       # migrations + RLS + audit + two-person approval, on real Postgres
 ```
 
+**To put it into service** — Supabase, storage, sign-in and deployment —
+see [DEPLOY.md](DEPLOY.md).
+
 No database is needed to run or test: the app ships with two books as an
 in-memory provider, and every screen runs the same scoring and flag code
 the persistent provider will.

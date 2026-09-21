@@ -204,6 +204,51 @@ begin
 end $$;
 
 \echo ''
+\echo 'Account linking is an allowlist, not a sign-up'
+do $$
+declare v_linked uuid;
+begin
+  -- Invited first, then authenticates. The ordinary flow.
+  insert into app_user (email, full_name, role)
+  values ('invited@fortressds.com','Invited Tech','qaqc_tech');
+  insert into auth.users (id, email)
+  values ('66666666-6666-6666-6666-666666666666','invited@fortressds.com');
+  select auth_user_id into v_linked from app_user where email = 'invited@fortressds.com';
+  perform assert(v_linked = '66666666-6666-6666-6666-666666666666',
+    'someone invited before they sign in is linked when they do');
+
+  -- Authenticates first, invited afterwards. The common real case, since
+  -- people try the link before anyone has set them up.
+  insert into auth.users (id, email)
+  values ('77777777-7777-7777-7777-777777777777','early@fortressds.com');
+  insert into app_user (email, full_name, role)
+  values ('early@fortressds.com','Early Bird','qaqc_manager');
+  select auth_user_id into v_linked from app_user where email = 'early@fortressds.com';
+  perform assert(v_linked = '77777777-7777-7777-7777-777777777777',
+    'someone who signed in before being invited is linked when they are');
+
+  -- The property that matters: authenticating with an uninvited address
+  -- creates nothing and reaches nothing.
+  insert into auth.users (id, email)
+  values ('88888888-8888-8888-8888-888888888888','stranger@example.com');
+  perform assert(
+    (select count(*) from app_user where email = 'stranger@example.com') = 0,
+    'authenticating with an uninvited address creates no account');
+  perform assert(
+    as_user('88888888-8888-8888-8888-888888888888','select count(*)::text from job_book') = '0',
+    'and reaches no job book');
+
+  perform assert(
+    refused('33333333-3333-3333-3333-333333333333',
+      'select invite_user(''x@y.com'',''X'',''fortress_admin'')'),
+    'a tech cannot invite anyone');
+  perform assert(
+    refused('44444444-4444-4444-4444-444444444444',
+      'select invite_user(''bad@y.com'',''Bad'',''client_user'')'),
+    'even an admin cannot create a client user with no operator');
+end $$;
+
+\echo ''
 \echo 'Document files are as protected as the rows'
 -- A job book's files ARE the confidential material. A bucket left readable
 -- would make every policy above decorative, so the objects are checked the
