@@ -15,6 +15,7 @@ npm test             # 254 tests, including the §11 acceptance criteria
 npm run ingest -- "<path to a job book folder>"   # read a real book off disk
 npm run seed:verify     # DP452 figures against the source brief
 npm run verify:greeley  # DP-318 figures against greeley-crescent-import.json
+npm run verify:db       # migrations + RLS + audit + two-person approval, on real Postgres
 ```
 
 No database is needed to run or test: the app ships with two books as an
