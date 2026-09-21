@@ -49,9 +49,16 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
   const losses = weightLoss(score).slice(0, 5)
   const defsById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))
 
+  // `grid-cols-1` is explicit and `min-w-0` is load-bearing. A grid's
+  // implicit column is `auto`, which sizes to its widest content rather than
+  // to the viewport, so on a phone this single-column layout came out 471px
+  // wide inside a 390px screen and the page scrolled sideways. Naming the
+  // column and letting children shrink below their content pins it to the
+  // screen — the same pairing is needed anywhere a grid meets a narrow
+  // viewport.
   return (
-    <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-      <div className="space-y-4">
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="min-w-0 space-y-4">
         <Card>
           <CardBody className="flex flex-col items-center py-6">
             <Ring
@@ -125,8 +132,8 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
         </Card>
       </div>
 
-      <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="min-w-0 space-y-4">
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
           <Metric
             label="Weld credits"
             value={num(xray.totalWeldCredits)}
@@ -170,7 +177,7 @@ export default async function BookOverview({ params }: { params: Promise<{ bookI
         </div>
 
         <Card>
-          <CardHeader className="flex items-center justify-between">
+          <CardHeader className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <CardTitle>Sections</CardTitle>
             <span className="text-2xs text-ink-muted">
               Titles are verbatim from the governing checklist

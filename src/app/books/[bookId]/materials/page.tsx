@@ -33,7 +33,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ book
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Heats referenced by welds" value={num(rec.referencedHeats.length)} />
         <Metric
           label="MTR coverage"
@@ -53,7 +53,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ book
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Heats without an MTR on file</CardTitle>
@@ -134,12 +134,12 @@ export default async function MaterialsPage({ params }: { params: Promise<{ book
       )}
 
       <Card>
-        <CardHeader className="flex items-center justify-between">
+        <CardHeader className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <CardTitle>Heat register</CardTitle>
           <span className="text-2xs text-ink-muted">{num(b.materialHeats.length)} records</span>
         </CardHeader>
         <CardBody className="p-0">
-          <div className="max-h-[520px] overflow-y-auto">
+          <div className="max-h-[520px] overflow-auto">
             <Table>
               <thead>
                 <tr>

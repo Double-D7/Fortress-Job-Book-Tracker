@@ -171,7 +171,7 @@ export function WeldGrid({
             value={line}
             onChange={(e) => setLine(e.target.value)}
             aria-label="Filter by line"
-            className="rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
+            className="min-w-0 max-w-full rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
           >
             <option value="">All lines ({lines.length})</option>
             {lines.map((l) => (

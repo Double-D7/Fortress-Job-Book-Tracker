@@ -39,7 +39,7 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
       <Card>
         <CardHeader><CardTitle>Turnover readiness</CardTitle></CardHeader>
         <CardBody className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <div className="text-2xs uppercase tracking-wide text-ink-muted">Overall completion</div>
               <div className="tnum mt-1 text-2xl font-semibold">{pct(score.overallPct)}</div>

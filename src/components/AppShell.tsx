@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { ShieldCheck } from 'lucide-react'
-import { DEMO_VIEWER } from '@/lib/data/provider'
+import { currentViewer } from '@/lib/data/provider'
 
 const ROLE_LABELS: Record<string, string> = {
   fortress_admin: 'Fortress Admin',
@@ -11,8 +11,10 @@ const ROLE_LABELS: Record<string, string> = {
   third_party_inspector: 'Third-Party Inspector',
 }
 
-export function AppShell({ children }: { children: React.ReactNode }) {
-  const viewer = DEMO_VIEWER
+export async function AppShell({ children }: { children: React.ReactNode }) {
+  // Null only on a page that is itself public; the middleware redirects
+  // everything else before it gets here.
+  const viewer = await currentViewer()
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-30 border-b border-hairline bg-canvas/90 backdrop-blur">
@@ -26,13 +28,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
           <div className="ml-auto flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <div className="text-xs font-medium leading-tight">{viewer.fullName}</div>
-              <div className="text-2xs leading-tight text-ink-muted">{ROLE_LABELS[viewer.role]}</div>
-            </div>
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-raised text-2xs font-semibold text-ink-secondary">
-              {viewer.fullName.split(' ').map((p) => p[0]).join('').slice(0, 2)}
-            </div>
+            {viewer && <>
+              <div className="hidden text-right sm:block">
+                <div className="text-xs font-medium leading-tight">{viewer.fullName}</div>
+                <div className="text-2xs leading-tight text-ink-muted">{ROLE_LABELS[viewer.role]}</div>
+              </div>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-raised text-2xs font-semibold text-ink-secondary">
+                {viewer.fullName.split(' ').map((p) => p[0]).join('').slice(0, 2)}
+              </div>
+            </>}
           </div>
         </div>
       </header>

@@ -70,7 +70,12 @@ export function DocumentLibrary({ docs }: { docs: DocRow[] }) {
             value={section}
             onChange={(e) => setSection(e.target.value)}
             aria-label="Filter by section"
-            className="rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
+            // A <select> sizes itself to its widest option, and these carry
+            // the full checklist titles — enough to push a 390px phone
+            // sideways on its own. Capped and allowed to shrink; the option
+            // text stays intact in the open dropdown, which is where it is
+            // actually read.
+            className="min-w-0 max-w-full flex-shrink rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
           >
             <option value="">All sections</option>
             {sections.map((s) => (
@@ -91,10 +96,14 @@ export function DocumentLibrary({ docs }: { docs: DocRow[] }) {
           </div>
         </CardHeader>
         <CardBody className="p-0">
+          {/* `overflow-auto` below, not `overflow-y-auto`: a box that scrolls
+              only vertically still lays its child out at full content width,
+              so the 970px document table pushed the whole page sideways on a
+              phone instead of scrolling inside its own card. */}
           {filtered.length === 0 ? (
             <div className="p-5"><EmptyState title="No documents match" /></div>
           ) : (
-            <div className="max-h-[640px] overflow-y-auto">
+            <div className="max-h-[640px] overflow-auto">
               <Table>
                 <thead>
                   <tr>

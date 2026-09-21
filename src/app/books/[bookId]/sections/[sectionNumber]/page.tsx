@@ -152,7 +152,7 @@ export default async function SectionDetail({
               }
             />
           ) : (
-            <div className="max-h-[460px] overflow-y-auto">
+            <div className="max-h-[460px] overflow-auto">
               <Table>
                 <thead>
                   <tr><Th>File</Th><Th className="text-right">Size</Th><Th>Uploaded</Th><Th>State</Th></tr>

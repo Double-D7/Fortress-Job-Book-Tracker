@@ -51,7 +51,7 @@ export default async function PortfolioPage() {
           detail="Create one from the checklist template, or ask a QA/QC manager to assign you to an existing book."
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {books.map((b) => (
             <Link key={b.id} href={`/books/${b.id}`} className="group">
               <Card className="h-full p-5 transition-colors group-hover:border-brand-bright/40">

@@ -74,7 +74,7 @@ export function TorqueGrid({
           value={filter}
           onChange={(e) => setFilter(e.target.value as typeof filter)}
           aria-label="Filter connections"
-          className="rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
+          className="min-w-0 max-w-full rounded-md border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink"
         >
           <option value="all">All connections</option>
           <option value="uninspected">Not inspected</option>

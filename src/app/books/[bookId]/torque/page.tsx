@@ -56,7 +56,7 @@ export default async function TorquePage({ params }: { params: Promise<{ bookId:
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Connections" value={num(totals.totalConnections)} />
         <Metric
           label="Inspected"
