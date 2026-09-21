@@ -99,17 +99,21 @@ Environment variables, from **Supabase → Project Settings → API**:
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `anon` / publishable key |
-| `SUPABASE_SERVICE_ROLE_KEY` | `service_role` key — **server-side only** |
 | `DATA_PROVIDER` | `supabase` |
+
+Three, not four. **The service-role key is not one of them.** Nothing in
+the application reads it — only `npm run verify:live` does, from a local
+shell. It bypasses every RLS policy in the database, so the less it travels
+the better, and a deployment that never holds it cannot leak it.
 
 `DATA_PROVIDER` is the switch. Leave it unset and the app runs the
 in-memory demo book instead — which is the right default for a missing
 variable, but means a production deploy that forgets it will appear to
 accept uploads and lose every one of them. Set it.
 
-The service-role key bypasses every RLS policy in the database. It belongs
-in Vercel's environment and nowhere else — never in a `NEXT_PUBLIC_` name,
-never in the browser.
+If a `SUPABASE_SERVICE_ROLE_KEY` is already set on the deployment from an
+earlier setup, clear it. An unused secret is still a secret sitting
+somewhere it is not needed.
 
 ---
 
