@@ -20,7 +20,9 @@ import { AlertTriangle, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardBody } from '@/components/ui/primitives'
 import { createClient } from '@/lib/supabase/client'
 
-export function LoginForm({ configured }: { configured: boolean }) {
+export function LoginForm(
+  { configured, microsoftEnabled }: { configured: boolean; microsoftEnabled: boolean },
+) {
   const params = useSearchParams()
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState<'microsoft' | 'email' | null>(null)
@@ -34,6 +36,20 @@ export function LoginForm({ configured }: { configured: boolean }) {
     ? `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`
     : undefined
 
+  /**
+   * Microsoft sign-in.
+   *
+   * `signInWithOAuth` navigates the browser away immediately — it does not
+   * wait to find out whether the provider exists. So when Azure is not
+   * configured, Supabase answers the authorize URL with raw JSON
+   * (`"Unsupported provider: provider is not enabled"`) and the person is
+   * looking at it before any error handler here could run. There is no way
+   * to catch that from this side.
+   *
+   * Which is why the button is not rendered at all unless the provider is
+   * switched on. Handling the failure was never going to work; not
+   * offering the door is the fix.
+   */
   async function withMicrosoft() {
     const supabase = createClient()
     if (!supabase) return setError(NOT_CONFIGURED)
@@ -43,16 +59,9 @@ export function LoginForm({ configured }: { configured: boolean }) {
       provider: 'azure',
       options: { redirectTo, scopes: 'email' },
     })
-    // On success the browser has already navigated away, so reaching here
-    // at all means it did not.
     if (error) {
       setBusy(null)
-      setError(
-        /provider is not enabled/i.test(error.message)
-          ? 'Microsoft sign-in is not switched on for this project yet. Use the email link ' +
-            'below — it works now — or enable the Azure provider in Supabase.'
-          : error.message,
-      )
+      setError(`Microsoft sign-in failed: ${error.message}`)
     }
   }
 
@@ -64,20 +73,30 @@ export function LoginForm({ configured }: { configured: boolean }) {
 
     const { error } = await supabase.auth.signInWithOtp({
       email: email.trim(),
-      // Never create an account from this screen. Access is an invitation
-      // an admin makes; an address nobody invited gets no row, no role and
-      // no job book, and it should not get an auth account either.
-      options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
+      // Account creation is allowed here, and the allowlist is enforced a
+      // layer down: a trigger on auth.users refuses an address with no
+      // app_user invitation. Blocking creation from this screen instead
+      // looked safer and was not — a first sign-in has to create the
+      // account, so it locked out everyone including the admin who set the
+      // system up.
+      options: { emailRedirectTo: redirectTo, shouldCreateUser: true },
     })
     setBusy(null)
 
     if (!error) return setSent(true)
     setError(
-      /signups not allowed|not found/i.test(error.message)
+      // The database trigger raises this sentence verbatim; so does this
+      // screen, so a person reads the same words whichever layer stopped
+      // them.
+      /not been invited|signups not allowed|not found/i.test(error.message)
         ? 'That address has not been invited to this system. Ask a Fortress admin to add you.'
-        : /rate limit|too many/i.test(error.message)
-          ? 'Too many sign-in emails have gone out in the last hour. Wait a few minutes.'
-          : error.message,
+        : /rate limit|too many|only request this after/i.test(error.message)
+          ? 'Too many sign-in emails have gone out recently. Wait a minute and try again.'
+          : /signups? (are )?(not allowed|disabled)/i.test(error.message)
+            ? 'Sign-ups are switched off for this project. Turn "Allow new users to sign up" ' +
+              'back on in Supabase — the invitation list is what restricts access, and it is ' +
+              'enforced in the database.'
+            : error.message,
     )
   }
 
@@ -120,32 +139,36 @@ export function LoginForm({ configured }: { configured: boolean }) {
         </p>
       )}
 
-      <div className="space-y-2">
-        <Button
-          variant="primary" className="w-full py-2"
-          onClick={() => void withMicrosoft()}
-          disabled={busy !== null || !configured}
-        >
-          {busy === 'microsoft'
-            ? <><Loader2 size={14} className="animate-spin" /> Redirecting…</>
-            : 'Sign in with Microsoft'}
-        </Button>
-        <p className="text-center text-2xs text-ink-muted">
-          Fortress staff sign in with their Microsoft 365 account.
-        </p>
-      </div>
+      {microsoftEnabled && (
+        <>
+          <div className="space-y-2">
+            <Button
+              variant="primary" className="w-full py-2"
+              onClick={() => void withMicrosoft()}
+              disabled={busy !== null || !configured}
+            >
+              {busy === 'microsoft'
+                ? <><Loader2 size={14} className="animate-spin" /> Redirecting…</>
+                : 'Sign in with Microsoft'}
+            </Button>
+            <p className="text-center text-2xs text-ink-muted">
+              Fortress staff sign in with their Microsoft 365 account.
+            </p>
+          </div>
 
-      <div className="flex items-center gap-3">
-        <span className="h-px flex-1 bg-hairline" />
-        <span className="text-2xs text-ink-muted">or by email</span>
-        <span className="h-px flex-1 bg-hairline" />
-      </div>
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-1 bg-hairline" />
+            <span className="text-2xs text-ink-muted">or by email</span>
+            <span className="h-px flex-1 bg-hairline" />
+          </div>
+        </>
+      )}
 
       <form className="space-y-2" onSubmit={(e) => void withEmail(e)}>
         <input
           type="email" required value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
+          placeholder="you@fortressds.com"
           aria-label="Email address"
           autoComplete="email"
           className="w-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-xs text-ink placeholder:text-ink-muted"

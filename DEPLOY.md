@@ -55,9 +55,21 @@ recorded.
 
 **Authentication → Providers.** Either works:
 
-- **Azure (Entra ID)** for Fortress staff, so people use the account they
-  already have. You will need the tenant's client ID and secret.
-- **Email magic link**, which needs nothing and is fine to start with.
+- **Email magic link** — nothing to configure, works immediately. Start here.
+- **Azure (Entra ID)** for Fortress staff on their existing Microsoft
+  accounts. Needs the tenant's client ID and secret from Azure. Once it is
+  actually enabled, set `NEXT_PUBLIC_MICROSOFT_SIGNIN=on` on the deployment
+  to show the button — it stays hidden otherwise, because
+  `signInWithOAuth` navigates the browser away before it can report an
+  unconfigured provider, so the button would land a person on a raw JSON
+  error page.
+
+**Leave "Allow new users to sign up" ON.** The allowlist is enforced in the
+database — migration 0013 puts a trigger on `auth.users` that refuses an
+address with no `app_user` invitation. Switching signups off as well
+deadlocks the first sign-in: creating an account is exactly what a first
+sign-in does, so nobody can ever get in, including the admin who set the
+system up.
 
 Then **Authentication → URL Configuration**: set the Site URL to your
 deployed address and add `https://<your-app>/auth/callback` to the redirect

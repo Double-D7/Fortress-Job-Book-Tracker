@@ -9,7 +9,15 @@ export default function LoginPage() {
   // offering a sign-in that cannot go anywhere.
   return (
     <Suspense>
-      <LoginForm configured={providerKind() === 'supabase'} />
+      <LoginForm
+        configured={providerKind() === 'supabase'}
+        // Off unless the Azure provider is actually switched on in
+        // Supabase. `signInWithOAuth` navigates away before it can report
+        // an unconfigured provider, so the person lands on a raw JSON
+        // error page with nothing this application can do about it. A
+        // door that only leads there does not belong on the screen.
+        microsoftEnabled={process.env.NEXT_PUBLIC_MICROSOFT_SIGNIN === 'on'}
+      />
     </Suspense>
   )
 }
