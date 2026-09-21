@@ -14,16 +14,20 @@ Everything below is done once.
 crews — `us-east-1` or `us-west-1` for Colorado work. Save the database
 password it generates; you will not be shown it again.
 
-## 2. Apply the migrations
+## 2. Apply the schema
 
-**SQL Editor → New query**, then paste and run each file from
-`supabase/migrations/` **in numerical order**, 0001 through 0011. Order is
-not optional: later files alter tables the earlier ones create.
+**SQL Editor → New query.** Paste the whole of
+[`supabase/setup.sql`](supabase/setup.sql) and run it once.
 
-They have been run end to end against a real Postgres — `npm run verify:db`
-does exactly this on a throwaway server and then asserts the guarantees
-hold. If you have the Supabase CLI, `supabase db push` does the same thing
-in one command.
+That one file is all eleven migrations in order, generated from
+`supabase/migrations/` by `npm run build:setup`. Use it rather than pasting
+the migrations yourself: later files alter tables earlier ones create, so a
+run in the wrong order fails halfway and leaves a half-built schema, which
+is worse than none.
+
+It takes a few seconds. The same statements are applied to a throwaway
+Postgres by `npm run verify:db`, which then asserts the guarantees hold, so
+this is not the first time they have been run.
 
 What you should see afterwards, in **Table Editor**: 32 tables, each with
 RLS enabled.
@@ -101,6 +105,20 @@ in Vercel's environment and nowhere else — never in a `NEXT_PUBLIC_` name,
 never in the browser.
 
 ---
+
+## Checking the project before you deploy
+
+From the repository, with the two values from **Project Settings → API**:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+npm run verify:live
+```
+
+It checks the tables exist, both checklist templates loaded, the bucket
+exists and is **private**, and at least one admin has been invited — and
+tells you which step to go back to for anything that failed.
 
 ## Checking it worked
 

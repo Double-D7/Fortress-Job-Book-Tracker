@@ -13,7 +13,9 @@
     "seed:verify": "tsx scripts/verify-seed.ts",
     "verify:greeley": "tsx scripts/verify-greeley.ts",
     "ingest": "tsx scripts/ingest-job-book.ts",
-    "verify:db": "bash scripts/verify-db.sh"
+    "verify:db": "bash scripts/verify-db.sh",
+    "build:setup": "tsx scripts/build-setup-sql.ts",
+    "verify:live": "tsx scripts/verify-live.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",
