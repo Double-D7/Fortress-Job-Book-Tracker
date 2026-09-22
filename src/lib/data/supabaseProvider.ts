@@ -20,11 +20,15 @@ import type {
 import type {
   ActionResult, CreateResult, DataProvider, GateDecision, GateSideFacts,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
+  TorqueLogImportPreview, TorqueLogImportResult,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
-import { buildOverviewPreview, buildWeldLogPreview, redactForViewer } from './provider'
+import {
+  buildOverviewPreview, buildTorqueLogPreview, buildWeldLogPreview, redactForViewer,
+} from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
 import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
+import { rowsForTorquePlan } from '@/lib/import/torqueLogIngest'
 import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -748,6 +752,63 @@ export class SupabaseProvider implements DataProvider {
       weldLinesCreated: rows.weldLines.length,
       weldsCreated: preview.plan.weldsToCreate,
       weldsUpdated: preview.plan.weldsToUpdate,
+    }
+  }
+
+  async previewTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportPreview> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildTorqueLogPreview(bundle, file, filename)
+  }
+
+  async commitTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportResult> {
+    const empty = { connectionsCreated: 0, connectionsUpdated: 0 }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+
+    // Re-planned against the book as it stands now, never taken from the
+    // browser. A plan supplied by a client is a client asserting what is
+    // in a document it also supplied.
+    const preview = buildTorqueLogPreview(bundle, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
+    }
+
+    const rows = rowsForTorquePlan(preview.plan, bundle, {
+      enteredAt: new Date().toISOString(),
+      entrySource: 'field_entry',
+    })
+
+    const supabase = await createClient()
+    // `facilityTorqueRecordId` derives the id from the book, the ISO
+    // number and the flange, so re-importing a corrected log updates the
+    // same rows rather than filing a second copy beside the first.
+    const CHUNK = 500
+    for (let i = 0; i < rows.torqueConnections.length; i += CHUNK) {
+      const { error } = await supabase.from('torque_connection').upsert(
+        rows.torqueConnections.slice(i, i + CHUNK)
+          .map((c) => domainToRow(c, COLUMNS.torque_connection)),
+        { onConflict: 'id' },
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    await this.refreshScores(jobBookId, viewer)
+
+    return {
+      ok: true,
+      connectionsCreated: preview.plan.connectionsToCreate,
+      connectionsUpdated: preview.plan.connectionsToUpdate,
     }
   }
 

@@ -29,6 +29,10 @@ import {
   parseFacilityWeldRows, planWeldLogIngest, readWeldLogGrid, rowsForWeldPlan,
   type WeldLogIngestPlan,
 } from '@/lib/import/weldLogIngest'
+import {
+  parseFacilityTorqueRows, planTorqueLogIngest, readTorqueLogGrid,
+  rowsForTorquePlan, type TorqueLogIngestPlan,
+} from '@/lib/import/torqueLogIngest'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -197,6 +201,15 @@ export interface DataProvider {
   commitWeldLogImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<WeldLogImportResult>
+
+  /** And again for the Torque Log (§14). Same two steps, same two file
+   *  formats; the wrench ids are what the preview exists to check. */
+  previewTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportPreview>
+  commitTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportResult>
 }
 
 export interface OverviewImportPreview {
@@ -258,6 +271,46 @@ export function buildWeldLogPreview(
     }
   }
   return { ok: true, plan: planWeldLogIngest(parsed, bundle, read.format) }
+}
+
+export interface TorqueLogImportPreview {
+  ok: boolean
+  error?: string
+  plan?: TorqueLogIngestPlan
+}
+
+export interface TorqueLogImportResult {
+  ok: boolean
+  error?: string
+  connectionsCreated: number
+  connectionsUpdated: number
+}
+
+/**
+ * Parse a torque log and plan its import against one book.
+ *
+ * Shared by both providers, for the same reason the weld log builder is:
+ * the plan a tech reads before committing has to be the same computation
+ * the commit performs, and a divergence there would be invisible.
+ */
+export function buildTorqueLogPreview(
+  bundle: JobBookBundle, file: Uint8Array, filename: string,
+): TorqueLogImportPreview {
+  const read = readTorqueLogGrid(file, filename)
+  if (read.error) return { ok: false, error: read.error }
+  if (read.grid.length === 0) {
+    return { ok: false, error: 'No rows found in that file.' }
+  }
+
+  const parsed = parseFacilityTorqueRows(read.grid, read.sheetsParsed[0] ?? 'Torque Log')
+  if (parsed.rows.length === 0) {
+    return {
+      ok: false,
+      error: parsed.issues[0]?.message
+        ?? 'No torque rows could be read. The column headers did not match anything this reader knows.',
+    }
+  }
+  return { ok: true, plan: planTorqueLogIngest(parsed, bundle, read.format) }
 }
 
 export interface StaffMember {
@@ -838,6 +891,52 @@ class SeedProvider implements DataProvider {
       weldLinesCreated: rows.weldLines.length,
       weldsCreated: preview.plan.weldsToCreate,
       weldsUpdated: preview.plan.weldsToUpdate,
+    }
+  }
+
+  async previewTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportPreview> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    return buildTorqueLogPreview(b, file, filename)
+  }
+
+  async commitTorqueLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<TorqueLogImportResult> {
+    const empty = { connectionsCreated: 0, connectionsUpdated: 0 }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.', ...empty }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    const preview = buildTorqueLogPreview(b, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
+    }
+
+    const rows = rowsForTorquePlan(preview.plan, b, {
+      enteredAt: new Date().toISOString(),
+      entrySource: 'field_entry',
+    })
+
+    // Keyed on ISO number and flange, so a re-import of a corrected log
+    // replaces the connection rather than filing a second one beside it.
+    const byId = new Map(b.torqueConnections.map((c) => [c.id, c]))
+    for (const c of rows.torqueConnections) byId.set(c.id, c)
+
+    this.commit(jobBookId, idx, { ...b, torqueConnections: [...byId.values()] })
+
+    return {
+      ok: true,
+      connectionsCreated: preview.plan.connectionsToCreate,
+      connectionsUpdated: preview.plan.connectionsToUpdate,
     }
   }
 

@@ -125,6 +125,17 @@ export const COLUMNS = {
     'id', 'full_name', 'initials', 'employer', 'classification', 'active',
     'entered_at', 'entry_source',
   ],
+  torque_connection: [
+    'id', 'job_book_id', 'iso_flange_number', 'iso_number', 'flange_pipe_size',
+    'bolt_diameter', 'bolt_count', 'required_torque_ft_lb',
+    'required_torque_min_ft_lb', 'required_torque_max_ft_lb',
+    'actual_torque_ft_lb', 'wrench_id', 'wrench_id_raw', 'cp_test_on_flange',
+    'torque_date', 'employee_initials', 'inspection_date', 'inspector_initials',
+    'status', 'deleted_at',
+    // 0017 — the two §8.1 entry stamps. A torque and its inspection have
+    // different deadlines and different responsible parties.
+    'entered_at', 'entry_source', 'inspection_entered_at',
+  ],
   job_book_audit: [
     'id', 'job_book_id', 'tier', 'attempt', 'auditor_id', 'scheduled_for',
     'started_at', 'completed_at', 'outcome', 'score', 'sample_plan',

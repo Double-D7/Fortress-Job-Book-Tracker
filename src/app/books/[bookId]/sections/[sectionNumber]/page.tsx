@@ -13,6 +13,7 @@ import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
 import { OverviewImport } from '@/components/OverviewImport'
 import { WeldLogImport } from '@/components/WeldLogImport'
+import { TorqueLogImport } from '@/components/TorqueLogImport'
 import { registerForSection } from '@/lib/domain/upload'
 import { bytes, num, pct } from '@/lib/utils'
 
@@ -211,6 +212,16 @@ export default async function SectionDetail({
       */}
       {number === '12' && (
         <WeldLogImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
+      )}
+
+      {/*
+        §14's wrench ids are what make §11.1 answerable: a connection
+        torqued with an uncalibrated wrench is a Critical finding, and
+        with the log held as a PDF there was nothing to check it against.
+        Every torque rule in the flags engine ran over an empty set.
+      */}
+      {number === '14' && (
+        <TorqueLogImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
       )}
 
       <Card>
