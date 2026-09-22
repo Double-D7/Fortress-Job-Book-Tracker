@@ -1,24 +1,27 @@
+import { redirect } from 'next/navigation'
 import { Card, CardBody, CardHeader, CardTitle, Chip, Table, Td, Th, Tr } from '@/components/ui/primitives'
 import { buildTemplateSections } from '@/lib/domain/checklist'
 import { SectionHeading } from '@/components/ui/primitives'
+import { UserAdmin } from '@/components/UserAdmin'
+import { currentViewer, getDataProvider } from '@/lib/data/provider'
+import { CAPABILITY_LABELS, ROLES, can } from '@/lib/domain/roles'
 
 export const dynamic = 'force-dynamic'
 
-const ROLES = [
-  { role: 'Fortress Admin', scope: 'All orgs, all jobs',
-    caps: 'Full CRUD · users · templates and weights · client orgs · audit log' },
-  { role: 'QA/QC Manager', scope: 'All Fortress jobs',
-    caps: 'Create/edit any book · approve sections · resolve flags · issue inspector grants · export' },
-  { role: 'QA/QC Tech', scope: 'Assigned jobs only',
-    caps: 'Edit records and upload on assigned jobs · mark ready for review · cannot approve own sections' },
-  { role: 'Fortress Read-Only', scope: 'All Fortress jobs', caps: 'View everything internal · no edits' },
-  { role: 'Client User', scope: 'Own client org only',
-    caps: 'View completion · browse and download approved documents · no internal fields' },
-  { role: 'Third-Party Inspector', scope: 'Granted books only',
-    caps: 'Read-only on approved contents of one book · time-limited · optional comments · every view logged' },
-]
+export default async function AdminPage() {
+  const viewer = await currentViewer()
+  if (!viewer) redirect('/login')
+  // The directory and the capability matrix are Fortress's own material.
+  // A client user reaching this URL is redirected rather than shown an
+  // empty table, which would read as "there is nobody here".
+  if (!can(viewer.role, 'view_internal')) redirect('/')
 
-export default function AdminPage() {
+  const provider = getDataProvider()
+  const [users, orgs] = await Promise.all([
+    provider.listUsers(viewer),
+    provider.listClientOrgs(viewer),
+  ])
+
   const flowline = buildTemplateSections('flowline', 'tpl')
   const facility = buildTemplateSections('facility', 'tpl')
 
@@ -26,24 +29,69 @@ export default function AdminPage() {
     <>
       <SectionHeading
         title="Administration"
-        subtitle="Roles, section templates and scoring weights"
+        subtitle="People, roles, section templates and scoring weights"
       />
       <div className="space-y-4">
+        <UserAdmin
+          users={users}
+          orgs={orgs}
+          canManage={can(viewer.role, 'manage_users')}
+          viewerId={viewer.id}
+        />
+
         <Card>
-          <CardHeader><CardTitle>Roles and scope</CardTitle></CardHeader>
+          <CardHeader className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>What each role can do</CardTitle>
+            <span className="text-2xs text-ink-muted">
+              Enforced by the database, not by this table
+            </span>
+          </CardHeader>
           <CardBody className="p-0">
-            <Table>
-              <thead><tr><Th>Role</Th><Th>Scope</Th><Th>Capabilities</Th></tr></thead>
-              <tbody>
-                {ROLES.map((r) => (
-                  <Tr key={r.role}>
-                    <Td className="whitespace-nowrap font-medium">{r.role}</Td>
-                    <Td className="whitespace-nowrap text-ink-secondary">{r.scope}</Td>
-                    <Td className="text-ink-secondary">{r.caps}</Td>
+            <div className="overflow-x-auto">
+              <Table>
+                <thead>
+                  <Tr>
+                    <Th>Capability</Th>
+                    {ROLES.map((r) => (
+                      <Th key={r.role} className="text-center">{r.label}</Th>
+                    ))}
                   </Tr>
-                ))}
-              </tbody>
-            </Table>
+                </thead>
+                <tbody>
+                  {CAPABILITY_LABELS.map(({ capability, label }) => (
+                    <Tr key={capability}>
+                      <Td className="whitespace-nowrap text-ink-secondary">{label}</Td>
+                      {ROLES.map((r) => (
+                        <Td key={r.role} className="text-center">
+                          {r.capabilities.has(capability)
+                            ? <Chip tone="complete">Yes</Chip>
+                            : <span className="text-ink-muted">—</span>}
+                        </Td>
+                      ))}
+                    </Tr>
+                  ))}
+                  <Tr>
+                    <Td className="whitespace-nowrap font-medium">Sees</Td>
+                    {ROLES.map((r) => (
+                      <Td key={r.role} className="text-center text-2xs text-ink-secondary">
+                        {r.scopeLabel}
+                      </Td>
+                    ))}
+                  </Tr>
+                </tbody>
+              </Table>
+            </div>
+            <p className="border-t border-hairline px-4 py-3 text-2xs leading-relaxed text-ink-secondary">
+              This table is generated from the same capability definitions the interface uses
+              to decide which controls to render, and the test suite compares those
+              definitions against the Row Level Security predicates in the migrations — so a
+              row here that disagrees with the database fails the build rather than
+              misleading a reader. Nothing on this screen is the control itself: every write
+              is refused again by Postgres, under the caller&rsquo;s own session, whether it
+              arrives from these screens or from the API directly. Adding a note is the one
+              capability that depends on more than the role, because a Client Inspector needs
+              a grant on that particular book which carries the right.
+            </p>
           </CardBody>
         </Card>
 

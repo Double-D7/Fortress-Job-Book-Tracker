@@ -26,7 +26,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
-  ROLES, can, canComment, orgRequirement, roleDefinition, roleLabel, rolesWith,
+  CAPABILITY_LABELS, ROLES, can, canComment, orgRequirement, roleDefinition,
+  roleLabel, rolesWith,
 } from '@/lib/domain/roles'
 import type { Capability } from '@/lib/domain/roles'
 import type { UserRole } from '@/lib/domain/types'
@@ -105,6 +106,24 @@ describe('the capability table covers the enum', () => {
     for (const r of qaqc) expect(r.label).toContain('Fortress QA/QC')
     expect(roleLabel('qaqc_manager')).toContain('Manager')
     expect(roleLabel('qaqc_tech')).toContain('Technician')
+  })
+
+  it('labels every capability exactly once, for the /admin matrix', () => {
+    // The union is the source; this array is what a person reads. A
+    // capability added to one without the other would either vanish from
+    // the screen or appear twice, and neither is visible from the file.
+    const labelled = CAPABILITY_LABELS.map((c) => c.capability)
+    expect(new Set(labelled).size, 'a capability is labelled twice')
+      .toBe(labelled.length)
+
+    // Every capability any role holds must have a label. That reaches the
+    // whole union so long as no capability is orphaned — which the next
+    // assertion rules out.
+    const held = new Set(ROLES.flatMap((r) => [...r.capabilities]))
+    expect(show(held)).toEqual(show(new Set<string>(labelled)))
+    for (const c of labelled) {
+      expect(rolesWith(c).length, `${c} is held by nobody`).toBeGreaterThan(0)
+    }
   })
 
   it('fails closed on a role it has never heard of', () => {

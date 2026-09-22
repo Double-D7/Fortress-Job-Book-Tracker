@@ -34,7 +34,7 @@ export default async function BookLayout({
           ].filter(Boolean).join(' — ') || 'No pads, contractor or construction window recorded yet.'}
         </p>
       </div>
-      <BookNav bookId={bookId} />
+      <BookNav bookId={bookId} role={viewer.role} />
       <div className="mt-5">{children}</div>
     </div>
   )

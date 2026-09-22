@@ -3,28 +3,41 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import { can } from '@/lib/domain/roles'
+import type { Capability } from '@/lib/domain/roles'
+import type { UserRole } from '@/lib/domain/types'
 
-const TABS = [
+/**
+ * `needs` names the capability a tab requires, where it requires one.
+ *
+ * Hiding a tab is not access control — every page behind these redirects
+ * or refuses on its own, and the database refuses under that. It is so a
+ * client reading their operator's book is not offered six tabs of
+ * Fortress's internal working material that would bounce them back here.
+ */
+const TABS: { href: string; label: string; needs?: Capability }[] = [
   { href: '', label: 'Overview' },
   { href: '/welds', label: 'Weld log' },
   { href: '/torque', label: 'Torque log' },
   { href: '/nde', label: 'NDE reports' },
   { href: '/materials', label: 'Materials & MTRs' },
   { href: '/personnel', label: 'Personnel & equipment' },
-  { href: '/gates', label: 'Gates' },
-  { href: '/audits', label: 'Audits' },
-  { href: '/timeliness', label: 'Timeliness' },
-  { href: '/flags', label: 'Flags' },
+  { href: '/gates', label: 'Gates', needs: 'view_internal' },
+  { href: '/audits', label: 'Audits', needs: 'view_internal' },
+  { href: '/timeliness', label: 'Timeliness', needs: 'view_internal' },
+  { href: '/flags', label: 'Flags', needs: 'view_internal' },
   { href: '/documents', label: 'Documents' },
-  { href: '/export', label: 'Turnover' },
+  { href: '/notes', label: 'Notes' },
+  { href: '/access', label: 'Access', needs: 'view_internal' },
+  { href: '/export', label: 'Turnover', needs: 'export_package' },
 ]
 
-export function BookNav({ bookId }: { bookId: string }) {
+export function BookNav({ bookId, role }: { bookId: string; role: UserRole }) {
   const pathname = usePathname()
   const base = `/books/${bookId}`
   return (
     <nav className="-mx-1 flex gap-1 overflow-x-auto border-b border-hairline pb-px">
-      {TABS.map((t) => {
+      {TABS.filter((t) => !t.needs || can(role, t.needs)).map((t) => {
         const href = `${base}${t.href}`
         const active = t.href === '' ? pathname === base : pathname.startsWith(href)
         return (

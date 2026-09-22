@@ -208,6 +208,38 @@ export const ROLES: readonly RoleDefinition[] = [
   },
 ]
 
+/**
+ * Every capability, in the order a person would read them, with the
+ * words they would use.
+ *
+ * Ordered rather than alphabetical: reading, then writing records, then
+ * the governance acts, then administration. A reader scanning the matrix
+ * on /admin should see the Technician's row fill up and stop at exactly
+ * the point where a second person takes over.
+ *
+ * The array is exhaustive by construction — `roles.test.ts` asserts that
+ * every member of `Capability` appears, so adding one to the union
+ * without a label here fails rather than vanishing from the screen.
+ */
+export const CAPABILITY_LABELS: readonly { capability: Capability; label: string }[] = [
+  { capability: 'view_book', label: 'See a job book' },
+  { capability: 'view_internal', label: 'See Fortress’s internal work (flags, timeliness, audits)' },
+  { capability: 'export_package', label: 'Download the turnover package' },
+  { capability: 'add_note', label: 'Add a note' },
+  { capability: 'edit_records', label: 'Enter records and upload evidence' },
+  { capability: 'mark_section_ready', label: 'Submit a section for review' },
+  { capability: 'resolve_flag', label: 'Resolve or dismiss a flag' },
+  { capability: 'record_audit', label: 'Record a §10 Tier 1 or Tier 2 audit' },
+  { capability: 'approve_section', label: 'Approve a section' },
+  { capability: 'create_book', label: 'Create a job book' },
+  { capability: 'assign_custodian', label: 'Name the §5 Custodian' },
+  { capability: 'chair_gate', label: 'Chair a §7 gate review' },
+  { capability: 'record_tier3', label: 'Record the §10 Tier 3 verification' },
+  { capability: 'certify_completeness', label: 'Sign the §10.4 Completeness Certification' },
+  { capability: 'manage_inspector_grants', label: 'Grant a Client Inspector a book' },
+  { capability: 'manage_users', label: 'Invite people and change roles' },
+]
+
 const BY_ROLE = new Map(ROLES.map((r) => [r.role, r]))
 
 export function roleDefinition(role: UserRole): RoleDefinition {
