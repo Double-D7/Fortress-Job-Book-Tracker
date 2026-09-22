@@ -14,9 +14,12 @@
  * refuse anyway, and they produce a sentence a person can act on instead of
  * a PostgREST error code.
  */
-import type { JobBookBundle, UserRole } from '@/lib/domain/types'
 import type {
-  ActionResult, CreateResult, DataProvider, JobBookSummary, UploadResult, Viewer,
+  CompetencyLevel, GateReview, JobBookBundle, UserRole,
+} from '@/lib/domain/types'
+import type {
+  ActionResult, CreateResult, DataProvider, GateDecision, GateSideFacts,
+  JobBookSummary, StaffMember, UploadResult, Viewer,
 } from './provider'
 import { redactForViewer } from './provider'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
@@ -59,6 +62,10 @@ const BOOK_TABLES = [
   { table: 'ut_reading',        key: 'utReadings',            live: true  },
   { table: 'torque_connection', key: 'torqueConnections',     live: true  },
   { table: 'coating_inspection', key: 'coatingInspections',   live: true  },
+  // The NCR register. Loaded with the book because gate criteria ask
+  // "zero open NCRs past due date", and a criterion that cannot see the
+  // register reports indeterminate rather than compliant.
+  { table: 'compliance_flag',   key: 'complianceFlags',       live: false },
 ] as const
 
 /** Tables shared across books rather than owned by one. */
@@ -467,6 +474,102 @@ export class SupabaseProvider implements DataProvider {
         p_pct: sc.pct,
         p_collected_pct: sc.collectedPct ?? sc.pct,
       })
+    }))
+  }
+
+  // -- Gate reviews, FDS-JBMP-001 §7 -------------------------------------
+
+  async listGateReviews(viewer: Viewer, jobBookId: string): Promise<GateReview[]> {
+    void viewer
+    const supabase = await createClient()
+    // RLS restricts gate_review to Fortress staff on a readable book, so
+    // an unauthorised caller gets an empty list rather than a refusal —
+    // the same answer as a book that has had no gate review.
+    const { data } = await supabase
+      .from('gate_review').select('*')
+      .eq('job_book_id', jobBookId)
+      .order('decided_at', { ascending: false })
+    return rowsToDomain<GateReview>(data)
+  }
+
+  async gateContext(viewer: Viewer, jobBookId: string): Promise<GateSideFacts> {
+    void viewer
+    const supabase = await createClient()
+    const { data: book } = await supabase
+      .from('job_book').select('custodian_id').eq('id', jobBookId).maybeSingle()
+    const custodianId = book?.custodian_id as string | undefined
+    if (!custodianId) return { custodianName: null, custodianCompetency: null }
+
+    const { data: user } = await supabase
+      .from('app_user').select('full_name, competency_level')
+      .eq('id', custodianId).maybeSingle()
+    return {
+      custodianName: (user?.full_name as string | undefined) ?? null,
+      // Absent and unassessed are both null here, and the gate engine
+      // reports either as indeterminate rather than as unqualified.
+      custodianCompetency: (user?.competency_level as CompetencyLevel | null) ?? null,
+    }
+  }
+
+  async recordGateReview(
+    viewer: Viewer, jobBookId: string, input: GateDecision,
+  ): Promise<ActionResult> {
+    if (!BOOK_CREATORS.has(viewer.role)) {
+      return { ok: false, error: 'Only a QA/QC manager or admin may chair a gate review.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('record_gate_review', {
+      p_book: jobBookId,
+      p_gate: input.gate,
+      p_outcome: input.outcome,
+      // The criteria travel as they were evaluated. `record_gate_review`
+      // counts the unmet ones itself rather than trusting a flag from the
+      // caller, so a client cannot talk a gate through by mislabelling
+      // what it found.
+      p_criteria: input.criteria,
+      p_completion_pct: input.completionPct,
+      p_project_manager: input.projectManagerId ?? null,
+      p_conditional_due: input.conditionalDueAt ?? null,
+      p_override_note: input.overrideNote ?? null,
+      p_notes: input.notes ?? null,
+    })
+    if (error) {
+      // The function raises in the words an auditor would use.
+      return { ok: false, error: error.message.replace(/^.*?:\s*/, '') }
+    }
+    return { ok: true }
+  }
+
+  async assignCustodian(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult> {
+    if (!BOOK_CREATORS.has(viewer.role)) {
+      return { ok: false, error: 'Only a QA/QC manager or admin may assign a Custodian.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('assign_custodian', {
+      p_book: jobBookId, p_user: userId,
+    })
+    if (error) return { ok: false, error: error.message.replace(/^.*?:\s*/, '') }
+    return { ok: true }
+  }
+
+  async listStaff(viewer: Viewer): Promise<StaffMember[]> {
+    if (!WRITERS.has(viewer.role)) return []
+    const supabase = await createClient()
+    const { data } = await supabase
+      .from('app_user')
+      .select('id, full_name, email, role, competency_level')
+      .is('deleted_at', null)
+      .eq('is_active', true)
+      .in('role', ['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
+      .order('full_name')
+    return (data ?? []).map((u) => ({
+      id: u.id as string,
+      fullName: u.full_name as string,
+      email: u.email as string,
+      role: u.role as UserRole,
+      competencyLevel: (u.competency_level as CompetencyLevel | null) ?? null,
     }))
   }
 }

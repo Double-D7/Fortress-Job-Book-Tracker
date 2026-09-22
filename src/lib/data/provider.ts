@@ -12,7 +12,10 @@
  * issues runs under the caller's RLS session, so the isolation guarantees
  * are the database's rather than this file's.
  */
-import type { JobBookBundle, UserRole } from '@/lib/domain/types'
+import type {
+  CompetencyLevel, CriterionResult, GateId, GateOutcome, GateReview,
+  JobBookBundle, UserRole,
+} from '@/lib/domain/types'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { applyComputedScores } from '@/lib/domain/scoring'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
@@ -124,9 +127,84 @@ export interface DataProvider {
     sectionNumber: string,
     files: PrepareInput[],
   ): Promise<UploadResult>
+
+  // -- Gate reviews, FDS-JBMP-001 §7 -------------------------------------
+
+  /** Every gate decision taken on this book, newest attempt first. */
+  listGateReviews(viewer: Viewer, jobBookId: string): Promise<GateReview[]>
+
+  /**
+   * The facts a gate evaluation needs that do not live in the bundle —
+   * chiefly the named Custodian's competency level, which is a property of
+   * the person rather than the book.
+   */
+  gateContext(viewer: Viewer, jobBookId: string): Promise<GateSideFacts>
+
+  /**
+   * Record a gate decision. Always routed through `record_gate_review()`
+   * so the chair check, the ten-day ceiling and the demand for a written
+   * override on an unmet criterion hold for any caller — the same reason
+   * section approval goes through its own function.
+   */
+  recordGateReview(
+    viewer: Viewer, jobBookId: string, input: GateDecision,
+  ): Promise<ActionResult>
+
+  /** Name the Custodian. Refused by the database below competency JB-2. */
+  assignCustodian(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult>
+
+  /** Fortress staff who could hold a role on a book, for the pickers. */
+  listStaff(viewer: Viewer): Promise<StaffMember[]>
+}
+
+export interface StaffMember {
+  id: string
+  fullName: string
+  email: string
+  role: UserRole
+  competencyLevel: CompetencyLevel | null
+}
+
+/** Facts a gate evaluation needs that the bundle does not carry. */
+export interface GateSideFacts {
+  custodianName: string | null
+  custodianCompetency: CompetencyLevel | null
+}
+
+export interface GateDecision {
+  gate: GateId
+  outcome: GateOutcome
+  criteria: CriterionResult[]
+  completionPct: number
+  projectManagerId?: string | null
+  /** Conditional Pass only; the database caps it at ten calendar days. */
+  conditionalDueAt?: string | null
+  overrideNote?: string | null
+  notes?: string | null
 }
 
 /** The demo/seed provider. Builds the reference book once per process. */
+/**
+ * The demo roster, with competency levels from FDS-JBMP-004.
+ *
+ * Deliberately mixed: one JB-4, one JB-3, one JB-2 and one unassessed, so
+ * the Custodian picker demonstrates the refusal as well as the happy path.
+ * A user with no assessed level is not a user at JB-1 — §5.1 treats the
+ * two the same way for eligibility, and the app says which it is.
+ */
+const SEED_STAFF: StaffMember[] = [
+  { id: 'seed-user-manager', fullName: 'D. Devitt', email: 'qaqc.manager@fortressds.com',
+    role: 'qaqc_manager', competencyLevel: 'JB-4' },
+  { id: 'seed-user-auditor', fullName: 'M. Salas', email: 'peer.auditor@fortressds.com',
+    role: 'qaqc_tech', competencyLevel: 'JB-3' },
+  { id: 'seed-user-custodian', fullName: 'R. Vance', email: 'custodian@fortressds.com',
+    role: 'qaqc_tech', competencyLevel: 'JB-2' },
+  { id: 'seed-user-new', fullName: 'T. Okafor', email: 'new.tech@fortressds.com',
+    role: 'qaqc_tech', competencyLevel: null },
+]
+
 class SeedProvider implements DataProvider {
   private cache: JobBookBundle[] | null = null
   /**
@@ -472,6 +550,148 @@ class SeedProvider implements DataProvider {
     }))
     return { ok: true, jobBookId: book.id, warnings }
   }
+
+  // -- Gate reviews ------------------------------------------------------
+  //
+  // The seed provider is the reference book, and the reference books are
+  // historical: DP452 was delivered and DP-318 was in progress long before
+  // this program existed, so neither carries a gate decision. Returning an
+  // empty list is the honest answer, and it is also the useful one — the
+  // gate screen then shows what each gate WOULD say about a real book,
+  // which is exactly what a crew being trained on the program needs to see.
+
+  private gateReviews = new Map<string, GateReview[]>()
+
+  async listGateReviews(viewer: Viewer, jobBookId: string): Promise<GateReview[]> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return []
+    // Fortress governance: a client sees the book, not the minutes of the
+    // meeting where Fortress decided whether to let it advance.
+    if (!WRITER_ROLES.has(viewer.role) && viewer.role !== 'fortress_read_only') return []
+    return [...(this.gateReviews.get(jobBookId) ?? [])].sort(
+      (x, y) => y.decidedAt.localeCompare(x.decidedAt),
+    )
+  }
+
+  async gateContext(viewer: Viewer, jobBookId: string): Promise<GateSideFacts> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b) || !b.book.custodianId) {
+      return { custodianName: null, custodianCompetency: null }
+    }
+    const staff = SEED_STAFF.find((u) => u.id === b.book.custodianId)
+    return {
+      custodianName: staff?.fullName ?? null,
+      custodianCompetency: staff?.competencyLevel ?? null,
+    }
+  }
+
+  async recordGateReview(
+    viewer: Viewer, jobBookId: string, input: GateDecision,
+  ): Promise<ActionResult> {
+    // Mirrors `record_gate_review()`. The database is the control; every
+    // check here exists so a chair meets the refusal before the round trip
+    // rather than after it.
+    if (!APPROVER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Only a QA/QC manager or admin may chair a gate review.' }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+
+    if (b.book.custodianId && b.book.custodianId === viewer.id) {
+      return { ok: false, error: 'The Custodian of a book may not chair its gate review.' }
+    }
+
+    const unresolved = input.criteria.filter(
+      (c) => c.state === 'not_met' || c.state === 'indeterminate',
+    ).length
+    if (input.outcome !== 'fail' && unresolved > 0 && !input.overrideNote?.trim()) {
+      return {
+        ok: false,
+        error: `Gate ${input.gate} has ${unresolved} unmet or unevaluable criteria; an override note is required.`,
+      }
+    }
+    if (input.outcome === 'conditional_pass' && !input.conditionalDueAt) {
+      return { ok: false, error: 'A Conditional Pass carries a dated action list.' }
+    }
+
+    const existing = this.gateReviews.get(jobBookId) ?? []
+    if (
+      input.outcome === 'conditional_pass' &&
+      existing.some((r) => r.gate === input.gate && r.outcome === 'conditional_pass')
+    ) {
+      return {
+        ok: false,
+        error: `A Conditional Pass may be issued once per gate (§7); ${input.gate} already carries one.`,
+      }
+    }
+
+    const attempt = existing.filter((r) => r.gate === input.gate).length + 1
+    const review: GateReview = {
+      id: `gate-${jobBookId}-${input.gate}-${attempt}`,
+      jobBookId,
+      gate: input.gate,
+      attempt,
+      outcome: input.outcome,
+      chairedBy: viewer.id,
+      custodianId: b.book.custodianId ?? null,
+      projectManagerId: input.projectManagerId ?? null,
+      decidedAt: new Date().toISOString(),
+      criteriaSnapshot: input.criteria,
+      completionPct: input.completionPct,
+      conditionalDueAt: input.conditionalDueAt ?? null,
+      overrideNote: input.overrideNote?.trim() || null,
+      notes: input.notes?.trim() || null,
+    }
+    this.gateReviews.set(jobBookId, [...existing, review])
+
+    // Only a clean Pass advances the book, for the reason §7 gives: a
+    // Conditional Pass that lapses becomes a Fail, and a book that had
+    // already moved on would be standing past a gate it never passed.
+    if (input.outcome === 'pass') {
+      this.commit(jobBookId, idx, {
+        ...b,
+        book: { ...b.book, currentGate: input.gate, currentGateAt: review.decidedAt },
+      })
+    }
+    return { ok: true }
+  }
+
+  async assignCustodian(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult> {
+    if (!APPROVER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Only a QA/QC manager or admin may assign a Custodian.' }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+
+    const staff = SEED_STAFF.find((u) => u.id === userId)
+    if (!staff) return { ok: false, error: 'No such active user.' }
+    // Null is "not assessed", and not assessed is not qualified.
+    if (!staff.competencyLevel || staff.competencyLevel === 'JB-1') {
+      return {
+        ok: false,
+        error: `Custodian requires competency JB-2 or above (§5.1); ${staff.fullName} holds ${staff.competencyLevel ?? 'no assessed level'}.`,
+      }
+    }
+    this.commit(jobBookId, idx, {
+      ...b,
+      book: {
+        ...b.book,
+        custodianId: userId,
+        custodianAssignedAt: new Date().toISOString(),
+      },
+    })
+    return { ok: true }
+  }
+
+  async listStaff(viewer: Viewer): Promise<StaffMember[]> {
+    if (!WRITER_ROLES.has(viewer.role)) return []
+    return SEED_STAFF
+  }
+
 }
 
 /**

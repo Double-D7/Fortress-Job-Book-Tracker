@@ -75,11 +75,19 @@ export const COLUMNS = {
     'torque_tolerance_pct', 'cert_expiry_warning_days', 'xray_credit_rule',
     'created_by', 'enabled_optional_sections', 'business_unit',
     'qaqc_representative', 'construction_areas', 'default_design_pressure_psi',
+    // Governing documents (0014) and the governance spine (0015).
+    'client_checklist_reference', 'client_checklist_revision',
+    'piping_spec_reference', 'piping_spec_revision',
+    'governing_docs_confirmed_at', 'governing_docs_confirmed_by',
+    'custodian_id', 'custodian_assigned_at', 'custodian_assigned_by',
+    'planned_curve', 'planned_curve_agreed_at', 'planned_curve_agreed_by',
+    'current_gate', 'current_gate_at',
   ],
   job_book_section: [
     'id', 'job_book_id', 'section_definition_id', 'status', 'na_reason',
     'ready_for_review_by', 'ready_for_review_at', 'approved_by', 'approved_at',
     'computed_pct', 'internal_notes', 'expected_count', 'computed_at', 'collected_pct',
+    'expected_by',
   ],
   document: [
     'id', 'job_book_id', 'section_id', 'record_type', 'record_id',
@@ -96,5 +104,21 @@ export const COLUMNS = {
   ],
   project: [
     'id', 'client_org_id', 'name', 'operator_pic_name', 'afe_number',
+  ],
+  gate_review: [
+    'id', 'job_book_id', 'gate', 'attempt', 'outcome', 'chaired_by',
+    'custodian_id', 'project_manager_id', 'decided_at', 'criteria_snapshot',
+    'completion_pct', 'conditional_due_at', 'cleared_at', 'cleared_by',
+    'override_note', 'notes',
+  ],
+  gate_condition: [
+    'id', 'gate_review_id', 'criterion_id', 'description', 'owner_id',
+    'due_at', 'closed_at', 'closed_by', 'closure_note',
+  ],
+  compliance_flag: [
+    'id', 'job_book_id', 'rule_id', 'severity', 'title', 'detail',
+    'entity_type', 'entity_id', 'section_number', 'fingerprint', 'state',
+    'assigned_to', 'resolution_note', 'resolved_by', 'resolved_at',
+    'due_at', 'escalated_at',
   ],
 } as const

@@ -97,7 +97,55 @@ export interface JobBook {
   /** Facility: the construction areas the job is divided into. The
    *  denominator for per-area sections such as coating inspection. */
   constructionAreas?: string[]
+
+  // -- Governing documents (FDS-JBMP-001 §3, Gate 0) ---------------------
+  /**
+   * The client checklist and piping specification actually in force, by
+   * the client's own name for them and at the revision on file.
+   *
+   * These used to live inside four section titles ("Noble Energy Piping
+   * Specification"), which is how a delivered book came to be audited
+   * against a checklist branded to an operator who no longer held the
+   * asset. A title cannot be revised; a field can.
+   */
+  clientChecklistReference?: string | null
+  clientChecklistRevision?: string | null
+  pipingSpecReference?: string | null
+  pipingSpecRevision?: string | null
+  /** Gate 0 requires these confirmed CURRENT with the client, not merely
+   *  recorded. A date nobody set means nobody asked. */
+  governingDocsConfirmedAt?: IsoDate | null
+  governingDocsConfirmedBy?: string | null
+
+  // -- Governance spine (FDS-JBMP-001 §5, §6, §7) ------------------------
+  /** §5: one book, one Custodian, named at Gate 0 and accountable for
+   *  every record in it. */
+  custodianId?: string | null
+  custodianAssignedAt?: string | null
+  /** §6.2: the completion curve this book is measured against, agreed at
+   *  Gate 0 from the construction schedule. Carried per book so a later
+   *  revision of the program cannot move the bar under a running job. */
+  plannedCurve?: PlannedMilestone[] | null
+  plannedCurveAgreedAt?: IsoDate | null
+  /** The highest gate this book has cleanly passed. A Conditional Pass
+   *  does not advance it — see `recordGateReview`. */
+  currentGate?: GateId | null
+  currentGateAt?: string | null
 }
+
+/** One point on the §6.2 planned completion curve. */
+export interface PlannedMilestone {
+  milestone: PlannedMilestoneId
+  minimumPct: number
+}
+
+export type PlannedMilestoneId =
+  | 'gate_0_passed'
+  | 'construction_25'
+  | 'construction_50'
+  | 'mechanical_completion'
+  | 'gate_4_entry'
+  | 'submission'
 
 export interface SectionDefinition {
   id: string
@@ -185,6 +233,15 @@ export interface JobBookSection {
   /** Evidence from the source folder, where a tree listing has been read. */
   sourceFileCount?: number | null
   sourceBytes?: number | null
+  /**
+   * When this section is expected to be complete, set at Gate 0 from the
+   * construction schedule (§7 Gate 0).
+   *
+   * `expectedCount` says how much; this says by when. A book without these
+   * can be behind schedule and look merely incomplete, which is the
+   * difference between a management item and a surprise at turnover.
+   */
+  expectedBy?: IsoDate | null
   /** Fortress-only. Never present in a client or inspector payload. */
   internalNotes?: string | null
 }
@@ -562,6 +619,11 @@ export interface ComplianceFlag {
   state: FlagState
   assignedTo?: string | null
   resolutionNote?: string | null
+  /** §11.5: an NCR carries an owner and a due date. A finding with no due
+   *  date cannot be past due, so the gate criteria count it as unmet
+   *  rather than as compliant. */
+  dueAt?: IsoDate | null
+  escalatedAt?: string | null
 }
 
 /**
@@ -591,6 +653,15 @@ export interface JobBookBundle {
   utReadings: UtReading[]
   coatingInspections?: CoatingInspection[]
   /**
+   * The open NCR register (§11.5), where the caller has loaded it.
+   *
+   * Undefined and empty are deliberately different. Gate criteria that ask
+   * "zero open NCRs past due date" read undefined as "the register was not
+   * loaded, so I cannot tell" and empty as "loaded, and there are none".
+   * Collapsing the two would let a gate pass on a question nobody asked.
+   */
+  complianceFlags?: ComplianceFlag[]
+  /**
    * True once this bundle has been reduced for an external reader.
    *
    * Redaction removes identities and internal commentary — per-pass welder
@@ -608,4 +679,110 @@ export interface JobBookBundle {
    * than recomputing whenever this flag is set.
    */
   redacted?: boolean
+}
+
+// =====================================================================
+// Gate reviews — FDS-JBMP-001 §7
+// =====================================================================
+
+export type GateId = 'G0' | 'G1' | 'G2' | 'G3' | 'G4' | 'G5'
+
+/** §7: "A gate has three possible outcomes." */
+export type GateOutcome = 'pass' | 'conditional_pass' | 'fail'
+
+/** FDS-JBMP-004 competency. JB-2 or above may hold Custodian; JB-3 or
+ *  above may perform a Tier 2 peer audit. */
+export type CompetencyLevel = 'JB-1' | 'JB-2' | 'JB-3' | 'JB-4'
+
+/**
+ * Whether the application can decide a criterion, or only record that a
+ * person decided it.
+ *
+ *   derived  — the app evaluates it from the book's own records
+ *   attested — it is a human judgement by construction (a client
+ *              confirmation, a meeting held, paper legible), and the app's
+ *              job is to demand the attestation, not to fake one
+ */
+export type CriterionSource = 'derived' | 'attested'
+
+/**
+ * The verdict on one criterion.
+ *
+ * `indeterminate` is the important one and it is never rounded toward
+ * either neighbour. It means the app looked and could not tell — the
+ * evidence has not been loaded, or the control it depends on does not
+ * exist yet. Scoring that as met would let a book through a gate on the
+ * strength of an unasked question, which is precisely the failure §2 root
+ * cause 4 describes.
+ */
+export type CriterionState = 'met' | 'not_met' | 'indeterminate' | 'not_applicable'
+
+export interface CriterionResult {
+  id: string
+  gate: GateId
+  /** The criterion as the program words it. Not paraphrased: a chair
+   *  signing a gate is signing against this sentence. */
+  text: string
+  source: CriterionSource
+  state: CriterionState
+  /** What the app actually found, in numbers where there are numbers. */
+  detail: string
+  /** Records or sections the verdict rests on, for drill-down. */
+  evidence?: string[]
+}
+
+export interface GateEvaluation {
+  gate: GateId
+  title: string
+  /** §7's "When:" line — the point in construction the gate sits at. */
+  when: string
+  criteria: CriterionResult[]
+  met: number
+  notMet: number
+  indeterminate: number
+  notApplicable: number
+  /**
+   * True only when every criterion is met. An indeterminate criterion is
+   * not a pass: the chair may still pass the gate, but they do it over the
+   * app's stated uncertainty and have to write down why.
+   */
+  wouldPass: boolean
+  /** Weighted completion at evaluation time, for the §6.2 curve. */
+  completionPct: number
+}
+
+export interface GateReview {
+  id: string
+  jobBookId: string
+  gate: GateId
+  attempt: number
+  outcome: GateOutcome
+  chairedBy: string
+  custodianId?: string | null
+  projectManagerId?: string | null
+  decidedAt: string
+  /** The criteria as they stood when the decision was taken. Frozen: a
+   *  gate decision asserts something about the book on the day it was
+   *  taken, and re-deriving it later answers a different question. */
+  criteriaSnapshot: CriterionResult[]
+  completionPct?: number | null
+  conditionalDueAt?: IsoDate | null
+  clearedAt?: string | null
+  clearedBy?: string | null
+  /** Required when a gate is passed with anything unmet or unevaluable.
+   *  The database refuses the decision without it. */
+  overrideNote?: string | null
+  notes?: string | null
+}
+
+export interface GateCondition {
+  id: string
+  gateReviewId: string
+  criterionId?: string | null
+  description: string
+  ownerId: string
+  dueAt: IsoDate
+  closedAt?: string | null
+  closedBy?: string | null
+  closureNote?: string | null
 }

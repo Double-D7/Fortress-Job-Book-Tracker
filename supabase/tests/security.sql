@@ -287,6 +287,174 @@ do $$ begin
 end $$;
 
 \echo ''
+\echo 'Gate reviews are decisions, and the database holds them to it'
+-- FDS-JBMP-001 §7. The application checks all of this too, but the
+-- application is not the control: a gate decision is the thing that lets a
+-- book advance toward a client, so the rules live where nobody can reach
+-- around them.
+do $$
+declare v_criteria jsonb := '[{"id":"x","state":"not_met"},{"id":"y","state":"met"}]'::jsonb;
+        v_clean    jsonb := '[{"id":"y","state":"met"}]'::jsonb;
+begin
+  -- §5.1: the QA/QC Manager chairs. A tech may see the criteria; they may
+  -- not take the decision.
+  perform assert(
+    as_user('33333333-3333-3333-3333-333333333333', format(
+      'select record_gate_review(''dddddddd-0000-0000-0000-000000000001'',''G0'',''pass'',%L)',
+      v_clean)) like 'ERROR%chair a gate review',
+    'a tech cannot chair a gate review');
+
+  -- Passing a gate over an unmet criterion is allowed, because the chair is
+  -- the decision-maker — but it is never allowed silently.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555', format(
+      'select record_gate_review(''dddddddd-0000-0000-0000-000000000001'',''G0'',''pass'',%L)',
+      v_criteria)) like 'ERROR%override note is required',
+    'a gate cannot be passed over an unmet criterion without a written override');
+
+  -- An INDETERMINATE criterion is held to the same standard as an unmet
+  -- one. "The app could not tell" is not a pass.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555', format(
+      'select record_gate_review(''dddddddd-0000-0000-0000-000000000001'',''G0'',''pass'',%L)',
+      '[{"id":"z","state":"indeterminate"}]'::jsonb)) like 'ERROR%override note is required',
+    'nor over a criterion the application could not evaluate');
+
+  -- A Fail needs no excuse.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555', format(
+      'select record_gate_review(''dddddddd-0000-0000-0000-000000000001'',''G0'',''fail'',%L)',
+      v_criteria)) is not null,
+    'a Fail can be recorded with no override note');
+
+  -- A clean Pass on clean criteria, and it advances the book.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555', format(
+      'select record_gate_review(''dddddddd-0000-0000-0000-000000000001'',''G0'',''pass'',%L)',
+      v_clean)) is not null,
+    'a Pass on met criteria is recorded');
+  perform assert(
+    (select current_gate from job_book where id='dddddddd-0000-0000-0000-000000000001') = 'G0',
+    'and it advances the book to that gate');
+
+  -- Attempts are numbered, so "failed the same gate twice" is a query.
+  perform assert(
+    (select count(*) from gate_review
+      where job_book_id='dddddddd-0000-0000-0000-000000000001' and gate='G0') = 2
+    and (select max(attempt) from gate_review
+          where job_book_id='dddddddd-0000-0000-0000-000000000001' and gate='G0') = 2,
+    'repeated reviews of one gate are numbered attempts, not overwrites');
+end $$;
+
+do $$ begin
+  -- §7: a Conditional Pass carries a maximum of ten calendar days.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into gate_review
+           (job_book_id, gate, attempt, outcome, chaired_by, criteria_snapshot,
+            decided_at, conditional_due_at)
+         values ('dddddddd-0000-0000-0000-000000000001','G1',1,'conditional_pass',
+                 'bbbbbbbb-0000-0000-0000-000000000005','[]'::jsonb,
+                 '2026-01-01T00:00:00Z', '2026-01-30')$q$),
+    'a Conditional Pass cannot carry a window longer than ten days');
+
+  -- …and must carry a dated action list at all.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into gate_review
+           (job_book_id, gate, attempt, outcome, chaired_by, criteria_snapshot)
+         values ('dddddddd-0000-0000-0000-000000000001','G1',2,'conditional_pass',
+                 'bbbbbbbb-0000-0000-0000-000000000005','[]'::jsonb)$q$),
+    'a Conditional Pass cannot be issued without a due date');
+
+  -- §7: issuable once per gate.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$insert into gate_review
+           (job_book_id, gate, attempt, outcome, chaired_by, criteria_snapshot,
+            decided_at, conditional_due_at)
+         values ('dddddddd-0000-0000-0000-000000000001','G2',1,'conditional_pass',
+                 'bbbbbbbb-0000-0000-0000-000000000005','[]'::jsonb,
+                 now(), (now() at time zone 'UTC')::date + 5)
+         returning 'ok'$q$) = 'ok',
+    'the first Conditional Pass on a gate is accepted');
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into gate_review
+           (job_book_id, gate, attempt, outcome, chaired_by, criteria_snapshot,
+            decided_at, conditional_due_at)
+         values ('dddddddd-0000-0000-0000-000000000001','G2',2,'conditional_pass',
+                 'bbbbbbbb-0000-0000-0000-000000000005','[]'::jsonb,
+                 now(), (now() at time zone 'UTC')::date + 5)$q$),
+    'a second Conditional Pass on the same gate is refused');
+end $$;
+
+\echo ''
+\echo 'The Custodian is a qualification, not a name in a box'
+do $$ begin
+  update app_user set competency_level = 'JB-1'
+   where id = 'bbbbbbbb-0000-0000-0000-000000000003';
+
+  -- §5.1 requires JB-2 or above.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      'select assign_custodian(''dddddddd-0000-0000-0000-000000000001'',''bbbbbbbb-0000-0000-0000-000000000003'')::text')
+      like 'ERROR%JB-2 or above%',
+    'a JB-1 user cannot be named Custodian');
+
+  -- Null is "not assessed", and not assessed is not qualified.
+  update app_user set competency_level = null
+   where id = 'bbbbbbbb-0000-0000-0000-000000000003';
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      'select assign_custodian(''dddddddd-0000-0000-0000-000000000001'',''bbbbbbbb-0000-0000-0000-000000000003'')::text')
+      like 'ERROR%no assessed level%',
+    'nor can a user with no assessed competency');
+
+  update app_user set competency_level = 'JB-2'
+   where id = 'bbbbbbbb-0000-0000-0000-000000000003';
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      'select assign_custodian(''dddddddd-0000-0000-0000-000000000001'',''bbbbbbbb-0000-0000-0000-000000000003'')::text')
+      not like 'ERROR%',
+    'a JB-2 user can');
+  perform assert(
+    (select custodian_id from job_book where id='dddddddd-0000-0000-0000-000000000001')
+      = 'bbbbbbbb-0000-0000-0000-000000000003',
+    'and the assignment is recorded on the book');
+
+  -- Two-person control, same principle as section approval.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into gate_review
+           (job_book_id, gate, attempt, outcome, chaired_by, custodian_id, criteria_snapshot)
+         values ('dddddddd-0000-0000-0000-000000000001','G3',1,'pass',
+                 'bbbbbbbb-0000-0000-0000-000000000005',
+                 'bbbbbbbb-0000-0000-0000-000000000005','[]'::jsonb)$q$),
+    'the chair of a gate review cannot also be its Custodian');
+
+  -- A tech cannot assign one either.
+  perform assert(
+    as_user('33333333-3333-3333-3333-333333333333',
+      'select assign_custodian(''dddddddd-0000-0000-0000-000000000001'',''bbbbbbbb-0000-0000-0000-000000000003'')::text')
+      like 'ERROR%QA/QC manager or admin%',
+    'a tech cannot assign a Custodian');
+end $$;
+
+\echo ''
+\echo 'A client sees the book, not the minutes'
+do $$ begin
+  perform assert(
+    as_user('11111111-1111-1111-1111-111111111111',
+      'select count(*)::text from gate_review') = '0',
+    'a client user reads no gate review, even on their own book');
+  perform assert(
+    as_user('44444444-4444-4444-4444-444444444444',
+      'select count(*)::text from gate_review')::integer > 0,
+    'while Fortress staff read them');
+end $$;
+
+\echo ''
 \echo 'Row Level Security is on, and forced, everywhere'
 do $$ begin
   perform assert(

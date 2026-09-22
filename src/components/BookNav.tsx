@@ -11,6 +11,7 @@ const TABS = [
   { href: '/nde', label: 'NDE reports' },
   { href: '/materials', label: 'Materials & MTRs' },
   { href: '/personnel', label: 'Personnel & equipment' },
+  { href: '/gates', label: 'Gates' },
   { href: '/flags', label: 'Flags' },
   { href: '/documents', label: 'Documents' },
   { href: '/export', label: 'Turnover' },
