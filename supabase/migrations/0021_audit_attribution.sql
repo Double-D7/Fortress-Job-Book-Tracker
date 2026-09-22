@@ -82,4 +82,10 @@ comment on function enforce_audit_attribution() is
   'verification attributed to anyone but the QA/QC manager or an admin. '
   'RLS governs who may WRITE the row; this governs who it may NAME.';
 
-revoke execute on function enforce_audit_attribution() from public, anon;
+-- A trigger function needs EXECUTE granted to nobody: Postgres runs it as
+-- the table owner when the trigger fires. Left callable it appears on the
+-- REST surface as an RPC — harmless in itself, because plpgsql refuses a
+-- trigger function invoked outside a trigger, but 0012 established the
+-- rule for exactly this reason and `authenticated` belongs in the list.
+revoke execute on function enforce_audit_attribution()
+  from public, anon, authenticated;
