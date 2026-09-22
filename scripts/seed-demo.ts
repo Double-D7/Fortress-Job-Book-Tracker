@@ -77,46 +77,46 @@ interface DemoSpec {
 
 const SPECS: DemoSpec[] = [
   {
-    key: 'cottonwood', lateOneIn: 40, jobNumber: 'DEMO-CW-14-2', facility: 'Cottonwood 14-2',
+    key: 'cottonwood', lateOneIn: 99, jobNumber: 'DEMO-CW-14-2', facility: 'Cottonwood 14-2',
     operator: 'Redtail Resources (DEMO)', bookType: 'flowline',
     progress: 0.08, gate: 'G0', status: 'in_progress',
     start: '2026-08-17', end: '2027-02-26', asOf: '2026-09-21',
-    expectedWelds: 18, expectedTorque: 12, areas: ['Pad CW-14'],
+    expectedWelds: 8, expectedTorque: 6, areas: ['Pad CW-14'],
     defects: {},
   },
   {
-    key: 'sagedraw', lateOneIn: 7, jobNumber: 'DEMO-SD-B', facility: 'Sage Draw Pad B',
+    key: 'sagedraw', lateOneIn: 3, jobNumber: 'DEMO-SD-B', facility: 'Sage Draw Pad B',
     operator: 'Redtail Resources (DEMO)', bookType: 'flowline',
     progress: 0.34, gate: 'G0', conditional: { gate: 'G1', dueAt: '2026-09-28' },
     status: 'in_progress',
     start: '2026-04-06', end: '2027-01-29', asOf: '2026-09-21',
-    expectedWelds: 22, expectedTorque: 15, areas: ['Pad SD-B'],
+    expectedWelds: 10, expectedTorque: 7, areas: ['Pad SD-B'],
     defects: {},
   },
   {
-    key: 'mesaridge', lateOneIn: 14, jobNumber: 'DEMO-MR-CTB', facility: 'Mesa Ridge Central Tank Battery',
+    key: 'mesaridge', lateOneIn: 5, jobNumber: 'DEMO-MR-CTB', facility: 'Mesa Ridge Central Tank Battery',
     operator: 'Gannet Midstream (DEMO)', bookType: 'facility',
     progress: 0.60, gate: 'G2', status: 'in_progress',
     start: '2025-11-03', end: '2026-11-27', asOf: '2026-09-21',
-    expectedWelds: 27, expectedTorque: 22,
+    expectedWelds: 12, expectedTorque: 9,
     areas: ['Area 100 Inlet', 'Area 200 Separation', 'Area 300 Tanks'],
     defects: { expiredWrench: true },
   },
   {
-    key: 'juniper', lateOneIn: 25, jobNumber: 'DEMO-JF-CPF', facility: 'Juniper Flats Central Processing',
+    key: 'juniper', lateOneIn: 9, jobNumber: 'DEMO-JF-CPF', facility: 'Juniper Flats Central Processing',
     operator: 'Gannet Midstream (DEMO)', bookType: 'facility',
     progress: 0.88, gate: 'G3', status: 'in_progress',
     start: '2025-03-10', end: '2026-08-28', asOf: '2026-09-21',
-    expectedWelds: 25, expectedTorque: 20,
+    expectedWelds: 11, expectedTorque: 8,
     areas: ['Area 10 Inlet', 'Area 20 Compression', 'Area 30 Export'],
     defects: { unstampedWelds: 3 },
   },
   {
-    key: 'antelope', lateOneIn: 60, jobNumber: 'DEMO-AP-9-1', facility: 'Antelope Point 9-1',
+    key: 'antelope', lateOneIn: 99, jobNumber: 'DEMO-AP-9-1', facility: 'Antelope Point 9-1',
     operator: 'Bitterroot Energy (DEMO)', bookType: 'flowline',
     progress: 1, gate: 'G4', status: 'submitted',
     start: '2025-06-02', end: '2026-05-29', asOf: '2026-06-12',
-    expectedWelds: 17, expectedTorque: 11, areas: ['Pad AP-9'],
+    expectedWelds: 8,  expectedTorque: 5, areas: ['Pad AP-9'],
     defects: {},
   },
 ]
@@ -146,7 +146,7 @@ function build(spec: DemoSpec): JobBookBundle {
   const dayIn = (f: number) => addDays(spec.start, Math.floor(f * 300))
   /** Drawings the logs reference. §21 and §22 score against this as the
    *  denominator, so it has to be a number a real job would carry. */
-  const ISO_COUNT = 6
+  const ISO_COUNT = 3
 
   // -- people -----------------------------------------------------------
   const crewSize = Math.max(2, Math.round(CREW.length * Math.min(1, p + 0.35)))
@@ -245,10 +245,14 @@ function build(spec: DemoSpec): JobBookBundle {
 
   // The heat register is built below; the welds have to reference the same
   // numbers or §15 scores zero against a register full of MTRs.
-  const heatPool = Math.max(1, Math.round(10 * p))
+  const heatPool = Math.max(1, Math.round(5 * p))
   const weldCount = Math.round(spec.expectedWelds * p)
   const unstamped = spec.defects.unstampedWelds ?? 0
-  const late = (i: number) => i % spec.lateOneIn === 0
+  // `i % n === 0` is true at i = 0 for every n, so the first record of
+  // every book was late no matter what the book's rate was set to — which
+  // on a two-weld book is a 33% timeliness rate produced entirely by the
+  // modulo.
+  const late = (i: number) => i > 0 && i % spec.lateOneIn === 0
   const welds: Weld[] = Array.from({ length: weldCount }, (_, i) => {
     const f = i / Math.max(1, weldCount)
     const date = dayIn(f * p)
@@ -370,7 +374,7 @@ function build(spec: DemoSpec): JobBookBundle {
     } as NdeReport
   })
 
-  const ptCount = Math.round(4 * p)
+  const ptCount = Math.round(3 * p)
   const pressureTests: PressureTest[] = Array.from({ length: ptCount }, (_, i) => {
     const date = dayIn((i / Math.max(1, ptCount)) * p)
     const certOf = (kind: string) =>
@@ -400,7 +404,7 @@ function build(spec: DemoSpec): JobBookBundle {
   // made the 60%-progress book score below the 34% one. A demo whose
   // percentages do not order themselves teaches the reader to distrust
   // the percentage.
-  const cpCount = Math.round(8 * p)
+  const cpCount = Math.round(4 * p)
   const cpTestPoints = Array.from({ length: cpCount }, (_, i) => ({
     id: id('cp', `${spec.key}:${i}`), jobBookId: bookId,
     testPointId: `CP-${String(i + 1).padStart(3, '0')}`,
@@ -413,7 +417,7 @@ function build(spec: DemoSpec): JobBookBundle {
     entrySource: 'field_entry' as const,
   }))
 
-  const utCount = spec.bookType === 'facility' ? Math.round(8 * p) : 0
+  const utCount = spec.bookType === 'facility' ? Math.round(4 * p) : 0
   const utReadings = Array.from({ length: utCount }, (_, i) => ({
     id: id('ut', `${spec.key}:${i}`), jobBookId: bookId,
     locationId: `UT-${String(i + 1).padStart(3, '0')}`,
@@ -456,15 +460,15 @@ function build(spec: DemoSpec): JobBookBundle {
     const expected =
       def.linkedRecordType === 'weld' ? spec.expectedWelds
       : def.linkedRecordType === 'torque_connection' ? spec.expectedTorque
-      : def.linkedRecordType === 'material_heat' ? 10
-      : def.linkedRecordType === 'pressure_test' ? 4
+      : def.linkedRecordType === 'material_heat' ? 5
+      : def.linkedRecordType === 'pressure_test' ? 3
       // Declared scope has to be what the job will actually hold, derived
       // the same way the reports are generated. A scope of 5 against 4
       // reports leaves a book that is finished sitting at 97.5%.
       : def.linkedRecordType === 'nde_report'
         ? Math.max(1, Math.round(Math.ceil(spec.expectedWelds / 7) / 8))
-      : def.linkedRecordType === 'cp_test_point' ? 8
-      : def.linkedRecordType === 'ut_reading' ? 8
+      : def.linkedRecordType === 'cp_test_point' ? 4
+      : def.linkedRecordType === 'ut_reading' ? 4
       : def.linkedRecordType === 'isometric' ? ISO_COUNT
       : def.linkedRecordType === 'coating_inspection' ? spec.areas.length
       : def.requirementType === 'document' ? Math.max(1, def.minDocuments) : null
@@ -504,7 +508,7 @@ function build(spec: DemoSpec): JobBookBundle {
           originalFilename: `${def.sectionNumber}-${i + 1}.pdf`,
           normalizedFilename:
             `${def.sectionNumber.padStart(2, '0')}-DOC-${spec.jobNumber}-${i + 1}-${spec.start.replace(/-/g, '')}-R0.pdf`,
-          storagePath: `${bookId}/${def.sectionNumber}/${sha}`,
+          storagePath: `${bookId}/${def.sectionNumber}/${sha}`,  // rebuilt in SQL
           mimeType: 'application/pdf', byteSize: 180_000 + i * 2_113, sha256: sha,
           version: 1, isSuperseded: false, visibility: 'client',
           uploadedBy: null, uploadedAt: `${dayIn(0.05)}T12:00:00Z`,
@@ -576,7 +580,12 @@ function build(spec: DemoSpec): JobBookBundle {
 // SQL
 // ---------------------------------------------------------------------
 
+/** Wraps a SQL expression so `q` emits it as code rather than a string. */
+class SqlRaw { constructor(readonly sql: string) {} }
+const RAW = (sql: string) => new SqlRaw(sql)
+
 const q = (v: unknown): string => {
+  if (v instanceof SqlRaw) return v.sql
   if (v === null || v === undefined) return 'null'
   if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'null'
   if (typeof v === 'boolean') return v ? 'true' : 'false'
@@ -602,6 +611,10 @@ function insert(table: string, cols: string[], rows: unknown[][]): string {
   }
   return out.join('\n')
 }
+
+/** The two dates every seeded document shares: uploaded, then approved. */
+const dayIn05 = (spec: DemoSpec) => addDays(spec.start, Math.floor(0.05 * 300))
+const dayIn06 = (spec: DemoSpec) => addDays(spec.start, Math.floor(0.06 * 300))
 
 const bundles = SPECS.map(build).map(applyComputedScores)
 
@@ -688,11 +701,11 @@ for (const b of bundles) {
     const approved = sec.status === 'approved'
     return `(${q(sec.id)}, ${q(def.sectionNumber)}, ${q(sec.status)}, ${q(sec.naReason)}, ` +
       `${q(sec.computedPct)}, ${q(sec.collectedPct ?? sec.computedPct)}, ` +
-      `${q(sec.expectedCount)}::int, ${q(sec.expectedBy)}::date, ` +
-      `${approved ? q(id('user', 'custodian')) : 'null'}::uuid, ` +
-      `${approved ? q(`${bookSpec.asOf}T09:00:00Z`) : 'null'}::timestamptz, ` +
-      `${approved ? q(id('user', 'manager')) : 'null'}::uuid, ` +
-      `${approved ? q(`${bookSpec.asOf}T15:00:00Z`) : 'null'}::timestamptz)`
+      `${q(sec.expectedCount)}, ${q(sec.expectedBy)}, ` +
+      `${approved ? q(id('user', 'custodian')) : 'null'}, ` +
+      `${approved ? q(`${bookSpec.asOf}T09:00:00Z`) : 'null'}, ` +
+      `${approved ? q(id('user', 'manager')) : 'null'}, ` +
+      `${approved ? q(`${bookSpec.asOf}T15:00:00Z`) : 'null'})`
   })
   sql.push(
     // No ingestion_status column: the domain models "imported vs not yet
@@ -702,8 +715,11 @@ for (const b of bundles) {
     `  computed_pct, collected_pct, computed_at, expected_count, expected_by,\n` +
     `  ready_for_review_by, ready_for_review_at, approved_by, approved_at)\n` +
     `select v.id::uuid, ${q(bk.id)}, sd.id, v.status::section_status, v.na_reason,\n` +
-    `       v.pct::numeric, v.collected::numeric, now(), v.expected, v.expected_by,\n` +
-    `       v.ready_by, v.ready_at, v.approved_by, v.approved_at\n` +
+    // Cast in the SELECT, once, rather than on every value in the VALUES
+    // list — a hundred and eleven rows do not each need to say ::uuid.
+    `       v.pct::numeric, v.collected::numeric, now(), v.expected::int,\n` +
+    `       v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,\n` +
+    `       v.approved_by::uuid, v.approved_at::timestamptz\n` +
     `  from (values\n    ${sectionRows.join(',\n    ')}\n` +
     `  ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,\n` +
     `        ready_by, ready_at, approved_by, approved_at)\n` +
@@ -731,12 +747,36 @@ for (const b of bundles) {
   sql.push(insert('weld_line',
     ['id', 'job_book_id', 'line_code', 'sort_order', 'grouping_kind', 'expected_weld_count'],
     b.weldLines.map((l) => [l.id, l.jobBookId, l.lineCode, l.sortOrder, l.groupingKind, l.expectedWeldCount])))
-  sql.push(insert('document',
+  // Emitted as a SELECT over a VALUES list so the constants that are the
+  // same on every row — the book, the mime type, the timestamps — are
+  // written once instead of a hundred and twenty-eight times, and the
+  // storage path is built from the sha rather than repeating it.
+  const docRows = b.documents.map((d) => {
+    const section = d.storagePath.split('/')[1]!
+    return `(${q(d.id)}, ${q(d.sectionId)}, ${q(section)}, ${q(d.originalFilename)}, ` +
+      `${q(d.normalizedFilename)}, ${q(d.sha256)}, ${q(d.byteSize)})`
+  })
+  if (docRows.length > 0) {
+    sql.push(
+      `insert into document (id, job_book_id, section_id, original_filename,\n` +
+      `  normalized_filename, storage_path, mime_type, byte_size, sha256, version,\n` +
+      `  is_superseded, visibility, uploaded_at, approved_at)\n` +
+      `select v.id::uuid, ${q(bk.id)}, v.section_id::uuid, v.fn, v.nfn,\n` +
+      `       ${q(bk.id)} || '/' || v.sect || '/' || v.sha, 'application/pdf', v.bytes::bigint,\n` +
+      `       v.sha, 1, false, 'client', ${q(`${dayIn05(bookSpec)}T12:00:00Z`)},\n` +
+      `       ${q(`${dayIn06(bookSpec)}T12:00:00Z`)}\n` +
+      `  from (values\n    ${docRows.join(',\n    ')}\n` +
+      `  ) as v(id, section_id, sect, fn, nfn, sha, bytes)\n` +
+      `on conflict (id) do nothing;`,
+    )
+  }
+  const UNUSED_DOC_INSERT = insert('document',
     ['id', 'job_book_id', 'section_id', 'original_filename', 'normalized_filename', 'storage_path',
      'mime_type', 'byte_size', 'sha256', 'version', 'is_superseded', 'visibility', 'uploaded_at', 'approved_at'],
     b.documents.map((d) => [d.id, d.jobBookId, d.sectionId, d.originalFilename, d.normalizedFilename,
       d.storagePath, d.mimeType, d.byteSize, d.sha256, d.version, d.isSuperseded, d.visibility,
-      d.uploadedAt, d.approvedAt])))
+      d.uploadedAt, d.approvedAt]))
+  void UNUSED_DOC_INSERT
   sql.push(insert('weld',
     ['id', 'weld_line_id', 'job_book_id', 'weld_number', 'sort_order', 'weld_date', 'welder_stamp',
      'welder_id', 'joint_type', 'cwi_initials', 'cwi_id', 'cwi_visual_result', 'visual_inspection_date',
@@ -813,7 +853,13 @@ for (const b of bundles) {
       // The snapshot keeps the verdict and the program's sentence; the
       // evidence arrays are dropped because they are re-derivable and are
       // most of the bytes.
-      JSON.stringify(ev.criteria.map(({ evidence, ...c }) => c)), ev.completionPct,
+      // The program's sentence and the verdict are what a chair signed
+      // against and what an auditor reads. The `detail` is this
+      // application's working, re-derivable on demand, and it is most of
+      // the bytes.
+      JSON.stringify(ev.criteria.map((c) => ({
+        id: c.id, gate: c.gate, text: c.text, source: c.source, state: c.state,
+      }))), ev.completionPct,
       unresolved.length > 0
         ? `Demo book. ${unresolved.length} criteri${unresolved.length === 1 ? 'on' : 'a'} unmet or ` +
           `unevaluable at the time of review; passed on the strength of the Tier 2 audit and the ` +
@@ -833,7 +879,13 @@ for (const b of bundles) {
       // The snapshot keeps the verdict and the program's sentence; the
       // evidence arrays are dropped because they are re-derivable and are
       // most of the bytes.
-      JSON.stringify(ev.criteria.map(({ evidence, ...c }) => c)), ev.completionPct,
+      // The program's sentence and the verdict are what a chair signed
+      // against and what an auditor reads. The `detail` is this
+      // application's working, re-derivable on demand, and it is most of
+      // the bytes.
+      JSON.stringify(ev.criteria.map((c) => ({
+        id: c.id, gate: c.gate, text: c.text, source: c.source, state: c.state,
+      }))), ev.completionPct,
       'Demo book. Entry timeliness below target for the period and two registers still ' +
       'incomplete; ten calendar days to clear, per §7.',
       spec.conditional.dueAt,
@@ -847,19 +899,10 @@ for (const b of bundles) {
      'conditional_due_at'],
     gateRows))
 
-  // -- flags ------------------------------------------------------------
-  const findings = aggregateFindings(evaluateFlags(b, { asOf: spec.asOf }))
-  sql.push(insert('compliance_flag',
-    ['id', 'job_book_id', 'rule_id', 'severity', 'title', 'detail', 'section_number',
-     'fingerprint', 'state', 'due_at'],
-    findings.slice(0, 40).map((f, i) => [
-      id('flag', `${spec.key}:${f.fingerprint}`), bk.id, f.ruleId, f.severity,
-      f.title.slice(0, 300), f.detail.slice(0, 1200), f.sectionNumber ?? null, f.fingerprint,
-      'open',
-      // §11.5: an NCR carries a due date, or it cannot be shown to be on
-      // time. Criticals get a shorter clock.
-      addDays(spec.asOf, f.severity === 'critical' ? 5 : 20 + (i % 10)),
-    ])))
+  // No compliance_flag rows. The application derives findings live with
+  // `evaluateFlags` on every request; the table exists only to persist a
+  // resolution. Seeding it would put a second, immediately-stale copy of
+  // the findings beside the real ones.
 }
 
 sql.push(``, `commit;`)
