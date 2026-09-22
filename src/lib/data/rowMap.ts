@@ -62,9 +62,17 @@ export function domainToRow(
   return out
 }
 
-/** Columns of the tables this application writes to. Read off the live
- *  schema, and the reason a write never fails on a field the domain
- *  carries but the table does not. */
+/**
+ * Columns of the tables this application writes to. Read off the live
+ * schema, and the reason a write never fails on a field the domain carries
+ * but the table does not.
+ *
+ * Every list here is COMPLETE for its table. A partial list would be worse
+ * than no list, because `domainToRow` silently drops anything absent from
+ * it — a half-written allowlist for `weld` would quietly discard the weld
+ * date on every insert. Tables the application does not yet write to are
+ * left out entirely rather than sketched in.
+ */
 export const COLUMNS = {
   job_book: [
     'id', 'project_id', 'book_template_id', 'book_type', 'job_number',
@@ -81,13 +89,17 @@ export const COLUMNS = {
     'governing_docs_confirmed_at', 'governing_docs_confirmed_by',
     'custodian_id', 'custodian_assigned_at', 'custodian_assigned_by',
     'planned_curve', 'planned_curve_agreed_at', 'planned_curve_agreed_by',
-    'current_gate', 'current_gate_at',
+    'current_gate', 'current_gate_at', 'work_week',
   ],
   job_book_section: [
     'id', 'job_book_id', 'section_definition_id', 'status', 'na_reason',
     'ready_for_review_by', 'ready_for_review_at', 'approved_by', 'approved_at',
     'computed_pct', 'internal_notes', 'expected_count', 'computed_at', 'collected_pct',
     'expected_by',
+  ],
+  timeliness_period: [
+    'id', 'job_book_id', 'period_start', 'period_end', 'within_standard',
+    'total_measured', 'unmeasurable', 'rate_pct', 'computed_at', 'escalated_at',
   ],
   document: [
     'id', 'job_book_id', 'section_id', 'record_type', 'record_id',

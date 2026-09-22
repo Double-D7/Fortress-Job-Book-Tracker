@@ -120,6 +120,10 @@ export interface JobBook {
   // -- Governance spine (FDS-JBMP-001 §5, §6, §7) ------------------------
   /** §5: one book, one Custodian, named at Gate 0 and accountable for
    *  every record in it. */
+  /** §8: "a scheduled working day for the crew performing the work". Not
+   *  every crew works Monday to Friday, and the difference moves every
+   *  deadline in §8.1. */
+  workWeek?: 'mon_fri' | 'mon_sat' | 'all_days'
   custodianId?: string | null
   custodianAssignedAt?: string | null
   /** §6.2: the completion curve this book is measured against, agreed at
@@ -342,6 +346,35 @@ export interface TorqueWrench {
   onRoster: boolean
 }
 
+/**
+ * How a record arrived in the job book — FDS-JBMP-001 §8.
+ *
+ *   field_entry — entered by a person against work that had just happened.
+ *                 The only kind §8 can measure.
+ *   bulk_import — loaded from a legacy book, a spreadsheet or a folder
+ *                 tree. Real evidence, but its entry date says nothing
+ *                 about how promptly the crew filed it.
+ */
+export type EntrySource = 'field_entry' | 'bulk_import'
+
+/**
+ * The entry side of §8's one comparison.
+ *
+ * Every record already carries the date the WORK happened. This carries
+ * the moment the record was ENTERED, which is the other half of "records
+ * entered within standard divided by total records entered" — and which
+ * the application did not store at all, so the measurement §6.1 calls the
+ * one that makes every other control work could not be taken.
+ *
+ * Both fields are optional, and absent is never read as compliant: a
+ * record with no entry stamp, or one that does not say how it arrived, is
+ * excluded from the rate in both directions rather than counted on time.
+ */
+export interface EnteredRecord {
+  enteredAt?: string | null
+  entrySource?: EntrySource | null
+}
+
 export interface Certificate {
   id: string
   jobBookId?: string | null
@@ -391,7 +424,7 @@ export interface WeldLine {
   expectedWeldCount?: number | null
 }
 
-export interface Weld {
+export interface Weld extends EnteredRecord {
   id: string
   weldLineId: string
   jobBookId: string
@@ -423,6 +456,9 @@ export interface Weld {
   cwiId?: string | null
   cwiVisualResult?: PassFail | null
   visualInspectionDate?: IsoDate | null
+  /** §8.1 gives the CWI visual its own standard ("end of same business
+   *  day") and its own owner, so it needs its own entry stamp. */
+  visualEnteredAt?: string | null
   ndtCompany?: string | null
   xrayNumber?: string | null
   ndtTicketNumber?: string | null
@@ -451,7 +487,7 @@ export interface Weld {
   designPressurePsi?: number | null
 }
 
-export interface TorqueConnection {
+export interface TorqueConnection extends EnteredRecord {
   id: string
   jobBookId: string
   isoFlangeNumber: string
@@ -475,6 +511,8 @@ export interface TorqueConnection {
   torqueDate?: IsoDate | null
   employeeInitials?: string | null
   inspectionDate?: IsoDate | null
+  /** §8.1 times the torque inspection separately from the connection. */
+  inspectionEnteredAt?: string | null
   inspectorInitials?: string | null
   status: string
 }
@@ -494,7 +532,7 @@ export interface NdeReportLine {
   indications?: string | null
 }
 
-export interface NdeReport {
+export interface NdeReport extends EnteredRecord {
   id: string
   jobBookId: string
   reportNumber?: string | null
@@ -520,7 +558,7 @@ export interface NdeReport {
   lines: NdeReportLine[]
 }
 
-export interface MaterialHeat {
+export interface MaterialHeat extends EnteredRecord {
   id: string
   jobBookId: string
   heatNumber: string
@@ -531,9 +569,12 @@ export interface MaterialHeat {
   description?: string | null
   mtrDocumentId?: string | null
   mtrStatus: MtrStatus
+  /** §8.2 precondition 4: the MTR is captured against the heat AT RECEIPT.
+   *  Without this date the precondition cannot be shown to have been met. */
+  receivedOn?: IsoDate | null
 }
 
-export interface PressureTest {
+export interface PressureTest extends EnteredRecord {
   id: string
   jobBookId: string
   testIdentifier: string
@@ -568,7 +609,7 @@ export interface PressureTest {
   resultDocumentId?: string | null
 }
 
-export interface CpTestPoint {
+export interface CpTestPoint extends EnteredRecord {
   id: string
   jobBookId: string
   testPointId: string
@@ -579,7 +620,7 @@ export interface CpTestPoint {
   technician?: string | null
 }
 
-export interface UtReading {
+export interface UtReading extends EnteredRecord {
   id: string
   jobBookId: string
   locationId: string
@@ -591,7 +632,7 @@ export interface UtReading {
 }
 
 /** Coating inspection record, one per construction area (section 23). */
-export interface CoatingInspection {
+export interface CoatingInspection extends EnteredRecord {
   id: string
   jobBookId: string
   constructionArea: string

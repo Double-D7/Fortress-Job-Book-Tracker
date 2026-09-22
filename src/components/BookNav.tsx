@@ -12,6 +12,7 @@ const TABS = [
   { href: '/materials', label: 'Materials & MTRs' },
   { href: '/personnel', label: 'Personnel & equipment' },
   { href: '/gates', label: 'Gates' },
+  { href: '/timeliness', label: 'Timeliness' },
   { href: '/flags', label: 'Flags' },
   { href: '/documents', label: 'Documents' },
   { href: '/export', label: 'Turnover' },

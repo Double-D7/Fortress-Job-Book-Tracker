@@ -24,6 +24,7 @@
  */
 
 import { certValidOn } from './certificates'
+import { entryTimeliness } from './timeliness'
 import { scoreBook } from './scoring'
 import { today } from './dates'
 import type {
@@ -46,8 +47,14 @@ export interface GateContext {
    *  the same as unqualified, and is reported as indeterminate. */
   custodianCompetency?: string | null
   custodianName?: string | null
-  /** Entry Timeliness Rate for the period, 0–100 (§8.3). Absent until the
-   *  timeliness model is populated for this book. */
+  /**
+   * Entry Timeliness Rate for the period, 0–100 (§8.3).
+   *
+   * Left unset, it is derived from the book itself. Supplied, it overrides
+   * — a gate is normally read against the WEEK the program reports on
+   * rather than against the book's whole history, and only the caller
+   * knows which period is being gated.
+   */
   entryTimelinessRate?: number | null
   /** Tier 1/2/3 audit state (§10). Absent until an audit has been run. */
   latestPeerAuditScore?: number | null
@@ -483,7 +490,7 @@ function gate1(
         ),
   )
 
-  out.push(timelinessCriterion(G, ctx, 95))
+  out.push(timelinessCriterion(G, b, ctx, 95))
   out.push(selfAuditCriterion(G, ctx))
   out.push(peerAuditCriterion(G, ctx, 90, 'First Tier 2 peer audit performed, scored at 90 or above, with zero Critical findings.'))
 
@@ -982,23 +989,45 @@ function gate5(b: JobBookBundle): CriterionResult[] {
 // Criteria shared across gates
 // ---------------------------------------------------------------------
 
-function timelinessCriterion(gate: GateId, ctx: GateContext, target: number): CriterionResult {
+function timelinessCriterion(
+  gate: GateId,
+  b: JobBookBundle,
+  ctx: GateContext,
+  target: number,
+): CriterionResult {
   const text = `Entry timeliness rate at or above ${target}% for the period.`
-  if (ctx.entryTimelinessRate == null) {
+  const id = `${gate.toLowerCase()}.timeliness`
+
+  const measured = entryTimeliness(b)
+  const rate = ctx.entryTimelinessRate ?? measured.ratePct
+
+  if (rate == null) {
+    // Nothing measurable is not 0% and not 100%. A book whose records were
+    // all loaded in bulk out of a legacy package has no §8 history, and
+    // scoring that as a failure would condemn every migrated book while
+    // scoring it as a pass would wave every one of them through.
     return unknown(
-      `${gate.toLowerCase()}.timeliness`,
+      id,
       gate,
       text,
-      'No Entry Timeliness Rate has been measured for this book. §8.3 calculates it weekly from the work date carried on each record against the date it was entered.',
+      measured.unmeasurable > 0
+        ? `No record in this book can be timed: ${measured.unmeasurable} entr${measured.unmeasurable === 1 ? 'y carries' : 'ies carry'} no entry stamp or were loaded in bulk. §8.3 measures the work date on the record against the date it was entered, and neither is available here.`
+        : 'No records have been entered yet, so there is no Entry Timeliness Rate to read.',
     )
   }
+
+  const scope = ctx.entryTimelinessRate != null
+    ? 'for the period'
+    : `over ${measured.totalMeasured} measurable entr${measured.totalMeasured === 1 ? 'y' : 'ies'}` +
+      (measured.unmeasurable > 0 ? `, with ${measured.unmeasurable} not measurable` : '')
+
   return decide(
-    ctx.entryTimelinessRate >= target,
-    `${gate.toLowerCase()}.timeliness`,
+    rate >= target,
+    id,
     gate,
     text,
-    `Entry Timeliness Rate ${pct(ctx.entryTimelinessRate)} against a ${target}% target.`,
-    `Entry Timeliness Rate ${pct(ctx.entryTimelinessRate)} is below the ${target}% target.`,
+    `Entry Timeliness Rate ${pct(rate)} ${scope}, against a ${target}% target.`,
+    `Entry Timeliness Rate ${pct(rate)} ${scope} is below the ${target}% target.`,
   )
 }
 

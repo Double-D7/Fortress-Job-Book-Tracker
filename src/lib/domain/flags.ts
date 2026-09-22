@@ -21,6 +21,7 @@ import {
 } from './welders'
 import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
 import { reconcileCp, reconcileHeats } from './reconcile'
+import { entryTimeliness, TIMELINESS_TARGET_PCT } from './timeliness'
 
 export interface Finding {
   ruleId: string
@@ -927,6 +928,94 @@ export function ruleMtrNotReferenced(b: JobBookBundle): Finding[] {
   })))
 }
 
+/**
+ * A record entered outside its §8.1 standard.
+ *
+ * §8.3 is explicit about what happens to a late entry: "A record entered
+ * late is entered accurately and flagged late; it is never back dated."
+ * So this rule does not block anything and does not accuse anyone of
+ * falsification — it makes the lateness visible, which is the only way the
+ * Entry Timeliness Rate can be acted on rather than merely reported.
+ *
+ * Severity is `info` on purpose. A late entry is a §11.3 Minor finding:
+ * the record is accurate, the evidence is real, and the problem is a
+ * process one. Ranking it alongside an expired welder qualification would
+ * bury the qualification.
+ */
+export function ruleLateEntry(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const a of entryTimeliness(b).late) {
+    out.push({
+      ruleId: 'timeliness.late_entry',
+      severity: 'info',
+      title: `${a.recordLabel} was entered ${a.daysLate} business day${a.daysLate === 1 ? '' : 's'} past its standard`,
+      detail:
+        `Work dated ${a.workDate}, due in the book by ${a.dueBy} under FDS-JBMP-001 §8.1, ` +
+        `entered ${a.enteredOn}. The record stands as entered — §8.3 requires a late entry to ` +
+        `be accurate and flagged, never back-dated.`,
+      entityType: a.standardId,
+      entityId: a.recordId,
+      sectionNumber: a.sectionNumber,
+      fingerprint: fp('timeliness.late_entry', a.standardId, a.recordId),
+    })
+  }
+  return cap('timeliness.late_entry', out)
+}
+
+/**
+ * A record entered before the work it reports.
+ *
+ * This is not a timeliness result. §11.1 makes "any record dated in the
+ * future" a Critical finding, and a record written down before the work
+ * happened is the same defect seen from the other end: at the moment
+ * somebody typed it, the thing it asserts had not occurred.
+ */
+export function ruleEnteredBeforeWork(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const a of entryTimeliness(b).all) {
+    if (a.verdict !== 'entered_before_work') continue
+    out.push({
+      ruleId: 'timeliness.entered_before_work',
+      severity: 'critical',
+      title: `${a.recordLabel} was entered before the work it reports`,
+      detail:
+        `Entered ${a.enteredOn} against a work date of ${a.workDate}. At the moment this record ` +
+        `was written the work it asserts had not happened, so the entry cannot be a record of it.`,
+      entityType: a.standardId,
+      entityId: a.recordId,
+      sectionNumber: a.sectionNumber,
+      fingerprint: fp('timeliness.entered_before_work', a.standardId, a.recordId),
+    })
+  }
+  return cap('timeliness.entered_before_work', out)
+}
+
+/**
+ * The book as a whole is filing late.
+ *
+ * One finding for the book, not one per record — the per-record rule
+ * already covers those. This is the number a Project Manager is escalated
+ * on under §8.3, and it belongs in the queue as a single management item.
+ */
+export function ruleTimelinessBelowTarget(b: JobBookBundle): Finding[] {
+  const r = entryTimeliness(b)
+  if (r.ratePct == null || r.ratePct >= TIMELINESS_TARGET_PCT) return []
+  return [{
+    ruleId: 'timeliness.below_target',
+    severity: r.needsEscalation ? 'warning' : 'info',
+    title: `Entry Timeliness Rate is ${r.ratePct}%, below the ${TIMELINESS_TARGET_PCT}% target`,
+    detail:
+      `${r.withinStandard} of ${r.totalMeasured} measurable entries met their §8.1 standard` +
+      (r.unmeasurable > 0 ? `; a further ${r.unmeasurable} could not be measured` : '') +
+      `. ` +
+      (r.needsEscalation
+        ? `§8.3 escalates a book below 90% for two consecutive weeks to the Project Manager and the VP of Operations.`
+        : `The target is 95%.`),
+    sectionNumber: '12',
+    fingerprint: fp('timeliness.below_target'),
+  }]
+}
+
 export function ruleReadyForReviewWithOpenWarnings(
   b: JobBookBundle, existing: Finding[],
 ): Finding[] {
@@ -1207,6 +1296,9 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleMtrNotReferenced(b),
     ...ruleNonConformingFilename(b),
     ...ruleArchiveUploaded(b),
+    ...ruleLateEntry(b),
+    ...ruleEnteredBeforeWork(b),
+    ...ruleTimelinessBelowTarget(b),
   ]
   findings.push(...ruleReadyForReviewWithOpenWarnings(b, findings))
 
