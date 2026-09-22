@@ -13,6 +13,8 @@ begin;
 -- job_assignment is keyed on (job_book_id, user_id) and carries no id of
 -- its own, so it is removed by the books it points at.
 delete from job_assignment where job_book_id::text like 'd0d0d0d0-%' or user_id::text like 'd0d0d0d0-%';
+-- Same for completeness_certification, whose primary key IS the book.
+delete from completeness_certification where job_book_id::text like 'd0d0d0d0-%';
 delete from compliance_flag where id::text like 'd0d0d0d0-%';
 delete from gate_condition where id::text like 'd0d0d0d0-%';
 delete from gate_review where id::text like 'd0d0d0d0-%';
@@ -36,6 +38,8 @@ delete from torque_wrench where id::text like 'd0d0d0d0-%';
 delete from timeliness_period where id::text like 'd0d0d0d0-%';
 delete from job_book_section where id::text like 'd0d0d0d0-%';
 delete from inspector_grant where id::text like 'd0d0d0d0-%';
+delete from audit_finding where id::text like 'd0d0d0d0-%';
+delete from job_book_audit where id::text like 'd0d0d0d0-%';
 delete from job_book where id::text like 'd0d0d0d0-%';
 delete from project where id::text like 'd0d0d0d0-%';
 delete from client_org where id::text like 'd0d0d0d0-%';

@@ -53,8 +53,55 @@ union all select 'welds', count(*) from weld where id::text like 'd0d0d0d0-%'
 union all select 'torque', count(*) from torque_connection where id::text like 'd0d0d0d0-%'
 union all select 'documents', count(*) from document where id::text like 'd0d0d0d0-%'
 union all select 'gates', count(*) from gate_review where id::text like 'd0d0d0d0-%'
-union all select 'flags', count(*) from compliance_flag where id::text like 'd0d0d0d0-%';
+union all select 'flags', count(*) from compliance_flag where id::text like 'd0d0d0d0-%'
+union all select 'audits', count(*) from job_book_audit where id::text like 'd0d0d0d0-%'
+union all select 'findings', count(*) from audit_finding where id::text like 'd0d0d0d0-%'
+union all select 'certifications', count(*) from completeness_certification
+  where job_book_id::text like 'd0d0d0d0-%';
 SQL
+
+# A peer audit's score has to be what its findings come to. The generator
+# derives it with the same function the application uses, so a mismatch
+# here means one of the two drifted.
+psql "$DB" -v ON_ERROR_STOP=1 -t -A <<'SQL'
+select 'peer ' || b.job_number || ' attempt ' || a.attempt || ': ' ||
+       a.score || ' ' || a.outcome ||
+       ' (' || coalesce((select count(*) from audit_finding f
+                          where f.audit_id = a.id and f.classification = 'critical'), 0)
+       || 'C)'
+from job_book_audit a
+join job_book b on b.id = a.job_book_id
+where a.id::text like 'd0d0d0d0-%' and a.tier = 'tier_2_peer'
+order by b.created_at, a.attempt;
+SQL
+
+# §10.3: any Critical fails the audit outright, whatever the score.
+BADPASS=$(psql "$DB" -t -A -c "
+  select count(*) from job_book_audit a
+   where a.id::text like 'd0d0d0d0-%' and a.tier = 'tier_2_peer'
+     and a.outcome = 'pass'
+     and exists (select 1 from audit_finding f
+                  where f.audit_id = a.id and f.classification = 'critical')")
+[ "$BADPASS" = "0" ] || {
+  echo "FAILED: $BADPASS peer audit(s) pass while carrying a Critical finding (§10.3)"
+  exit 1
+}
+
+# §10.2: a peer audit is never by the book's own Custodian, and never
+# below JB-3. The database refuses both through record_peer_audit(), but
+# the seed writes these rows directly, so they are checked here.
+BADAUDITOR=$(psql "$DB" -t -A -c "
+  select count(*) from job_book_audit a
+   join job_book b on b.id = a.job_book_id
+   join app_user u on u.id = a.auditor_id
+   where a.id::text like 'd0d0d0d0-%' and a.tier = 'tier_2_peer'
+     and (a.auditor_id = b.custodian_id
+          or u.competency_level is null
+          or u.competency_level not in ('JB-3','JB-4'))")
+[ "$BADAUDITOR" = "0" ] || {
+  echo "FAILED: $BADAUDITOR peer audit(s) breach the §10.2 independence rule"
+  exit 1
+}
 
 # The stored percentage must equal what the engine computes. This is the
 # assertion the whole generator exists to keep true.
@@ -78,6 +125,10 @@ LEFT=$(psql "$DB" -t -A -c "
     union all select count(*) from app_user where id::text like 'd0d0d0d0-%'
     union all select count(*) from job_assignment
       where job_book_id::text like 'd0d0d0d0-%' or user_id::text like 'd0d0d0d0-%'
+    union all select count(*) from job_book_audit where id::text like 'd0d0d0d0-%'
+    union all select count(*) from audit_finding where id::text like 'd0d0d0d0-%'
+    union all select count(*) from completeness_certification
+      where job_book_id::text like 'd0d0d0d0-%'
   ) x")
 echo "rows left after delete: $LEFT"
 [ "$LEFT" = "0" ] || { echo "FAILED: delete-demo.sql left rows behind"; exit 1; }

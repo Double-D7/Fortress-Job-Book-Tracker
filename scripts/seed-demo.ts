@@ -26,11 +26,17 @@ import { byStandard, entryTimeliness } from '../src/lib/domain/timeliness'
 import { evaluateGate, GATE_ORDER } from '../src/lib/domain/gates'
 import { makeRng, intBetween, pick } from '../src/lib/data/seed/rng'
 import { addDays } from '../src/lib/domain/dates'
+import { addBusinessDays } from '../src/lib/domain/timeliness'
 import type {
-  BookType, Certificate, Cwi, DocumentRecord, GateId, IsoDate, JobBookBundle,
-  JobBookSection, MaterialHeat, NdeReport, NdtTechnician, PressureTest,
-  TorqueConnection, TorqueWrench, Weld, WeldLine, Welder, WelderQualification,
+  AuditFinding, BookType, Certificate, Cwi, DocumentRecord, FindingClass,
+  GateId, IsoDate, JobBookAudit, JobBookBundle, JobBookSection, MaterialHeat,
+  NdeReport, NdtTechnician, PressureTest, TorqueConnection, TorqueWrench,
+  Weld, WeldLine, Welder, WelderQualification,
 } from '../src/lib/domain/types'
+import {
+  auditableLotSize, latestOfTier, samplePlan, scoreAudit, selfAuditsDue,
+  SELF_AUDIT_INTERVAL_WORKING_DAYS, summarizeAudits,
+} from '../src/lib/domain/audits'
 
 // ---------------------------------------------------------------------
 // Identity: one namespace, so one predicate deletes everything
@@ -73,6 +79,38 @@ interface DemoSpec {
    * the same rate shows nothing about the metric.
    */
   lateOneIn: number
+  /**
+   * The §10 verification history this book should carry.
+   *
+   * Varied per book so the demo shows the model rather than one state of
+   * it: a book that has never been audited, one whose peer audit failed
+   * on a Critical, one that passed on a second attempt, and one carrying
+   * the full Tier 2 + Tier 3 + Completeness Certification set.
+   *
+   * `peerFindings` drives the score — nothing here types a number, for
+   * the same reason the application does not let a person type one.
+   */
+  audit: {
+    /**
+     * Tier 1 audits performed. Set against what the book actually owes
+     * at its as-of date — one per ten working days since construction
+     * started — so the demo shows a book that is current, several that
+     * are behind by varying amounts, and what each looks like on the
+     * gate. Every book at the same number would show nothing.
+     */
+    selfAudits: number
+    peers?: { findings: DemoFinding[] }[]
+    tier3?: boolean
+    certified?: boolean
+  }
+}
+
+interface DemoFinding {
+  classification: FindingClass
+  sectionNumber?: string
+  summary: string
+  /** Days after the audit by which §11.5 wants it corrected. */
+  dueInDays?: number
 }
 
 const SPECS: DemoSpec[] = [
@@ -82,6 +120,10 @@ const SPECS: DemoSpec[] = [
     progress: 0.08, gate: 'G0', status: 'in_progress',
     start: '2026-08-17', end: '2027-02-26', asOf: '2026-09-21',
     expectedWelds: 8, expectedTorque: 6, areas: ['Pad CW-14'],
+    // Barely started. Nobody has audited it yet, which is the honest
+    // state of a book at Gate 0 — and the state that makes five gate
+    // criteria read indeterminate rather than met.
+    audit: { selfAudits: 2 },
     defects: {},
   },
   {
@@ -91,6 +133,23 @@ const SPECS: DemoSpec[] = [
     status: 'in_progress',
     start: '2026-04-06', end: '2027-01-29', asOf: '2026-09-21',
     expectedWelds: 10, expectedTorque: 7, areas: ['Pad SD-B'],
+    // The conditional pass needs a reason. This book's peer audit
+    // scored below the mark on ordinary findings — no Critical anywhere
+    // — which is the failure mode a report that only ever said
+    // "Critical" would hide.
+    audit: {
+      selfAudits: 9,
+      peers: [{
+        findings: [
+          { classification: 'major', sectionNumber: '15',
+            summary: 'Heat register not reconciled against installed heats', dueInDays: 14 },
+          { classification: 'minor', sectionNumber: '12',
+            summary: 'Four weld log filenames do not follow Appendix B', dueInDays: 30 },
+          { classification: 'minor', sectionNumber: '13',
+            summary: 'Wrench register missing one capacity rating', dueInDays: 30 },
+        ],
+      }],
+    },
     defects: {},
   },
   {
@@ -100,6 +159,31 @@ const SPECS: DemoSpec[] = [
     start: '2025-11-03', end: '2026-11-27', asOf: '2026-09-21',
     expectedWelds: 12, expectedTorque: 9,
     areas: ['Area 100 Inlet', 'Area 200 Separation', 'Area 300 Tanks'],
+    // Failed on a Critical, then cleared it and passed on the second
+    // attempt. §10.3 in action: the first audit scored 75 and would have
+    // failed at any score, and the history keeps both attempts because a
+    // book that passed on the second try did not pass the way one that
+    // passed first time did.
+    audit: {
+      selfAudits: 22,
+      peers: [
+        {
+          findings: [
+            { classification: 'critical', sectionNumber: '14',
+              summary: 'Connection torqued with a wrench outside its calibration window',
+              dueInDays: 7 },
+            { classification: 'minor', sectionNumber: '9',
+              summary: 'NDT procedure revision not recorded on the report', dueInDays: 30 },
+          ],
+        },
+        {
+          findings: [
+            { classification: 'minor', sectionNumber: '21',
+              summary: 'One isometric markup unsigned', dueInDays: 30 },
+          ],
+        },
+      ],
+    },
     defects: { expiredWrench: true },
   },
   {
@@ -109,6 +193,19 @@ const SPECS: DemoSpec[] = [
     start: '2025-03-10', end: '2026-08-28', asOf: '2026-09-21',
     expectedWelds: 11, expectedTorque: 8,
     areas: ['Area 10 Inlet', 'Area 20 Compression', 'Area 30 Export'],
+    // At mechanical completion with a clean peer audit behind it, and
+    // Tier 3 not yet done — that belongs at Gate 4, which this book has
+    // not reached.
+    audit: {
+      selfAudits: 46,
+      peers: [{
+        findings: [
+          { classification: 'minor', sectionNumber: '17',
+            summary: 'Two test packs filed without the ambient temperature', dueInDays: 30 },
+        ],
+      }],
+      tier3: false,
+    },
     defects: { unstampedWelds: 3 },
   },
   {
@@ -117,6 +214,15 @@ const SPECS: DemoSpec[] = [
     progress: 1, gate: 'G4', status: 'submitted',
     start: '2025-06-02', end: '2026-05-29', asOf: '2026-06-12',
     expectedWelds: 8,  expectedTorque: 5, areas: ['Pad AP-9'],
+    // Submitted. The full set: a doubled Gate 4 sample scoring above 95,
+    // Tier 3 verification, and the Completeness Certification §10.4 says
+    // no book leaves without.
+    audit: {
+      selfAudits: 32,
+      peers: [{ findings: [] }],
+      tier3: true,
+      certified: true,
+    },
     defects: {},
   },
 ]
@@ -573,6 +679,130 @@ function build(spec: DemoSpec): JobBookBundle {
     utReadings: utReadings as JobBookBundle['utReadings'],
     coatingInspections: coatingInspections as JobBookBundle['coatingInspections'],
     complianceFlags: [],
+    // Attached before the gate snapshots are generated, so the criteria
+    // they record are the ones a chair would actually have seen. A
+    // snapshot claiming a peer audit was unevaluable on a book that holds
+    // one would be a demo teaching the wrong thing.
+    ...buildAudits(spec, {
+      welds, torqueConnections, documents, pressureTests, ndeReports,
+      materialHeats, certificates,
+    }),
+  }
+}
+
+// ---------------------------------------------------------------------
+// §10 — the three-tier verification history
+// ---------------------------------------------------------------------
+
+/**
+ * The audits a book carries, from its spec.
+ *
+ * Every score here is derived by `scoreAudit` from the findings, exactly
+ * as the application derives it. Typing a number into the seed would
+ * make the demo capable of showing a score that its own findings do not
+ * support, which is the one thing §10.3 is about.
+ */
+function buildAudits(
+  spec: DemoSpec,
+  counts: Pick<JobBookBundle,
+    'welds' | 'torqueConnections' | 'documents' | 'pressureTests' |
+    'ndeReports' | 'materialHeats' | 'certificates'>,
+): Pick<JobBookBundle, 'audits' | 'auditFindings' | 'completenessCertification'> {
+  const audits: JobBookAudit[] = []
+  const auditFindings: AuditFinding[] = []
+  const bookId = id('book', spec.key)
+
+  // Placed on the schedule §10.1 actually sets — one every ten working
+  // days from the start of construction — rather than spread evenly
+  // across the whole construction window. Spreading across the window
+  // put the first audit months past the as-of date on a book that had
+  // only just started, so two of the five books recorded none at all.
+  for (let i = 0; i < spec.audit.selfAudits; i += 1) {
+    const when = addBusinessDays(
+      spec.start, SELF_AUDIT_INTERVAL_WORKING_DAYS * (i + 1), 'mon_sat')
+    if (when > spec.asOf) break
+    audits.push({
+      id: id('audit', `${spec.key}:self:${i + 1}`),
+      jobBookId: bookId, tier: 'tier_1_self', attempt: i + 1,
+      auditorId: id('user', 'custodian'),
+      startedAt: `${when}T09:00:00Z`, completedAt: `${when}T11:00:00Z`,
+      outcome: 'pass', score: null, doubleSample: false,
+      samplePlan: null, lotSize: null, sampleSize: null,
+      notes: 'Scheduled Tier 1 self audit.',
+    })
+  }
+
+  // The lot is what the book actually holds, so the sample size the demo
+  // shows is the one the standard gives for a book that size.
+  const lot = auditableLotSize({
+    ...counts, documents: counts.documents,
+  } as JobBookBundle)
+
+  for (const [n, peer] of (spec.audit.peers ?? []).entries()) {
+    const attempt = n + 1
+    // Gate 4 doubles the sample, and only the submitted book gets there.
+    const doubled = spec.audit.certified === true
+    const plan = samplePlan(lot, doubled)
+    const verdict = scoreAudit(peer.findings)
+    // Attempts land late in the window, the re-audit after the first.
+    const when = addDays(spec.asOf, -30 + n * 14)
+    const auditId = id('audit', `${spec.key}:peer:${attempt}`)
+
+    audits.push({
+      id: auditId, jobBookId: bookId, tier: 'tier_2_peer', attempt,
+      // Ines Farrow, JB-3, and not this book's Custodian — the two things
+      // §10.2 asks of a peer auditor.
+      auditorId: id('user', 'auditor'),
+      startedAt: `${when}T08:00:00Z`, completedAt: `${when}T16:00:00Z`,
+      outcome: verdict.passes ? 'pass' : 'fail',
+      score: verdict.score,
+      samplePlan: plan.description,
+      lotSize: plan.lotSize, sampleSize: plan.sampleSize,
+      doubleSample: doubled,
+      notes: verdict.explanation,
+    })
+
+    for (const [fi, f] of peer.findings.entries()) {
+      auditFindings.push({
+        id: id('finding', `${spec.key}:peer:${attempt}:${fi + 1}`),
+        auditId,
+        classification: f.classification,
+        sectionNumber: f.sectionNumber ?? null,
+        summary: f.summary,
+        detail: null,
+        dueAt: f.dueInDays ? addDays(when, f.dueInDays) : null,
+        // Everything on a superseded attempt was cleared — that is what
+        // made the re-audit possible.
+        resolvedAt: n < (spec.audit.peers ?? []).length - 1
+          ? `${addDays(when, 10)}T12:00:00Z` : null,
+        resolvedBy: n < (spec.audit.peers ?? []).length - 1
+          ? id('user', 'custodian') : null,
+        resolution: n < (spec.audit.peers ?? []).length - 1
+          ? 'Corrected and re-verified before the follow-up audit.' : null,
+      })
+    }
+  }
+
+  if (spec.audit.tier3) {
+    const when = addDays(spec.asOf, -7)
+    audits.push({
+      id: id('audit', `${spec.key}:tier3:1`),
+      jobBookId: bookId, tier: 'tier_3_manager', attempt: 1,
+      auditorId: id('user', 'manager'),
+      startedAt: `${when}T09:00:00Z`, completedAt: `${when}T15:00:00Z`,
+      outcome: 'pass', score: null, doubleSample: false,
+      samplePlan: null, lotSize: null, sampleSize: null,
+      notes: 'Tier 3 QA/QC Manager verification ahead of Gate 4.',
+    })
+  }
+
+  return {
+    audits,
+    auditFindings,
+    // Null rather than undefined where a book is not certified: the gate
+    // engine reads the two differently, and "loaded, and there is none"
+    // is what is true of every demo book but the last.
+    completenessCertification: null,
   }
 }
 
@@ -616,7 +846,44 @@ function insert(table: string, cols: string[], rows: unknown[][]): string {
 const dayIn05 = (spec: DemoSpec) => addDays(spec.start, Math.floor(0.05 * 300))
 const dayIn06 = (spec: DemoSpec) => addDays(spec.start, Math.floor(0.06 * 300))
 
-const bundles = SPECS.map(build).map(applyComputedScores)
+/**
+ * §10.4 — the Completeness Certification, attached after scoring.
+ *
+ * It has to come after, because the whole point of the form is that it
+ * records the figures as they stood at signature. Building it inside
+ * `build()` would mean certifying a percentage that had not been worked
+ * out yet.
+ */
+function attachCertification(b: JobBookBundle): JobBookBundle {
+  const spec = SPECS.find((x) => x.jobNumber === b.book.jobNumber)!
+  if (!spec.audit.certified) return b
+
+  const score = scoreBook(b)
+  const counted = b.sections.filter((s) => s.status !== 'na')
+  return {
+    ...b,
+    completenessCertification: {
+      jobBookId: b.book.id,
+      certifiedBy: id('user', 'manager'),
+      certifiedAt: `${addDays(spec.asOf, -3)}T16:00:00Z`,
+      completionPct: score.overallPct,
+      sectionsTotal: counted.length,
+      sectionsApproved: counted.filter((s) => s.status === 'approved').length,
+      // The database refuses a certification carrying an open Critical,
+      // and so does the application. A demo that showed one signed anyway
+      // would teach the opposite of the control.
+      openCritical: 0,
+      openMajor: 0,
+      tier2AuditId: id('audit', `${spec.key}:peer:1`),
+      tier3AuditId: id('audit', `${spec.key}:tier3:1`),
+      statement:
+        'Every applicable section is complete, approved and verified against the client ' +
+        'checklist. Certified under FDS-JBMP-001 §10.4.',
+    },
+  }
+}
+
+const bundles = SPECS.map(build).map(applyComputedScores).map(attachCertification)
 
 const sql: string[] = [
   `-- Five demo job books. Generated by scripts/seed-demo.ts — do not hand-edit.`,
@@ -842,6 +1109,38 @@ for (const b of bundles) {
       c.inspectionDate, c.inspector, c.hasStructuredData, c.documentCount, c.enteredAt,
       c.entrySource])))
 
+  // -- §10 three-tier verification --------------------------------------
+  sql.push(insert('job_book_audit',
+    ['id', 'job_book_id', 'tier', 'attempt', 'auditor_id', 'started_at',
+     'completed_at', 'outcome', 'score', 'sample_plan', 'lot_size',
+     'sample_size', 'double_sample', 'notes', 'created_by'],
+    (b.audits ?? []).map((a) => [a.id, a.jobBookId, a.tier, a.attempt,
+      a.auditorId, a.startedAt, a.completedAt, a.outcome, a.score,
+      a.samplePlan, a.lotSize, a.sampleSize, a.doubleSample, a.notes,
+      id('user', 'manager')])))
+
+  sql.push(insert('audit_finding',
+    ['id', 'audit_id', 'classification', 'section_number', 'summary',
+     'detail', 'due_at', 'resolved_at', 'resolved_by', 'resolution'],
+    (b.auditFindings ?? []).map((f) => [f.id, f.auditId, f.classification,
+      f.sectionNumber, f.summary, f.detail, f.dueAt, f.resolvedAt,
+      f.resolvedBy, f.resolution])))
+
+  if (b.completenessCertification) {
+    const c = b.completenessCertification
+    // Keyed on the book rather than on an id of its own, so this insert
+    // conflicts on job_book_id. `insert()` writes `on conflict (id)`.
+    sql.push(
+      `insert into completeness_certification (job_book_id, certified_by, ` +
+      `certified_at, completion_pct, sections_total, sections_approved, ` +
+      `open_critical, open_major, tier_2_audit_id, tier_3_audit_id, statement) values\n` +
+      `  (${[c.jobBookId, c.certifiedBy, c.certifiedAt, c.completionPct,
+             c.sectionsTotal, c.sectionsApproved, c.openCritical, c.openMajor,
+             c.tier2AuditId, c.tier3AuditId, c.statement].map(q).join(', ')})\n` +
+      `on conflict (job_book_id) do nothing;`,
+    )
+  }
+
   // -- gate reviews -----------------------------------------------------
   const spec = SPECS.find((s) => s.jobNumber === bk.jobNumber)!
   const gateRows: unknown[][] = []
@@ -923,6 +1222,9 @@ const TABLES_IN_DELETE_ORDER = [
   'ut_reading', 'coating_inspection', 'document', 'weld_line', 'certificate',
   'welder_qualification', 'welder', 'cwi', 'ndt_technician', 'torque_wrench',
   'timeliness_period', 'job_book_section', 'inspector_grant',
+  // §10: findings hang off audits. The certification is keyed on the
+  // book rather than on an id of its own, so it is removed separately.
+  'audit_finding', 'job_book_audit',
   'job_book', 'project', 'client_org', 'app_user',
 ]
 
@@ -942,6 +1244,8 @@ begin;
 -- job_assignment is keyed on (job_book_id, user_id) and carries no id of
 -- its own, so it is removed by the books it points at.
 delete from job_assignment where job_book_id::text like '${NS}-%' or user_id::text like '${NS}-%';
+-- Same for completeness_certification, whose primary key IS the book.
+delete from completeness_certification where job_book_id::text like '${NS}-%';
 ${TABLES_IN_DELETE_ORDER.map((t) => `delete from ${t} where id::text like '${NS}-%';`).join('\n')}
 commit;
 `)
@@ -965,6 +1269,26 @@ for (const b of bundles) {
     `${t.ratePct == null ? '—' : `${t.ratePct}%`}`,
   )
 }
+// §10, because a verification history nobody prints is a history nobody
+// notices is wrong.
+console.log('\n  job number       self audits   latest peer audit          tier 3   certified')
+console.log('  ' + '-'.repeat(104))
+for (const b of bundles) {
+  const spec = SPECS.find((x) => x.jobNumber === b.book.jobNumber)!
+  const sum = summarizeAudits(b.audits ?? [], b.auditFindings ?? [])
+  const due = selfAuditsDue(b, spec.asOf)
+  const peer = latestOfTier(b.audits ?? [], 'tier_2_peer')
+  console.log(
+    `  ${b.book.jobNumber.padEnd(16)} ` +
+    `${`${sum.selfAuditsPerformed}/${due ?? '?'}`.padEnd(13)} ` +
+    `${(peer
+        ? `${peer.score} ${peer.outcome} (attempt ${peer.attempt}, ${sum.latestPeerAuditCriticals}C)`
+        : 'none recorded').padEnd(26)} ` +
+    `${(sum.tier3VerifiedAt ? 'signed' : '—').padEnd(8)} ` +
+    `${b.completenessCertification ? 'yes' : 'no'}`,
+  )
+}
+
 if (process.env.DEMO_DEBUG) {
   for (const b of bundles) {
     const spec = SPECS.find((x) => x.jobNumber === b.book.jobNumber)!
