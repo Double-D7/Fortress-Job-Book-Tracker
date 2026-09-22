@@ -19,6 +19,12 @@ import type {
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { applyComputedScores } from '@/lib/domain/scoring'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
+import {
+  checkWeldLogOverview, parseWeldLogOverviewPdf, type WeldLogOverview,
+} from '@/lib/import/weldLogOverview'
+import {
+  planOverviewIngest, rowsForPlan, type OverviewIngestPlan,
+} from '@/lib/import/overviewIngest'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -157,6 +163,44 @@ export interface DataProvider {
 
   /** Fortress staff who could hold a role on a book, for the pickers. */
   listStaff(viewer: Viewer): Promise<StaffMember[]>
+
+  // -- Record ingestion --------------------------------------------------
+
+  /**
+   * Read a Weld Log Overview Sheet and say what importing it would do,
+   * without doing any of it.
+   *
+   * Separate from the commit on purpose. A tech pressing "import" on a
+   * sheet that would create ten welders and skip one because its stamp
+   * names two people should be told that first — after the fact it is an
+   * apology, before it is information.
+   */
+  previewOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array,
+  ): Promise<OverviewImportPreview>
+
+  /** Commit the plan from `previewOverviewImport`, re-derived server-side
+   *  against the book as it stands now rather than as the preview saw it. */
+  commitOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<OverviewImportResult>
+}
+
+export interface OverviewImportPreview {
+  ok: boolean
+  error?: string
+  sheet?: WeldLogOverview
+  plan?: OverviewIngestPlan
+}
+
+export interface OverviewImportResult {
+  ok: boolean
+  error?: string
+  weldersCreated: number
+  weldersMatched: number
+  qualificationsRecorded: number
+  peopleCreated: number
+  skipped: { stamp: string; reason: string }[]
 }
 
 export interface StaffMember {
@@ -194,6 +238,34 @@ export interface GateDecision {
  * A user with no assessed level is not a user at JB-1 — §5.1 treats the
  * two the same way for eligibility, and the app says which it is.
  */
+/**
+ * Parse a sheet and plan its import against one book.
+ *
+ * Shared by both providers so the seed demo and the live database agree
+ * about what a given file would do — the preview a tech reads has to be
+ * the same computation the commit performs.
+ */
+export function buildOverviewPreview(
+  bundle: JobBookBundle, file: Uint8Array,
+): OverviewImportPreview {
+  let sheet: WeldLogOverview
+  try {
+    sheet = parseWeldLogOverviewPdf(file)
+  } catch {
+    return { ok: false, error: 'That file could not be read as a PDF.' }
+  }
+  if (sheet.parseIssues.length > 0 && sheet.welders.length === 0) {
+    return { ok: false, error: sheet.parseIssues[0] }
+  }
+
+  const findings = checkWeldLogOverview(sheet, {
+    constructionStart: bundle.book.constructionStart,
+    constructionEnd: bundle.book.constructionEnd,
+    recordedOperator: bundle.book.pipingSpecReference ?? bundle.clientOrg.name,
+  })
+  return { ok: true, sheet, plan: planOverviewIngest(sheet, bundle, findings) }
+}
+
 const SEED_STAFF: StaffMember[] = [
   { id: 'seed-user-manager', fullName: 'D. Devitt', email: 'qaqc.manager@fortressds.com',
     role: 'qaqc_manager', competencyLevel: 'JB-4' },
@@ -690,6 +762,70 @@ class SeedProvider implements DataProvider {
   async listStaff(viewer: Viewer): Promise<StaffMember[]> {
     if (!WRITER_ROLES.has(viewer.role)) return []
     return SEED_STAFF
+  }
+
+
+  // -- Record ingestion --------------------------------------------------
+
+  async previewOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array,
+  ): Promise<OverviewImportPreview> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    return buildOverviewPreview(b, file)
+  }
+
+  async commitOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<OverviewImportResult> {
+    void filename
+    const empty = {
+      weldersCreated: 0, weldersMatched: 0, qualificationsRecorded: 0,
+      peopleCreated: 0, skipped: [] as { stamp: string; reason: string }[],
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.', ...empty }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    const preview = buildOverviewPreview(b, file)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
+    }
+
+    let n = 0
+    const rows = rowsForPlan(preview.plan, {
+      enteredAt: new Date().toISOString(),
+      // Entered through the application against a sheet the crew produced,
+      // so §8 can measure it. A migration of a delivered book is the other
+      // kind, and the two are not conflated.
+      entrySource: 'field_entry',
+      newId: () => `seed-import-${jobBookId}-${(n += 1)}`,
+    })
+
+    this.commit(jobBookId, idx, {
+      ...b,
+      welders: [...b.welders, ...rows.welders],
+      welderQualifications: [...b.welderQualifications, ...rows.qualifications],
+      cwis: [...b.cwis, ...rows.cwis],
+      ndtTechnicians: [...b.ndtTechnicians, ...rows.ndtTechnicians],
+    })
+
+    return {
+      ok: true,
+      weldersCreated: rows.welders.length,
+      weldersMatched: preview.plan.summary.weldersMatched,
+      qualificationsRecorded: rows.qualifications.length,
+      peopleCreated: rows.cwis.length + rows.ndtTechnicians.length,
+      skipped: preview.plan.welders
+        .filter((w) => w.action === 'skip')
+        .map((w) => ({ stamp: w.stamp || w.name, reason: w.skipReason ?? '' })),
+    }
   }
 
 }

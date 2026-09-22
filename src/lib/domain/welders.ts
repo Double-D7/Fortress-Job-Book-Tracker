@@ -246,7 +246,15 @@ export function qualifiedOn(
   quals: WelderQualification[],
 ): boolean {
   return quals.some(
-    (q) => q.welderId === welderId && isWithin(date, q.qualificationDate, q.expiryDate ?? null),
+    (q) =>
+      q.welderId === welderId &&
+      // No qualification date means the record has been read only in part
+      // — the overview sheet gives an expiry and no start. Treating that
+      // as an open window would qualify every weld the welder ever made,
+      // which is the same inversion `certValidOn` refuses for an unread
+      // certificate.
+      !!q.qualificationDate &&
+      isWithin(date, q.qualificationDate, q.expiryDate ?? null),
   )
 }
 

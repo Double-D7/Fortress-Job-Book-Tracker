@@ -25,6 +25,7 @@
 
 import { certValidOn } from './certificates'
 import { entryTimeliness } from './timeliness'
+import { qualifiedOn } from './welders'
 import { scoreBook } from './scoring'
 import { today } from './dates'
 import type {
@@ -1142,13 +1143,11 @@ function certificateValidityProblems(b: JobBookBundle): string[] {
       (x): x is string => !!x,
     )
     for (const id of new Set(welderIds)) {
-      const quals = b.welderQualifications.filter((q) => q.welderId === id)
-      const ok = quals.some(
-        (q) =>
-          q.qualificationDate <= (w.weldDate as IsoDate) &&
-          (!q.expiryDate || q.expiryDate >= (w.weldDate as IsoDate)),
-      )
-      if (!ok) {
+      // `qualifiedOn` rather than a second copy of the same window test.
+      // The copy that used to live here would have qualified a weld
+      // against a qualification whose start date is unknown, which is the
+      // case the overview-sheet import creates.
+      if (!qualifiedOn(id, w.weldDate as IsoDate, b.welderQualifications)) {
         const welder = b.welders.find((x) => x.id === id)
         problems.push(`weld ${w.weldNumber} / ${welder?.initials ?? id}`)
       }

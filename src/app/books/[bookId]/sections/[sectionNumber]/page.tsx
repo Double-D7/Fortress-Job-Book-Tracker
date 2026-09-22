@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/primitives'
 import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
+import { OverviewImport } from '@/components/OverviewImport'
 import { registerForSection } from '@/lib/domain/upload'
 import { bytes, num, pct } from '@/lib/utils'
 
@@ -190,6 +191,16 @@ export default async function SectionDetail({
         registerLabel={REGISTER_LABELS[registerForSection(number) ?? ''] ?? 'Identifier'}
         registerKeys={registerKeysFor(number, b)}
       />
+
+      {/*
+        The overview sheet is the one document in the book that is also a
+        dataset: it carries the whole welder roster with stamps and WPQ
+        expiry dates. Filing it as a PDF and stopping there is how a book
+        ends up with a populated §11 and an empty welder register.
+      */}
+      {number === '11' && (
+        <OverviewImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
+      )}
 
       <Card>
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">

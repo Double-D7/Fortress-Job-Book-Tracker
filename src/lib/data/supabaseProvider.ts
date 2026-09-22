@@ -19,9 +19,12 @@ import type {
 } from '@/lib/domain/types'
 import type {
   ActionResult, CreateResult, DataProvider, GateDecision, GateSideFacts,
-  JobBookSummary, StaffMember, UploadResult, Viewer,
+  JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
+  UploadResult, Viewer,
 } from './provider'
-import { redactForViewer } from './provider'
+import { buildOverviewPreview, redactForViewer } from './provider'
+import { rowsForPlan } from '@/lib/import/overviewIngest'
+import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
@@ -552,6 +555,106 @@ export class SupabaseProvider implements DataProvider {
     })
     if (error) return { ok: false, error: error.message.replace(/^.*?:\s*/, '') }
     return { ok: true }
+  }
+
+  // -- Record ingestion --------------------------------------------------
+
+  async previewOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array,
+  ): Promise<OverviewImportPreview> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildOverviewPreview(bundle, file)
+  }
+
+  async commitOverviewImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<OverviewImportResult> {
+    void filename
+    const empty = {
+      weldersCreated: 0, weldersMatched: 0, qualificationsRecorded: 0,
+      peopleCreated: 0, skipped: [] as { stamp: string; reason: string }[],
+    }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    // Re-planned here against the book as it stands NOW, never taken from
+    // the browser. Two techs importing the same sheet a minute apart both
+    // passed a preview built before the other committed, and the register
+    // must not gain the same welder twice because of it.
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+    const preview = buildOverviewPreview(bundle, file)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
+    }
+
+    const rows = rowsForPlan(preview.plan, {
+      enteredAt: new Date().toISOString(),
+      entrySource: 'field_entry',
+      newId: () => randomUUID(),
+    })
+
+    const supabase = await createClient()
+
+    // The registers are shared across books, so a welder already on file
+    // from another job is matched rather than duplicated — `initials` is
+    // unique, and an upsert on it is what makes re-importing the same
+    // sheet a no-op instead of a second roster.
+    if (rows.welders.length > 0) {
+      const { error } = await supabase.from('welder').upsert(
+        rows.welders.map((w) => domainToRow(w, COLUMNS.welder)),
+        { onConflict: 'initials', ignoreDuplicates: false },
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    if (rows.qualifications.length > 0) {
+      // Re-resolve welder ids: an upsert on an existing stamp keeps the
+      // row that was already there, so the id generated a moment ago is
+      // not necessarily the one on file.
+      const stamps = rows.welders.map((w) => w.initials)
+      const { data: onFile } = await supabase
+        .from('welder').select('id, initials').in('initials', stamps)
+      const idByStamp = new Map(
+        (onFile ?? []).map((w) => [w.initials as string, w.id as string]),
+      )
+      const remap = new Map(rows.welders.map((w) => [w.id, idByStamp.get(w.initials) ?? w.id]))
+
+      const { error } = await supabase.from('welder_qualification').insert(
+        rows.qualifications.map((q) => domainToRow(
+          { ...q, welderId: remap.get(q.welderId) ?? q.welderId, source: 'overview_sheet' },
+          COLUMNS.welder_qualification,
+        )),
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    for (const [table, list, columns] of [
+      ['cwi', rows.cwis, COLUMNS.cwi],
+      ['ndt_technician', rows.ndtTechnicians, COLUMNS.ndt_technician],
+    ] as const) {
+      if (list.length === 0) continue
+      const { error } = await supabase.from(table).insert(
+        list.map((p) => domainToRow(p, columns)),
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    return {
+      ok: true,
+      weldersCreated: rows.welders.length,
+      weldersMatched: preview.plan.summary.weldersMatched,
+      qualificationsRecorded: rows.qualifications.length,
+      peopleCreated: rows.cwis.length + rows.ndtTechnicians.length,
+      skipped: preview.plan.welders
+        .filter((w) => w.action === 'skip')
+        .map((w) => ({ stamp: w.stamp || w.name, reason: w.skipReason ?? '' })),
+    }
   }
 
   async listStaff(viewer: Viewer): Promise<StaffMember[]> {

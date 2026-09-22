@@ -274,7 +274,7 @@ export interface DocumentRecord {
   deletedAt?: string | null
 }
 
-export interface Welder {
+export interface Welder extends EnteredRecord {
   id: string
   fullName: string
   initials: string
@@ -292,20 +292,29 @@ export interface Welder {
   combinedOf?: string[]
 }
 
-export interface WelderQualification {
+export interface WelderQualification extends EnteredRecord {
   id: string
   welderId: string
   code: QualificationCode
   process?: string | null
-  qualificationDate: IsoDate
+  /**
+   * When the qualification was granted.
+   *
+   * Null where the source gave only an expiry — the Weld Log Overview
+   * Sheet records "Date WPQ Expires" and nothing else. A null start is not
+   * an open window: `qualifiedOn` refuses to certify a weld against a
+   * qualification whose start is unknown, for the same reason
+   * `certValidOn` refuses an unread certificate.
+   */
+  qualificationDate: IsoDate | null
   expiryDate?: IsoDate | null
   continuityLastVerified?: IsoDate | null
   documentId?: string | null
 }
 
-export interface Cwi { id: string; fullName: string; initials: string; employer?: string | null; active: boolean }
+export interface Cwi extends EnteredRecord { id: string; fullName: string; initials: string; employer?: string | null; active: boolean }
 
-export interface NdtTechnician {
+export interface NdtTechnician extends EnteredRecord {
   id: string
   fullName: string
   initials?: string | null

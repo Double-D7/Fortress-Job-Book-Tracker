@@ -97,6 +97,21 @@ export const COLUMNS = {
     'computed_pct', 'internal_notes', 'expected_count', 'computed_at', 'collected_pct',
     'expected_by',
   ],
+  welder: [
+    'id', 'full_name', 'initials', 'employer', 'active', 'name_aliases',
+    'entered_at', 'entry_source',
+  ],
+  welder_qualification: [
+    'id', 'welder_id', 'code', 'process', 'qualification_date', 'expiry_date',
+    'continuity_last_verified', 'document_id', 'source', 'entered_at', 'entry_source',
+  ],
+  cwi: [
+    'id', 'full_name', 'initials', 'employer', 'active', 'entered_at', 'entry_source',
+  ],
+  ndt_technician: [
+    'id', 'full_name', 'initials', 'employer', 'classification', 'active',
+    'entered_at', 'entry_source',
+  ],
   timeliness_period: [
     'id', 'job_book_id', 'period_start', 'period_end', 'within_standard',
     'total_measured', 'unmeasurable', 'rate_pct', 'computed_at', 'escalated_at',
