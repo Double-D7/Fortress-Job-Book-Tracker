@@ -35,6 +35,10 @@ import {
   parseFacilityTorqueRows, planTorqueLogIngest, readTorqueLogGrid,
   rowsForTorquePlan, type TorqueLogIngestPlan,
 } from '@/lib/import/torqueLogIngest'
+import {
+  parsePressureTestRows, readPressureLogGrid, toPressureTestRecords,
+  type ParsedPressureRow, type PressureRowIssue,
+} from '@/lib/import/pressureTestLog'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -224,6 +228,14 @@ export interface DataProvider {
    * INSERT would let a Custodian audit their own book and produce a score
    * the gate engine would then believe.
    */
+  /** The same two steps for the pressure test hold sheet (§17). */
+  previewPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportPreview>
+  commitPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportCommit>
+
   recordAudit(
     viewer: Viewer, jobBookId: string, input: AuditInput,
   ): Promise<ActionResult>
@@ -358,6 +370,91 @@ export function buildTorqueLogPreview(
     }
   }
   return { ok: true, plan: planTorqueLogIngest(parsed, bundle, read.format) }
+}
+
+export interface PressureTestImportPreview {
+  ok: boolean
+  error?: string
+  plan?: PressureTestIngestPlan
+}
+
+export interface PressureTestImportCommit {
+  ok: boolean
+  error?: string
+  testsCreated: number
+  testsUpdated: number
+}
+
+export interface PressureTestIngestPlan {
+  format: 'xlsx' | 'pdf'
+  sheetsParsed: string[]
+  parsedRows: number
+  /** Numbered rows the sheet holds that record no test. Named, never
+   *  imported: a template placeholder is not a test that happened. */
+  emptyRows: { testIdentifier: string; rowNumber: number }[]
+  testsToCreate: number
+  testsToUpdate: number
+  /** Tests with no date, which §11.1 cannot check at all. */
+  undated: number
+  /** Tests whose hold ended below where it started. Reported, never
+   *  judged — ambient temperature moves a reading and the result
+   *  document is what settles it. */
+  pressureDropped: number
+  issues: PressureRowIssue[]
+  rows: ParsedPressureRow[]
+}
+
+/**
+ * Parse a pressure test hold sheet and plan its import against one book.
+ *
+ * Shared by both providers so the plan a tech reads is the computation
+ * the commit performs.
+ */
+export function buildPressureTestPreview(
+  bundle: JobBookBundle, file: Uint8Array, filename: string,
+): PressureTestImportPreview {
+  const read = readPressureLogGrid(file, filename)
+  if (read.error) return { ok: false, error: read.error }
+  if (read.grid.length === 0) return { ok: false, error: 'No rows found in that file.' }
+
+  const parsed = parsePressureTestRows(read.grid, read.sheetsParsed[0] ?? 'Pressure Tests')
+  if (parsed.rows.length === 0) {
+    return {
+      ok: false,
+      error: parsed.issues[0]?.message
+        ?? 'No pressure tests could be read. The column headers did not match anything this reader knows.',
+    }
+  }
+
+  const existing = new Set(
+    bundle.pressureTests.map((t) => (t.testIdentifier ?? '').trim().toUpperCase()),
+  )
+  let create = 0
+  let update = 0
+  for (const r of parsed.rows) {
+    if (existing.has(r.testIdentifier.trim().toUpperCase())) update += 1
+    else create += 1
+  }
+
+  return {
+    ok: true,
+    plan: {
+      format: read.format,
+      sheetsParsed: read.sheetsParsed,
+      parsedRows: parsed.rows.length,
+      emptyRows: parsed.emptyRows.map((e) => ({
+        testIdentifier: e.testIdentifier, rowNumber: e.rowNumber,
+      })),
+      testsToCreate: create,
+      testsToUpdate: update,
+      undated: parsed.rows.filter((r) => !r.testDate).length,
+      pressureDropped: parsed.rows.filter(
+        (r) => r.startPressurePsi != null && r.endPressurePsi != null &&
+               r.endPressurePsi < r.startPressurePsi).length,
+      issues: parsed.issues,
+      rows: parsed.rows,
+    },
+  }
 }
 
 export interface StaffMember {
@@ -984,6 +1081,47 @@ class SeedProvider implements DataProvider {
       ok: true,
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
+    }
+  }
+
+  async previewPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportPreview> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    return buildPressureTestPreview(b, file, filename)
+  }
+
+  async commitPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportCommit> {
+    const empty = { testsCreated: 0, testsUpdated: 0 }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.', ...empty }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    const preview = buildPressureTestPreview(b, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
+    }
+
+    const now = new Date().toISOString()
+    const records = toPressureTestRecords(preview.plan.rows, { jobBookId })
+      .map((t) => ({ ...t, enteredAt: now, entrySource: 'field_entry' as const }))
+    const byId = new Map(b.pressureTests.map((t) => [t.id, t]))
+    for (const t of records) byId.set(t.id, t)
+
+    this.commit(jobBookId, idx, { ...b, pressureTests: [...byId.values()] })
+    return {
+      ok: true,
+      testsCreated: preview.plan.testsToCreate,
+      testsUpdated: preview.plan.testsToUpdate,
     }
   }
 

@@ -19,16 +19,19 @@ import type {
 } from '@/lib/domain/types'
 import type {
   ActionResult, AuditInput, CreateResult, DataProvider, GateDecision, GateSideFacts,
+  PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
 import {
-  buildOverviewPreview, buildTorqueLogPreview, buildWeldLogPreview, redactForViewer,
+  buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
+  buildWeldLogPreview, redactForViewer,
 } from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
 import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
 import { rowsForTorquePlan } from '@/lib/import/torqueLogIngest'
+import { toPressureTestRecords } from '@/lib/import/pressureTestLog'
 import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -810,6 +813,53 @@ export class SupabaseProvider implements DataProvider {
       ok: true,
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
+    }
+  }
+
+  async previewPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportPreview> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildPressureTestPreview(bundle, file, filename)
+  }
+
+  async commitPressureTestImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<PressureTestImportCommit> {
+    const empty = { testsCreated: 0, testsUpdated: 0 }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+
+    // Re-planned against the book as it stands now, never taken from the
+    // browser — the same rule the weld and torque imports follow.
+    const preview = buildPressureTestPreview(bundle, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
+    }
+
+    const now = new Date().toISOString()
+    const records = toPressureTestRecords(preview.plan.rows, { jobBookId })
+      .map((t) => ({ ...t, enteredAt: now, entrySource: 'field_entry' as const }))
+
+    const supabase = await createClient()
+    const { error } = await supabase.from('pressure_test').upsert(
+      records.map((t) => domainToRow(t, COLUMNS.pressure_test)),
+      { onConflict: 'id' },
+    )
+    if (error) return { ok: false, error: describe(error), ...empty }
+
+    await this.refreshScores(jobBookId, viewer)
+    return {
+      ok: true,
+      testsCreated: preview.plan.testsToCreate,
+      testsUpdated: preview.plan.testsToUpdate,
     }
   }
 

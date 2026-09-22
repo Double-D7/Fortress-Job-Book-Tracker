@@ -125,6 +125,19 @@ export const COLUMNS = {
     'id', 'full_name', 'initials', 'employer', 'classification', 'active',
     'entered_at', 'entry_source',
   ],
+  pressure_test: [
+    'id', 'job_book_id', 'test_identifier', 'line_codes', 'test_date',
+    'test_medium', 'test_pressure_psi', 'duration_minutes', 'result',
+    'recorder_serial', 'recorder_cert_id', 'chart_document_id',
+    'witnessed_by', 'deleted_at',
+    // 0014 — §11.1 needs all three instruments, and §17 needs the hold
+    // data and the result document, not just a pass/fail.
+    'gauge_serial', 'gauge_cert_id', 'psv_serial', 'psv_cert_id',
+    'start_pressure_psi', 'end_pressure_psi', 'ambient_temp_f',
+    'result_document_id',
+    // 0017 — the §8.1 entry stamp.
+    'entered_at', 'entry_source',
+  ],
   torque_connection: [
     'id', 'job_book_id', 'iso_flange_number', 'iso_number', 'flange_pipe_size',
     'bolt_diameter', 'bolt_count', 'required_torque_ft_lb',

@@ -14,6 +14,7 @@ import { SectionUpload } from '@/components/SectionUpload'
 import { OverviewImport } from '@/components/OverviewImport'
 import { WeldLogImport } from '@/components/WeldLogImport'
 import { TorqueLogImport } from '@/components/TorqueLogImport'
+import { PressureTestImport } from '@/components/PressureTestImport'
 import { registerForSection } from '@/lib/domain/upload'
 import { bytes, num, pct } from '@/lib/utils'
 
@@ -222,6 +223,16 @@ export default async function SectionDetail({
       */}
       {number === '14' && (
         <TorqueLogImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
+      )}
+
+      {/*
+        §17 is the section the baseline review found in the worst state:
+        13 of 21 facility packages held instrument certificates and no
+        result document, and the book could not tell, because a pressure
+        test existed only as a folder of PDFs.
+      */}
+      {number === '17' && (
+        <PressureTestImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
       )}
 
       <Card>
