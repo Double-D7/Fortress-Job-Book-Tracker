@@ -891,8 +891,17 @@ export class SupabaseProvider implements DataProvider {
       if (error) return { ok: false, error: describe(error) }
       auditId = (data as { id: string }).id
     } else {
-      // Tiers 1 and 3 have no independence rule to enforce and no score,
-      // so RLS alone is the control.
+      // §10 reserves Tier 3 to the QA/QC Manager, and Gate 4 reads that
+      // row as satisfying g4.tier3 — so anyone else filing one clears a
+      // criterion the program does not give them. The trigger on
+      // job_book_audit refuses it regardless; this is here so the caller
+      // meets the refusal as a sentence rather than a Postgres error.
+      if (input.tier === 'tier_3_manager' && !BOOK_CREATORS.has(viewer.role)) {
+        return {
+          ok: false,
+          error: 'Tier 3 verification is performed by the QA/QC manager or an admin (§10).',
+        }
+      }
       const { data: prior } = await supabase
         .from('job_book_audit').select('attempt')
         .eq('job_book_id', jobBookId).eq('tier', input.tier)

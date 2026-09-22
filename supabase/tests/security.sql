@@ -542,6 +542,37 @@ begin
     as_user('11111111-1111-1111-1111-111111111111',
       'select count(*)::text from job_book_audit') = '0',
     'a client user reads no audit, even on their own book');
+
+  -- 0021. RLS governs who may WRITE an audit row; it says nothing about
+  -- who the row NAMES, and auditor_id arrives from the client. Gate 4
+  -- reads a tier_3_manager row as satisfying g4.tier3, so a tech filing
+  -- one attributed to the manager would clear a criterion §10 reserves
+  -- to the manager, without the manager touching it.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into job_book_audit
+           (job_book_id, tier, attempt, auditor_id, outcome, completed_at)
+         values ('dddddddd-0000-0000-0000-000000000001','tier_3_manager',1,
+                 'bbbbbbbb-0000-0000-0000-000000000003','pass',now())$q$),
+    'a tech cannot be named as the Tier 3 verifier');
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$insert into job_book_audit
+           (job_book_id, tier, attempt, auditor_id, outcome, completed_at)
+         values ('dddddddd-0000-0000-0000-000000000001','tier_3_manager',2,
+                 'bbbbbbbb-0000-0000-0000-000000000005','pass',now())
+         returning 'ok'$q$) = 'ok',
+    'while the manager can');
+
+  -- §10 is Fortress checking Fortress. An audit signed by the operator
+  -- is a different document with a different meaning.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into job_book_audit
+           (job_book_id, tier, attempt, auditor_id, outcome, completed_at)
+         values ('dddddddd-0000-0000-0000-000000000001','tier_1_self',50,
+                 'bbbbbbbb-0000-0000-0000-000000000001','pass',now())$q$),
+    'an audit cannot be attributed to a client user');
 end $$;
 
 \echo ''
