@@ -8,6 +8,7 @@ import {
 import { scoreBook } from '@/lib/domain/scoring'
 import { today } from '@/lib/domain/dates'
 import type { AuditTier, JobBookAudit } from '@/lib/domain/types'
+import { RecordAudit } from '@/components/RecordAudit'
 import {
   Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Metric,
   SectionHeading, Table, Td, Th, Tr,
@@ -70,6 +71,10 @@ export default async function AuditsPage({
 
   const selfShortfall = due == null ? null : Math.max(0, due - summary.selfAuditsPerformed)
 
+  const staff = await getDataProvider().listStaff(viewer)
+  const canRecord = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech']).has(viewer.role)
+  const canCertify = new Set(['fortress_admin', 'qaqc_manager']).has(viewer.role)
+
   const sorted = [...audits].sort((a, b) =>
     (b.completedAt ?? b.startedAt ?? '').localeCompare(a.completedAt ?? a.startedAt ?? ''),
   )
@@ -129,6 +134,16 @@ export default async function AuditsPage({
           sub={summary.tier3VerifiedAt?.slice(0, 10) ?? 'required at Gate 4'}
         />
       </div>
+
+      <RecordAudit
+        bookId={bookId}
+        staff={staff}
+        custodianId={bundle.book.custodianId ?? null}
+        plan={plan}
+        planDoubled={planG4}
+        canRecord={canRecord}
+        canCertify={canCertify}
+      />
 
       {audits.length === 0 && (
         <Card>

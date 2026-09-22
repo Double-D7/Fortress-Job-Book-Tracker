@@ -18,7 +18,7 @@ import type {
   CompetencyLevel, GateReview, JobBookBundle, UserRole,
 } from '@/lib/domain/types'
 import type {
-  ActionResult, CreateResult, DataProvider, GateDecision, GateSideFacts,
+  ActionResult, AuditInput, CreateResult, DataProvider, GateDecision, GateSideFacts,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
@@ -33,6 +33,7 @@ import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
+import { latestOfTier, scoreAudit } from '@/lib/domain/audits'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import { createClient } from '@/lib/supabase/server'
 import { COLUMNS, domainToRow, rowToDomain, rowsToDomain } from './rowMap'
@@ -810,6 +811,131 @@ export class SupabaseProvider implements DataProvider {
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
     }
+  }
+
+  async recordAudit(
+    viewer: Viewer, jobBookId: string, input: AuditInput,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to record an audit on this book.' }
+    }
+    const supabase = await createClient()
+
+    let auditId: string
+    if (input.tier === 'tier_2_peer') {
+      // Through the function, never a direct INSERT. §10.2's independence
+      // rule and the JB-3 floor cannot be expressed as check constraints
+      // — neither can see the book's Custodian or a competency level —
+      // so they live in `record_peer_audit()` and hold for any caller.
+      const verdict = scoreAudit(input.findings)
+      const { data, error } = await supabase.rpc('record_peer_audit', {
+        p_book: jobBookId,
+        p_auditor: input.auditorId,
+        p_score: verdict.score,
+        p_lot_size: input.lotSize ?? null,
+        p_sample_size: input.sampleSize ?? null,
+        p_sample_plan: input.samplePlan ?? null,
+        p_double_sample: input.doubleSample ?? false,
+        p_notes: input.notes ?? null,
+      })
+      if (error) return { ok: false, error: describe(error) }
+      auditId = (data as { id: string }).id
+    } else {
+      // Tiers 1 and 3 have no independence rule to enforce and no score,
+      // so RLS alone is the control.
+      const { data: prior } = await supabase
+        .from('job_book_audit').select('attempt')
+        .eq('job_book_id', jobBookId).eq('tier', input.tier)
+        .order('attempt', { ascending: false }).limit(1)
+      const attempt = ((prior?.[0]?.attempt as number | undefined) ?? 0) + 1
+      const now = new Date().toISOString()
+
+      const { data, error } = await supabase.from('job_book_audit').insert({
+        job_book_id: jobBookId,
+        tier: input.tier,
+        attempt,
+        auditor_id: input.auditorId,
+        started_at: now,
+        completed_at: now,
+        outcome: 'pass',
+        notes: input.notes ?? null,
+        created_by: viewer.id,
+      }).select('id').single()
+      if (error) return { ok: false, error: describe(error) }
+      auditId = data.id as string
+    }
+
+    if (input.findings.length > 0) {
+      const { error } = await supabase.from('audit_finding').insert(
+        input.findings.map((f) => ({
+          audit_id: auditId,
+          classification: f.classification,
+          section_number: f.sectionNumber ?? null,
+          summary: f.summary,
+          detail: f.detail ?? null,
+          due_at: f.dueAt ?? null,
+        })),
+      )
+      // The audit row is already written and is the record that matters.
+      // Reporting a partial write is more useful than pretending the
+      // whole thing failed, because the audit did happen.
+      if (error) {
+        return {
+          ok: false,
+          error: `The audit was recorded but its findings were not: ${describe(error)}`,
+        }
+      }
+    }
+    return { ok: true }
+  }
+
+  async certifyCompleteness(
+    viewer: Viewer, jobBookId: string, statement: string | null,
+  ): Promise<ActionResult> {
+    if (!BOOK_CREATORS.has(viewer.role)) {
+      return {
+        ok: false,
+        error: 'The Completeness Certification is signed by the QA/QC manager or an admin (§10.4).',
+      }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+
+    // The figures are derived here and passed in, rather than left for
+    // the database to look up, because §10.4 certifies a state of the
+    // book on a day — and the engine is what knows that state.
+    // The register is loaded with the book, so `undefined` here means the
+    // load failed rather than that the book is clean. Signing on that
+    // would be signing on a question nobody asked — §10.4 is the last
+    // check before a book leaves the building, so it refuses instead.
+    if (!bundle.complianceFlags) {
+      return {
+        ok: false,
+        error: 'The findings register could not be read, so the book cannot be certified. ' +
+          'Gate 4 requires zero open Critical and zero open Major findings, and that cannot ' +
+          'be confirmed from a register that did not load.',
+      }
+    }
+
+    const score = scoreBook(bundle)
+    const counted = bundle.sections.filter((s) => s.status !== 'na')
+    const open = bundle.complianceFlags.filter(
+      (f) => f.state === 'open' || f.state === 'acknowledged',
+    )
+
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('certify_completeness', {
+      p_book: jobBookId,
+      p_completion_pct: score.overallPct,
+      p_sections_total: counted.length,
+      p_sections_approved: counted.filter((s) => s.status === 'approved').length,
+      p_open_critical: open.filter((f) => f.severity === 'critical').length,
+      p_open_major: open.filter((f) => f.severity === 'warning').length,
+      p_tier_2_audit: latestOfTier(bundle.audits ?? [], 'tier_2_peer')?.id ?? null,
+      p_tier_3_audit: latestOfTier(bundle.audits ?? [], 'tier_3_manager')?.id ?? null,
+      p_statement: statement,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
   }
 
   async listStaff(viewer: Viewer): Promise<StaffMember[]> {

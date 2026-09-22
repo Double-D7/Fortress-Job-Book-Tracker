@@ -13,11 +13,13 @@
  * are the database's rather than this file's.
  */
 import type {
-  CompetencyLevel, CriterionResult, GateId, GateOutcome, GateReview,
-  JobBookBundle, UserRole,
+  AuditFinding, AuditTier, CompetencyLevel, CriterionResult, FindingClass,
+  GateId, GateOutcome, GateReview, JobBookAudit, JobBookBundle, UserRole,
 } from '@/lib/domain/types'
+import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
+import { aggregateFindings, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
-import { afterUpload, applyComputedScores } from '@/lib/domain/scoring'
+import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import {
   checkWeldLogOverview, parseWeldLogOverviewPdf, type WeldLogOverview,
@@ -210,6 +212,51 @@ export interface DataProvider {
   commitTorqueLogImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<TorqueLogImportResult>
+
+  // -- Three-tier verification, FDS-JBMP-001 §10 -------------------------
+
+  /**
+   * Record an audit and its findings.
+   *
+   * Routed through `record_peer_audit()` for Tier 2 so the independence
+   * rule and the JB-3 floor hold for any caller — a check constraint
+   * cannot see `job_book.custodian_id` or a competency level, so a plain
+   * INSERT would let a Custodian audit their own book and produce a score
+   * the gate engine would then believe.
+   */
+  recordAudit(
+    viewer: Viewer, jobBookId: string, input: AuditInput,
+  ): Promise<ActionResult>
+
+  /**
+   * Sign the Completeness Certification (§10.4, form FDS-JB-F07).
+   *
+   * "No job book leaves Fortress without this signature." The QA/QC
+   * Manager check and the zero-open-findings rule live in the database.
+   */
+  certifyCompleteness(
+    viewer: Viewer, jobBookId: string, statement: string | null,
+  ): Promise<ActionResult>
+}
+
+/** One audit, as a person records it. */
+export interface AuditInput {
+  tier: AuditTier
+  auditorId: string
+  /** Tier 2 only. Derived from the findings rather than typed, so the
+   *  number and the reasons for it cannot disagree. */
+  lotSize?: number | null
+  sampleSize?: number | null
+  samplePlan?: string | null
+  doubleSample?: boolean
+  notes?: string | null
+  findings: {
+    classification: FindingClass
+    sectionNumber?: string | null
+    summary: string
+    detail?: string | null
+    dueAt?: string | null
+  }[]
 }
 
 export interface OverviewImportPreview {
@@ -938,6 +985,129 @@ class SeedProvider implements DataProvider {
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
     }
+  }
+
+  async recordAudit(
+    viewer: Viewer, jobBookId: string, input: AuditInput,
+  ): Promise<ActionResult> {
+    // Mirrors `record_peer_audit()`. The database is the control; this
+    // exists so an auditor meets the refusal before the round trip.
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to record an audit on this book.' }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+
+    if (input.tier === 'tier_2_peer') {
+      const auditor = SEED_STAFF.find((u) => u.id === input.auditorId)
+      const check = canPeerAudit(b, input.auditorId, auditor?.competencyLevel ?? null)
+      if (!check.ok) return { ok: false, error: check.reason }
+    }
+    if (input.tier === 'tier_3_manager' && !APPROVER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Tier 3 verification is the QA/QC Manager\'s (§10).' }
+    }
+
+    const existing = b.audits ?? []
+    const attempt =
+      existing.filter((a) => a.tier === input.tier)
+        .reduce((m, a) => Math.max(m, a.attempt), 0) + 1
+    const id = `audit-${jobBookId}-${input.tier}-${attempt}`
+    const now = new Date().toISOString()
+
+    // §10.3 decides the outcome, not the caller: any Critical fails the
+    // audit outright whatever the score says.
+    const verdict = scoreAudit(input.findings)
+    const scored = input.tier === 'tier_2_peer'
+
+    const audit: JobBookAudit = {
+      id,
+      jobBookId,
+      tier: input.tier,
+      attempt,
+      auditorId: input.auditorId,
+      startedAt: now,
+      completedAt: now,
+      outcome: scored ? (verdict.passes ? 'pass' : 'fail') : 'pass',
+      score: scored ? verdict.score : null,
+      samplePlan: input.samplePlan ?? null,
+      lotSize: input.lotSize ?? null,
+      sampleSize: input.sampleSize ?? null,
+      doubleSample: input.doubleSample ?? false,
+      notes: input.notes ?? null,
+    }
+
+    const findings: AuditFinding[] = input.findings.map((f, i) => ({
+      id: `${id}-f${i + 1}`,
+      auditId: id,
+      classification: f.classification,
+      sectionNumber: f.sectionNumber ?? null,
+      summary: f.summary,
+      detail: f.detail ?? null,
+      dueAt: f.dueAt ?? null,
+    }))
+
+    this.commit(jobBookId, idx, {
+      ...b,
+      audits: [...existing, audit],
+      auditFindings: [...(b.auditFindings ?? []), ...findings],
+    })
+    return { ok: true }
+  }
+
+  async certifyCompleteness(
+    viewer: Viewer, jobBookId: string, statement: string | null,
+  ): Promise<ActionResult> {
+    if (!APPROVER_ROLES.has(viewer.role)) {
+      return {
+        ok: false,
+        error: 'The Completeness Certification is signed by the QA/QC manager or an admin (§10.4).',
+      }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+
+    // Derived, not read off the bundle. This provider builds its books
+    // from the seed and never stores a flag register, so reading one
+    // would find `undefined` — and `?? []` would then turn "nobody
+    // looked" into "there are none" and sign a book with open
+    // Criticals. The flags engine is what knows.
+    // No state filter: a derived finding is open by construction. It
+    // exists because the data still says so, and it stops existing when
+    // the data stops saying so — there is nothing here to resolve.
+    const open = aggregateFindings(evaluateFlags(b))
+    const criticals = open.filter((f) => f.severity === 'critical').length
+    const majors = open.filter((f) => f.severity === 'warning').length
+    if (criticals > 0 || majors > 0) {
+      return {
+        ok: false,
+        error: `Gate 4 requires zero open Critical and zero open Major findings; this book has ` +
+          `${criticals} Critical and ${majors} Major.`,
+      }
+    }
+
+    const score = scoreBook(b)
+    const counted = b.sections.filter((s) => s.status !== 'na')
+
+    this.commit(jobBookId, idx, {
+      ...b,
+      completenessCertification: {
+        jobBookId,
+        certifiedBy: viewer.id,
+        certifiedAt: new Date().toISOString(),
+        // The figures as they stand at signature, not a pointer to
+        // today's. A certification that merely pointed at the current
+        // numbers would certify nothing.
+        completionPct: score.overallPct,
+        sectionsTotal: counted.length,
+        sectionsApproved: counted.filter((s) => s.status === 'approved').length,
+        openCritical: 0,
+        openMajor: 0,
+        statement,
+      },
+    })
+    return { ok: true }
   }
 
   async assignCustodian(

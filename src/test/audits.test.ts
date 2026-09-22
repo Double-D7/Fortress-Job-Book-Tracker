@@ -13,6 +13,7 @@ import {
   SELF_AUDIT_INTERVAL_WORKING_DAYS,
 } from '@/lib/domain/audits'
 import { evaluateGate } from '@/lib/domain/gates'
+import { getDataProvider, type Viewer } from '@/lib/data/provider'
 import { buildDp452Bundle } from '@/lib/data/seed/dp452'
 import type { AuditFinding, JobBookAudit, JobBookBundle } from '@/lib/domain/types'
 
@@ -373,5 +374,139 @@ describe('the gate engine reads the audit history', () => {
     }).criteria.find((c) => c.id === 'g1.peer_audit')!
     expect(peer.state).toBe('not_met')
     expect(peer.detail).toContain('60')
+  })
+})
+
+describe('recording an audit through the provider', () => {
+  const manager: Viewer = {
+    id: 'seed-user-manager', email: 'qaqc.manager@fortressds.com',
+    fullName: 'D. Devitt', role: 'qaqc_manager', clientOrgId: null,
+  }
+  const client: Viewer = {
+    id: 'client-1', email: 'ops@operator.com', fullName: 'An Operator',
+    role: 'client_user', clientOrgId: 'org-noble',
+  }
+
+  it('derives the score from the findings rather than trusting a number', async () => {
+    const p = getDataProvider()
+    const res = await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_2_peer',
+      auditorId: 'seed-user-auditor', // JB-3, not the Custodian
+      findings: [{ classification: 'major', summary: 'Heat register unreconciled' }],
+    })
+    expect(res.ok).toBe(true)
+
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    const recorded = latestOfTier(after.audits ?? [], 'tier_2_peer')!
+    // 100 − 10. Nobody typed 90; it is what the one finding comes to, and
+    // it lands exactly on the pass mark.
+    expect(recorded.score).toBe(100 - DEDUCTION.major)
+    expect(recorded.score).toBe(PEER_AUDIT_PASS)
+    expect(recorded.outcome).toBe('pass')
+    expect((after.auditFindings ?? []).filter((f) => f.auditId === recorded.id))
+      .toHaveLength(1)
+  })
+
+  it('fails on the score alone, with no Critical anywhere near it', async () => {
+    // 100 − 10 − 2 = 88, two points under. The §10.3 rule is not the only
+    // way to fail an audit, and a report that only ever said "Critical"
+    // would hide the ordinary kind.
+    const p = getDataProvider()
+    await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_2_peer',
+      auditorId: 'seed-user-auditor',
+      findings: [
+        { classification: 'major', summary: 'Heat register unreconciled' },
+        { classification: 'minor', summary: 'Filename off Appendix B' },
+      ],
+    })
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    const recorded = latestOfTier(after.audits ?? [], 'tier_2_peer')!
+    expect(recorded.score).toBe(88)
+    expect(recorded.outcome).toBe('fail')
+    const mine = (after.auditFindings ?? []).filter((f) => f.auditId === recorded.id)
+    expect(mine.some((f) => f.classification === 'critical')).toBe(false)
+  })
+
+  it('fails an audit on a Critical however high the score', async () => {
+    const p = getDataProvider()
+    await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_2_peer',
+      auditorId: 'seed-user-auditor',
+      findings: [{ classification: 'critical', summary: 'Weld with no welder attributed' }],
+    })
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    const recorded = latestOfTier(after.audits ?? [], 'tier_2_peer')!
+    expect(recorded.score).toBe(100 - DEDUCTION.critical) // 75
+    expect(recorded.outcome).toBe('fail')
+  })
+
+  it('refuses a peer audit by the book\'s own Custodian', async () => {
+    const p = getDataProvider()
+    const bundle = (await p.getBundle(manager, 'book-dp452'))!
+    const custodianId = bundle.book.custodianId
+    if (!custodianId) return // no Custodian named on this fixture
+
+    const res = await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_2_peer', auditorId: custodianId, findings: [],
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/own Custodian/)
+  })
+
+  it('refuses a peer audit below JB-3, unassessed included', async () => {
+    const p = getDataProvider()
+    for (const id of ['seed-user-custodian', 'seed-user-new']) {
+      const res = await p.recordAudit(manager, 'book-dp452', {
+        tier: 'tier_2_peer', auditorId: id, findings: [],
+      })
+      expect(res.ok).toBe(false)
+      expect(res.error).toMatch(/JB-3 or above/)
+    }
+  })
+
+  it('numbers repeat audits as attempts rather than overwriting', async () => {
+    const p = getDataProvider()
+    const before = ((await p.getBundle(manager, 'book-dp452'))!.audits ?? [])
+      .filter((a) => a.tier === 'tier_1_self').length
+    await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_1_self', auditorId: 'seed-user-custodian', findings: [],
+    })
+    await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_1_self', auditorId: 'seed-user-custodian', findings: [],
+    })
+    const self = ((await p.getBundle(manager, 'book-dp452'))!.audits ?? [])
+      .filter((a) => a.tier === 'tier_1_self')
+    expect(self).toHaveLength(before + 2)
+    // A book that passed on the third attempt did not pass the way one
+    // that passed first time did, so the attempts are rows.
+    expect(new Set(self.map((a) => a.attempt)).size).toBe(self.length)
+  })
+
+  it('does not score Tier 1 or Tier 3', async () => {
+    const p = getDataProvider()
+    await p.recordAudit(manager, 'book-dp452', {
+      tier: 'tier_3_manager', auditorId: 'seed-user-manager', findings: [],
+    })
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    for (const a of (after.audits ?? []).filter((x) => x.tier !== 'tier_2_peer')) {
+      expect(a.score ?? null).toBeNull()
+    }
+  })
+
+  it('turns a client account away', async () => {
+    const p = getDataProvider()
+    const res = await p.recordAudit(client, 'book-dp452', {
+      tier: 'tier_1_self', auditorId: 'seed-user-custodian', findings: [],
+    })
+    expect(res.ok).toBe(false)
+  })
+
+  it('refuses the Completeness Certification while findings are open', async () => {
+    // §7 Gate 4: zero open Critical, zero open Major. DP452 has both.
+    const p = getDataProvider()
+    const res = await p.certifyCompleteness(manager, 'book-dp452', null)
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/Critical/)
   })
 })
