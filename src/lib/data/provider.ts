@@ -17,6 +17,7 @@ import type {
   GateId, GateOutcome, GateReview, JobBookAudit, JobBookBundle, UserRole,
 } from '@/lib/domain/types'
 import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
+import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
 import { aggregateFindings, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -63,14 +64,22 @@ export interface JobBookSummary {
 /** Statuses at or past hand-over. Countdowns stop here. */
 const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
 
-/** Mirrors the RLS write predicate and `approve_section()`'s role check.
- *  Courtesy, not control — the database refuses either way. */
-const WRITER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
-  'fortress_admin', 'qaqc_manager', 'qaqc_tech',
-])
-const APPROVER_ROLES: ReadonlySet<UserRole> = new Set<UserRole>([
-  'fortress_admin', 'qaqc_manager',
-])
+/**
+ * Mirrors the RLS write predicate and `approve_section()`'s role check.
+ * Courtesy, not control — the database refuses either way.
+ *
+ * Derived from the capability table rather than listed again here. These
+ * were two hand-written literals until roles.ts existed, which meant the
+ * same three role names appeared in this file, in supabaseProvider.ts, in
+ * a dozen RLS predicates and in the admin page's description table, with
+ * nothing holding them together. `roles.test.ts` now pins the table to
+ * the SQL, so pointing these at the table puts the provider inside that
+ * guarantee instead of beside it.
+ */
+const WRITER_ROLES: ReadonlySet<UserRole> =
+  new Set(rolesWith('edit_records').map((r) => r.role))
+const APPROVER_ROLES: ReadonlySet<UserRole> =
+  new Set(rolesWith('approve_section').map((r) => r.role))
 
 export interface Viewer {
   id: string
@@ -249,6 +258,57 @@ export interface DataProvider {
   certifyCompleteness(
     viewer: Viewer, jobBookId: string, statement: string | null,
   ): Promise<ActionResult>
+
+  // -- People ------------------------------------------------------------
+
+  /** Everyone with an account, for the admin console. Fortress staff read
+   *  the whole directory; anyone else reads nothing. */
+  listUsers(viewer: Viewer): Promise<DirectoryUser[]>
+
+  /**
+   * Create an invitation. Routed through `invite_user()` so the org rule
+   * and the admin check hold for any caller — and so an address that has
+   * already signed in links immediately rather than waiting for a second
+   * sign-up that will never come.
+   */
+  inviteUser(viewer: Viewer, input: InviteInput): Promise<ActionResult>
+
+  /** Change a role and its operator together; they are one decision. */
+  setUserRole(
+    viewer: Viewer, userId: string, role: UserRole, clientOrgId: string | null,
+  ): Promise<ActionResult>
+
+  /** Switch an account on or off. Never a delete — the audit log names
+   *  this id on every row it has ever written. */
+  setUserActive(viewer: Viewer, userId: string, active: boolean): Promise<ActionResult>
+
+  // -- Client Inspector access -------------------------------------------
+
+  /** Grants on one book, or across the estate when no book is named.
+   *  Includes withdrawn and expired ones: who used to have access is a
+   *  question an auditor asks. */
+  listInspectorGrants(viewer: Viewer, jobBookId?: string): Promise<InspectorGrant[]>
+
+  /** Give a Client Inspector one book. Re-issuing extends rather than
+   *  colliding with the one-grant-per-book-per-person constraint. */
+  issueInspectorGrant(
+    viewer: Viewer, jobBookId: string, input: GrantInput,
+  ): Promise<ActionResult>
+
+  /** Withdraw access now. Their notes remain. */
+  revokeInspectorGrant(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult>
+
+  // -- Notes -------------------------------------------------------------
+
+  /** Notes on a book, newest last, already filtered to what this viewer
+   *  may see. The database filters it too; this is the courtesy copy. */
+  listNotes(viewer: Viewer, jobBookId: string): Promise<BookNote[]>
+
+  /** Add a note. An external author's note is always shared — the
+   *  database refuses an internal one from them. */
+  addNote(viewer: Viewer, jobBookId: string, input: NoteInput): Promise<ActionResult>
 }
 
 /** One audit, as a person records it. */
@@ -465,6 +525,95 @@ export interface StaffMember {
   competencyLevel: CompetencyLevel | null
 }
 
+/**
+ * One person, as the admin console lists them.
+ *
+ * Wider than `StaffMember`, which exists for the Custodian and auditor
+ * pickers and so carries only Fortress roles and a competency level.
+ * This carries every role, the operator where there is one, and whether
+ * the account has ever been claimed.
+ */
+export interface DirectoryUser {
+  id: string
+  fullName: string
+  email: string
+  role: UserRole
+  clientOrgId: string | null
+  clientOrgName: string | null
+  isActive: boolean
+  /**
+   * Whether an `auth.users` row has claimed this invitation yet.
+   *
+   * Worth showing. `invite_user()` creates an allowlist entry, not an
+   * account — the person still has to sign in with that address before
+   * anything links. An admin who invites somebody and hears nothing back
+   * wants to know which of the two halves is missing.
+   */
+  linked: boolean
+  createdAt: string
+}
+
+export interface InviteInput {
+  email: string
+  fullName: string
+  role: UserRole
+  clientOrgId?: string | null
+}
+
+/** One Client Inspector's access to one book. */
+export interface InspectorGrant {
+  jobBookId: string
+  jobNumber: string
+  facilityName: string | null
+  userId: string
+  userName: string
+  userEmail: string
+  /** Null means open-ended, which is a decision rather than an oversight
+   *  and reads that way on screen. */
+  expiresAt: string | null
+  canComment: boolean
+  grantedAt: string
+  grantedByName: string | null
+  revokedAt: string | null
+  /** Unrevoked and unexpired as of the moment this was read. The single
+   *  field the UI should branch on, so three conditions cannot be
+   *  re-derived slightly differently in three places. */
+  live: boolean
+}
+
+export interface GrantInput {
+  userId: string
+  expiresAt?: string | null
+  canComment?: boolean
+}
+
+/**
+ * A note against a book.
+ *
+ * `inspector_comment` in the schema, and the name has aged badly: since
+ * 0023 it carries Fortress's internal working notes as well as the
+ * inspector's. Called a note here because that is what it is on screen.
+ */
+export interface BookNote {
+  id: string
+  jobBookId: string
+  sectionNumber: string | null
+  authorId: string
+  authorName: string
+  authorRole: UserRole
+  body: string
+  /** 'internal' is Fortress only. 'client' is everyone who can read the
+   *  book — the operator and any granted inspector. */
+  visibility: 'internal' | 'client'
+  createdAt: string
+}
+
+export interface NoteInput {
+  body: string
+  sectionNumber?: string | null
+  visibility?: 'internal' | 'client'
+}
+
 /** Facts a gate evaluation needs that the bundle does not carry. */
 export interface GateSideFacts {
   custodianName: string | null
@@ -531,6 +680,63 @@ const SEED_STAFF: StaffMember[] = [
     role: 'qaqc_tech', competencyLevel: null },
 ]
 
+/**
+ * The demo directory: the four Fortress staff above, plus one account in
+ * each remaining role so the admin console has all six to show.
+ *
+ * `linked: false` on the two external rows is not padding. An invitation
+ * is an allowlist entry, not an account, and "invited but never signed
+ * in" is the state an admin most often needs to recognise.
+ */
+const SEED_DIRECTORY: DirectoryUser[] = [
+  ...SEED_STAFF.map((s) => ({
+    id: s.id,
+    fullName: s.fullName,
+    email: s.email,
+    role: s.role,
+    clientOrgId: null,
+    clientOrgName: null,
+    isActive: true,
+    linked: true,
+    createdAt: '2025-01-06T00:00:00.000Z',
+  })),
+  { id: 'seed-user-admin', fullName: 'A. Reyes', email: 'admin@fortressds.com',
+    role: 'fortress_admin', clientOrgId: null, clientOrgName: null,
+    isActive: true, linked: true, createdAt: '2025-01-06T00:00:00.000Z' },
+  { id: 'seed-user-readonly', fullName: 'J. Whitfield', email: 'review@fortressds.com',
+    role: 'fortress_read_only', clientOrgId: null, clientOrgName: null,
+    isActive: true, linked: true, createdAt: '2025-02-11T00:00:00.000Z' },
+  { id: 'seed-user-client', fullName: 'K. Brandt', email: 'k.brandt@operator.example',
+    role: 'client_user', clientOrgId: 'seed-org-demo', clientOrgName: 'Demo Operator',
+    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z' },
+  { id: 'seed-user-inspector', fullName: 'P. Nakamura', email: 'p.nakamura@inspection.example',
+    role: 'third_party_inspector', clientOrgId: null, clientOrgName: null,
+    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z' },
+]
+
+/** The refusal both providers give, worded once. */
+const LAST_ADMIN =
+  'This is the last active Fortress Admin. Appoint another before changing ' +
+  'this one — nothing outside the database could undo an estate with no admin in it.'
+
+/**
+ * The org rule, mirrored from `check_org_for_role()` in 0022.
+ *
+ * Returns the sentence to show, or null when the pairing is allowed.
+ * Reads the requirement from the capability table rather than restating
+ * the three roles, so this cannot drift from `orgRequirement()`.
+ */
+function checkOrgForRole(role: UserRole, org: string | null): string | null {
+  const requirement = orgRequirement(role)
+  if (requirement === 'required' && !org) {
+    return 'Client Management accounts must belong to an operator.'
+  }
+  if (requirement === 'forbidden' && org) {
+    return 'A Fortress account may not belong to an operator.'
+  }
+  return null
+}
+
 class SeedProvider implements DataProvider {
   private cache: JobBookBundle[] | null = null
   /**
@@ -545,6 +751,15 @@ class SeedProvider implements DataProvider {
   /** Flag resolutions, per process. See `resolveFlag`. */
   private flagStates = new Map<string,
     { state: string; note: string; by: string; at: string }>()
+  /** The user directory, seeded from SEED_STAFF plus the two external
+   *  roles, so the demo can show all six rows rather than describe them. */
+  private directory = new Map<string, DirectoryUser>(
+    SEED_DIRECTORY.map((u) => [u.id, u]))
+  /** Inspector grants, keyed `${jobBookId}:${userId}` — the same one-per
+   *  -book-per-person uniqueness the table carries. */
+  private grants = new Map<string, InspectorGrant>()
+  /** Notes, by book. */
+  private notes = new Map<string, BookNote[]>()
 
   private seeded(): JobBookBundle[] {
     // Stamped, not raw. `computedPct` is a cache the client-facing views
@@ -569,8 +784,26 @@ class SeedProvider implements DataProvider {
    */
   private canSee(viewer: Viewer, b: JobBookBundle): boolean {
     if (viewer.role === 'client_user') return viewer.clientOrgId === b.clientOrg.id
-    if (viewer.role === 'third_party_inspector') return false  // requires a grant row
+    if (viewer.role === 'third_party_inspector') return this.hasLiveGrant(viewer, b.book.id)
     return true
+  }
+
+  /**
+   * The seed mirror of `has_live_inspector_grant()`.
+   *
+   * This returned a flat `false` until grants were issuable, with a
+   * comment saying a grant row was required — true at the time, since
+   * nothing could create one. Now that the grant screen exists, leaving
+   * it false would mean the demo could hand an inspector a book and then
+   * show them nothing, which is a worse lie than the original.
+   *
+   * Unrevoked AND unexpired, both. The SQL says `expires_at > now()`, so
+   * the expiry instant belongs to the closed side here too.
+   */
+  private hasLiveGrant(viewer: Viewer, jobBookId: string): boolean {
+    const g = this.grants.get(`${jobBookId}:${viewer.id}`)
+    if (!g || g.revokedAt) return false
+    return !g.expiresAt || Date.parse(g.expiresAt) > Date.now()
   }
 
   async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {
@@ -638,8 +871,7 @@ class SeedProvider implements DataProvider {
   ): Promise<UploadResult> {
     // Mirrors the RLS write predicate. The database is the control; this
     // keeps a read-only viewer from reaching a button that would fail.
-    const WRITERS = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
-    if (!WRITERS.has(viewer.role)) {
+    if (!WRITER_ROLES.has(viewer.role)) {
       return { ok: false, added: [], rejected: [], error: 'Not permitted to upload to this book.' }
     }
 
@@ -1283,6 +1515,249 @@ class SeedProvider implements DataProvider {
     return SEED_STAFF
   }
 
+  // -- People, grants and notes ------------------------------------------
+  //
+  // In-memory and per-process, like `created` and `flagStates` above. The
+  // demo's point is that the screens are the real screens: an admin can
+  // invite somebody, grant an inspector a book and watch the inspector's
+  // note appear, without a database. It resets on restart, which is the
+  // right trade for a provider that exists to demonstrate a flow.
+
+  async listUsers(viewer: Viewer): Promise<DirectoryUser[]> {
+    if (!can(viewer.role, 'view_internal')) return []
+    return [...this.directory.values()].sort((a, b) =>
+      a.fullName.localeCompare(b.fullName))
+  }
+
+  async inviteUser(viewer: Viewer, input: InviteInput): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may invite a user.' }
+    }
+    const email = input.email.trim().toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return { ok: false, error: 'That does not look like an email address.' }
+    }
+    if (!input.fullName.trim()) return { ok: false, error: 'A user needs a name.' }
+    if ([...this.directory.values()].some((u) => u.email.toLowerCase() === email)) {
+      return { ok: false, error: `${email} has already been invited.` }
+    }
+    const org = input.clientOrgId ?? null
+    const orgError = checkOrgForRole(input.role, org)
+    if (orgError) return { ok: false, error: orgError }
+
+    const id = `seed-user-${email.replace(/[^a-z0-9]+/g, '-')}`
+    this.directory.set(id, {
+      id,
+      fullName: input.fullName.trim(),
+      email,
+      role: input.role,
+      clientOrgId: org,
+      clientOrgName: org ? this.orgName(org) : null,
+      isActive: true,
+      // Nobody has signed in as this person in a demo, which is the
+      // honest answer and shows the "invited, not yet claimed" state.
+      linked: false,
+      createdAt: new Date().toISOString(),
+    })
+    return { ok: true }
+  }
+
+  async setUserRole(
+    viewer: Viewer, userId: string, role: UserRole, clientOrgId: string | null,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may change a role.' }
+    }
+    const u = this.directory.get(userId)
+    if (!u) return { ok: false, error: 'No such user.' }
+
+    const orgError = checkOrgForRole(role, clientOrgId)
+    if (orgError) return { ok: false, error: orgError }
+
+    if (u.role === 'fortress_admin' && role !== 'fortress_admin'
+        && this.otherActiveAdmins(userId) === 0) {
+      return { ok: false, error: LAST_ADMIN }
+    }
+    this.directory.set(userId, {
+      ...u,
+      role,
+      clientOrgId,
+      clientOrgName: clientOrgId ? this.orgName(clientOrgId) : null,
+    })
+    return { ok: true }
+  }
+
+  async setUserActive(
+    viewer: Viewer, userId: string, active: boolean,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may deactivate a user.' }
+    }
+    const u = this.directory.get(userId)
+    if (!u) return { ok: false, error: 'No such user.' }
+    if (!active && u.role === 'fortress_admin' && this.otherActiveAdmins(userId) === 0) {
+      return { ok: false, error: LAST_ADMIN }
+    }
+    // Same as `set_user_active()`: switching an account off closes its
+    // grants, because has_live_inspector_grant() never reads is_active.
+    if (!active) {
+      for (const [key, g] of this.grants) {
+        if (g.userId === userId && !g.revokedAt) {
+          this.grants.set(key, { ...g, revokedAt: new Date().toISOString(), live: false })
+        }
+      }
+    }
+    this.directory.set(userId, { ...u, isActive: active })
+    return { ok: true }
+  }
+
+  async listInspectorGrants(
+    viewer: Viewer, jobBookId?: string,
+  ): Promise<InspectorGrant[]> {
+    // An inspector sees their own grant and nothing about anyone else's,
+    // which is what `inspector_grant_read` says.
+    const mine = (g: InspectorGrant) => g.userId === viewer.id
+    const visible = can(viewer.role, 'view_internal')
+    if (!visible && viewer.role !== 'third_party_inspector') return []
+
+    const now = Date.now()
+    return [...this.grants.values()]
+      .filter((g) => (jobBookId ? g.jobBookId === jobBookId : true))
+      .filter((g) => visible || mine(g))
+      .map((g) => ({
+        ...g,
+        live: !g.revokedAt && (!g.expiresAt || Date.parse(g.expiresAt) > now),
+      }))
+      .sort((a, b) => b.grantedAt.localeCompare(a.grantedAt))
+  }
+
+  async issueInspectorGrant(
+    viewer: Viewer, jobBookId: string, input: GrantInput,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_inspector_grants')) {
+      return {
+        ok: false,
+        error: 'Only a QA/QC Manager or an Admin may grant access to a book.',
+      }
+    }
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b) return { ok: false, error: 'Job book not found.' }
+
+    const u = this.directory.get(input.userId)
+    if (!u) return { ok: false, error: 'No such user.' }
+    if (u.role !== 'third_party_inspector') {
+      return { ok: false, error: 'Only a Client Inspector can be granted a book.' }
+    }
+    if (!u.isActive) return { ok: false, error: 'That account is switched off.' }
+    if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now()) {
+      return { ok: false, error: 'That expiry has already passed.' }
+    }
+
+    const key = `${jobBookId}:${input.userId}`
+    this.grants.set(key, {
+      jobBookId,
+      jobNumber: b.book.jobNumber,
+      facilityName: b.book.facilityName ?? null,
+      userId: u.id,
+      userName: u.fullName,
+      userEmail: u.email,
+      expiresAt: input.expiresAt ?? null,
+      canComment: input.canComment ?? false,
+      grantedAt: new Date().toISOString(),
+      grantedByName: viewer.fullName,
+      revokedAt: null,
+      live: true,
+    })
+    return { ok: true }
+  }
+
+  async revokeInspectorGrant(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_inspector_grants')) {
+      return { ok: false, error: 'Only a QA/QC Manager or an Admin may withdraw access.' }
+    }
+    const key = `${jobBookId}:${userId}`
+    const g = this.grants.get(key)
+    if (!g || g.revokedAt) return { ok: false, error: 'No live grant to withdraw.' }
+    this.grants.set(key, { ...g, revokedAt: new Date().toISOString(), live: false })
+    return { ok: true }
+  }
+
+  async listNotes(viewer: Viewer, jobBookId: string): Promise<BookNote[]> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return []
+    const internalOk = can(viewer.role, 'view_internal')
+    return (this.notes.get(jobBookId) ?? [])
+      .filter((n) => n.visibility !== 'internal' || internalOk)
+  }
+
+  async addNote(
+    viewer: Viewer, jobBookId: string, input: NoteInput,
+  ): Promise<ActionResult> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b) return { ok: false, error: 'Job book not found.' }
+
+    // The grant is the inspector's authority, so it has to be found
+    // before canComment can answer. Fortress staff pass a null grant and
+    // canComment allows them on the role alone.
+    const grant = viewer.role === 'third_party_inspector'
+      ? this.grants.get(`${jobBookId}:${viewer.id}`) ?? null
+      : null
+    if (!canComment(viewer.role, grant)) {
+      return {
+        ok: false,
+        error: viewer.role === 'third_party_inspector'
+          ? 'Your access to this book does not include adding notes.'
+          : 'Your role does not include adding notes.',
+      }
+    }
+    if (viewer.role !== 'third_party_inspector' && !this.canSee(viewer, b)) {
+      return { ok: false, error: 'Job book not found.' }
+    }
+
+    const body = input.body.trim()
+    if (!body) return { ok: false, error: 'A note needs something in it.' }
+
+    // An external author writes in the open or not at all, the same rule
+    // `inspector_comment_insert` applies. Forced rather than validated:
+    // an inspector has no internal option to get wrong.
+    const internal = can(viewer.role, 'view_internal')
+    const visibility: BookNote['visibility'] =
+      internal ? (input.visibility ?? 'internal') : 'client'
+
+    // The same check `enforce_note_citation()` makes: a note may only
+    // cite a section of the book it is filed against.
+    if (input.sectionNumber
+        && !b.sectionDefinitions.some((d) => d.sectionNumber === input.sectionNumber)) {
+      return { ok: false, error: 'That section belongs to a different job book.' }
+    }
+
+    const list = this.notes.get(jobBookId) ?? []
+    list.push({
+      id: `seed-note-${jobBookId}-${list.length + 1}`,
+      jobBookId,
+      sectionNumber: input.sectionNumber ?? null,
+      authorId: viewer.id,
+      authorName: viewer.fullName,
+      authorRole: viewer.role,
+      body,
+      visibility,
+      createdAt: new Date().toISOString(),
+    })
+    this.notes.set(jobBookId, list)
+    return { ok: true }
+  }
+
+  private otherActiveAdmins(excluding: string): number {
+    return [...this.directory.values()].filter(
+      (u) => u.role === 'fortress_admin' && u.isActive && u.id !== excluding,
+    ).length
+  }
+
+  private orgName(id: string): string | null {
+    return this.all().find((b) => b.clientOrg.id === id)?.clientOrg.name ?? null
+  }
 
   // -- Record ingestion --------------------------------------------------
 

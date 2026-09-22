@@ -18,12 +18,14 @@ import type {
   CompetencyLevel, GateReview, JobBookBundle, UserRole,
 } from '@/lib/domain/types'
 import type {
-  ActionResult, AuditInput, CreateResult, DataProvider, GateDecision, GateSideFacts,
+  ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
+  GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput, NoteInput,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
+import { can, rolesWith } from '@/lib/domain/roles'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
   buildWeldLogPreview, redactForViewer,
@@ -44,12 +46,13 @@ import { DOCUMENT_BUCKET } from '@/lib/supabase/storage'
 
 /** Statuses at or past hand-over. Countdowns stop here. */
 const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
-const WRITERS: ReadonlySet<UserRole> = new Set<UserRole>([
-  'fortress_admin', 'qaqc_manager', 'qaqc_tech',
-])
-const BOOK_CREATORS: ReadonlySet<UserRole> = new Set<UserRole>([
-  'fortress_admin', 'qaqc_manager',
-])
+// Derived from the capability table, not listed again. See the note on
+// WRITER_ROLES in provider.ts: roles.test.ts pins the table to the RLS
+// predicate text, so reading it here puts this file inside that check.
+const WRITERS: ReadonlySet<UserRole> =
+  new Set(rolesWith('edit_records').map((r) => r.role))
+const BOOK_CREATORS: ReadonlySet<UserRole> =
+  new Set(rolesWith('create_book').map((r) => r.role))
 
 type Client = Awaited<ReturnType<typeof createClient>>
 
@@ -1014,6 +1017,289 @@ export class SupabaseProvider implements DataProvider {
       role: u.role as UserRole,
       competencyLevel: (u.competency_level as CompetencyLevel | null) ?? null,
     }))
+  }
+
+  // -- People ------------------------------------------------------------
+  //
+  // Every write here goes through an RPC rather than a table write. The
+  // `app_user_write` policy would permit an admin to UPDATE the row
+  // directly, but it cannot see that the row is the last admin, so a
+  // direct write would be a way around the guard that exists precisely
+  // because nothing outside the database could undo it.
+
+  async listUsers(viewer: Viewer): Promise<DirectoryUser[]> {
+    if (!can(viewer.role, 'view_internal')) return []
+    const supabase = await createClient()
+    // Two plain queries joined here rather than one embedded select. The
+    // rest of this file does the same, and the select string would have
+    // to be a single literal for PostgREST's type parser to read it.
+    const [{ data }, { data: orgs }] = await Promise.all([
+      supabase
+        .from('app_user')
+        .select('id, full_name, email, role, client_org_id, is_active, auth_user_id, created_at')
+        .is('deleted_at', null)
+        .order('full_name'),
+      supabase.from('client_org').select('id, name'),
+    ])
+    const orgName = new Map(
+      (orgs ?? []).map((o) => [o.id as string, o.name as string]))
+    return (data ?? []).map((u) => {
+      const orgId = (u.client_org_id as string | null) ?? null
+      return {
+        id: u.id as string,
+        fullName: u.full_name as string,
+        email: u.email as string,
+        role: u.role as UserRole,
+        clientOrgId: orgId,
+        clientOrgName: orgId ? orgName.get(orgId) ?? null : null,
+        isActive: u.is_active as boolean,
+        linked: u.auth_user_id != null,
+        createdAt: u.created_at as string,
+      }
+    })
+  }
+
+  async inviteUser(viewer: Viewer, input: InviteInput): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may invite a user.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('invite_user', {
+      p_email: input.email.trim().toLowerCase(),
+      p_full_name: input.fullName.trim(),
+      p_role: input.role,
+      p_client_org_id: input.clientOrgId ?? null,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async setUserRole(
+    viewer: Viewer, userId: string, role: UserRole, clientOrgId: string | null,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may change a role.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('set_user_role', {
+      p_user_id: userId,
+      p_role: role,
+      p_client_org_id: clientOrgId,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async setUserActive(
+    viewer: Viewer, userId: string, active: boolean,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may deactivate a user.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('set_user_active', {
+      p_user_id: userId, p_active: active,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  // -- Client Inspector access -------------------------------------------
+
+  async listInspectorGrants(
+    viewer: Viewer, jobBookId?: string,
+  ): Promise<InspectorGrant[]> {
+    if (!can(viewer.role, 'view_internal') && viewer.role !== 'third_party_inspector') {
+      return []
+    }
+    const supabase = await createClient()
+    let q = supabase
+      .from('inspector_grant')
+      .select('job_book_id, user_id, expires_at, can_comment, granted_at, granted_by, revoked_at')
+      .order('granted_at', { ascending: false })
+    if (jobBookId) q = q.eq('job_book_id', jobBookId)
+    const { data } = await q
+    const grants = data ?? []
+    if (grants.length === 0) return []
+
+    // `inspector_grant` references `app_user` twice — as the grantee and
+    // as the granter — so an embedded select would need a foreign-key
+    // hint on each. Two lookups keyed by id say the same thing without
+    // naming a constraint that a later migration could rename.
+    const userIds = [...new Set(grants.flatMap(
+      (g) => [g.user_id as string, g.granted_by as string | null]
+        .filter((x): x is string => x != null)))]
+    const bookIds = [...new Set(grants.map((g) => g.job_book_id as string))]
+    const [{ data: users }, { data: books }] = await Promise.all([
+      supabase.from('app_user').select('id, full_name, email').in('id', userIds),
+      supabase.from('job_book').select('id, job_number, facility_name').in('id', bookIds),
+    ])
+    const person = new Map((users ?? []).map((u) => [u.id as string, u]))
+    const book = new Map((books ?? []).map((b) => [b.id as string, b]))
+
+    const now = Date.now()
+    return grants.map((g) => {
+      const who = person.get(g.user_id as string)
+      const granter = g.granted_by ? person.get(g.granted_by as string) : null
+      const bk = book.get(g.job_book_id as string)
+      const expiresAt = (g.expires_at as string | null) ?? null
+      const revokedAt = (g.revoked_at as string | null) ?? null
+      return {
+        jobBookId: g.job_book_id as string,
+        jobNumber: (bk?.job_number as string) ?? '—',
+        facilityName: (bk?.facility_name as string | null) ?? null,
+        userId: g.user_id as string,
+        userName: (who?.full_name as string) ?? 'Unknown',
+        userEmail: (who?.email as string) ?? '',
+        expiresAt,
+        canComment: g.can_comment as boolean,
+        grantedAt: g.granted_at as string,
+        grantedByName: (granter?.full_name as string | null) ?? null,
+        revokedAt,
+        live: !revokedAt && (!expiresAt || Date.parse(expiresAt) > now),
+      }
+    })
+  }
+
+  async issueInspectorGrant(
+    viewer: Viewer, jobBookId: string, input: GrantInput,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_inspector_grants')) {
+      return {
+        ok: false,
+        error: 'Only a QA/QC Manager or an Admin may grant access to a book.',
+      }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('issue_inspector_grant', {
+      p_job_book_id: jobBookId,
+      p_user_id: input.userId,
+      p_expires_at: input.expiresAt ?? null,
+      p_can_comment: input.canComment ?? false,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async revokeInspectorGrant(
+    viewer: Viewer, jobBookId: string, userId: string,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_inspector_grants')) {
+      return { ok: false, error: 'Only a QA/QC Manager or an Admin may withdraw access.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('revoke_inspector_grant', {
+      p_job_book_id: jobBookId, p_user_id: userId,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  // -- Notes -------------------------------------------------------------
+
+  async listNotes(viewer: Viewer, jobBookId: string): Promise<BookNote[]> {
+    const supabase = await createClient()
+    // No visibility filter here on purpose. `inspector_comment_read`
+    // applies it server-side, and re-stating it would create a second
+    // copy to drift from the first — the mistake this whole exercise
+    // keeps finding.
+    const { data } = await supabase
+      .from('inspector_comment')
+      .select('id, job_book_id, body, visibility, created_at, author_id, section_id')
+      .eq('job_book_id', jobBookId)
+      .order('created_at')
+    const notes = data ?? []
+    if (notes.length === 0) return []
+
+    const authorIds = [...new Set(notes.map((n) => n.author_id as string))]
+    const [{ data: authors }, { data: sections }, { data: defs }] = await Promise.all([
+      supabase.from('app_user').select('id, full_name, role').in('id', authorIds),
+      supabase.from('job_book_section')
+        .select('id, section_definition_id').eq('job_book_id', jobBookId),
+      supabase.from('section_definition').select('id, section_number'),
+    ])
+    const person = new Map((authors ?? []).map((a) => [a.id as string, a]))
+    const defNumber = new Map(
+      (defs ?? []).map((d) => [d.id as string, d.section_number as string]))
+    const sectionNumber = new Map((sections ?? []).map(
+      (s) => [s.id as string, defNumber.get(s.section_definition_id as string) ?? null]))
+
+    return notes.map((n) => {
+      const author = person.get(n.author_id as string)
+      const sid = n.section_id as string | null
+      return {
+        id: n.id as string,
+        jobBookId: n.job_book_id as string,
+        sectionNumber: sid ? sectionNumber.get(sid) ?? null : null,
+        authorId: n.author_id as string,
+        authorName: (author?.full_name as string) ?? 'Unknown',
+        // An author whose row this viewer cannot read — a client user
+        // sees only their own org's people — leaves the name unresolved.
+        // Falling back to the least-privileged role keeps the note
+        // rendering without implying an authority nobody confirmed.
+        authorRole: (author?.role as UserRole) ?? 'fortress_read_only',
+        body: n.body as string,
+        visibility: n.visibility as BookNote['visibility'],
+        createdAt: n.created_at as string,
+      }
+    })
+  }
+
+  async addNote(
+    viewer: Viewer, jobBookId: string, input: NoteInput,
+  ): Promise<ActionResult> {
+    const body = input.body.trim()
+    if (!body) return { ok: false, error: 'A note needs something in it.' }
+
+    // Whether this viewer may comment at all is the database's answer —
+    // for an inspector it depends on a grant row this provider would
+    // have to fetch and re-interpret. The insert simply carries the
+    // right shape and lets the policy decide.
+    const internal = can(viewer.role, 'view_internal')
+    const visibility: BookNote['visibility'] =
+      internal ? (input.visibility ?? 'internal') : 'client'
+
+    const supabase = await createClient()
+    let sectionId: string | null = null
+    if (input.sectionNumber) {
+      // Not `sectionRow()`, which gates on WRITERS because its callers
+      // are all writes to the section. Citing a section in a note is
+      // something an inspector does, and the read below is governed by
+      // can_read_job_book() anyway — an inspector without a grant on
+      // this book resolves nothing and gets the not-found sentence.
+      const { data: defs } = await supabase
+        .from('section_definition').select('id')
+        .eq('section_number', input.sectionNumber)
+      const defIds = (defs ?? []).map((d) => d.id as string)
+      const { data: row } = defIds.length
+        ? await supabase
+            .from('job_book_section').select('id')
+            .eq('job_book_id', jobBookId)
+            .in('section_definition_id', defIds)
+            .maybeSingle()
+        : { data: null }
+      if (!row) return { ok: false, error: 'That section is not part of this book.' }
+      sectionId = row.id as string
+    }
+
+    const { error } = await supabase.from('inspector_comment').insert({
+      job_book_id: jobBookId,
+      section_id: sectionId,
+      author_id: viewer.id,
+      body,
+      visibility,
+    })
+    if (error) {
+      // The policy's refusal is the common case here and its generic
+      // wording would be baffling: an inspector whose grant is read-only
+      // has done nothing wrong and needs to be told which half is missing.
+      if (error.code === '42501' || /row-level security/i.test(error.message)) {
+        return {
+          ok: false,
+          error: viewer.role === 'third_party_inspector'
+            ? 'Your access to this book does not include adding notes. A QA/QC ' +
+              'Manager can enable that on your grant.'
+            : 'Your role does not include adding notes to this book.',
+        }
+      }
+      return { ok: false, error: describe(error) }
+    }
+    return { ok: true }
   }
 }
 
