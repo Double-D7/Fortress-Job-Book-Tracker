@@ -1,9 +1,19 @@
 /**
  * The governing checklist.
  *
- * Section titles are transcribed verbatim from `Job Book Checklist
- * Edited.pdf`, including its original phrasing, because the operator audits
- * against these exact strings. Do not reword them in UI or exports.
+ * Section titles are transcribed verbatim from Appendix A of FDS-JBMP-001,
+ * which reproduces them as the governing client checklist states them. The
+ * operator audits against these exact strings. Do not reword them in UI or
+ * exports.
+ *
+ * They are operator-neutral on purpose. The delivered books carried "Noble
+ * Energy Piping Specification" and "(Noble Template)" in four titles while
+ * the specification actually on file had moved to Chevron at a later
+ * revision — §3 of the program calls that out as "a finding waiting to
+ * happen". Which document is in force is a recorded field on the job book
+ * (`pipingSpecReference` and its revision), confirmed with the client at
+ * Gate 0, not a word baked into a section title where nobody can update
+ * it.
  *
  * The list is data, not code paths: adding the facility checklist when it
  * arrives is a new template row set, not a migration. Nothing downstream
@@ -33,7 +43,7 @@ export const MASTER_CHECKLIST: ChecklistEntry[] = [
   { sectionNumber: '2',  title: 'Facility / Flow Line Overview',
     appliesTo: 'both', requirementType: 'document', minDocuments: 2,
     notes: 'Drawing set — original plus redline.' },
-  { sectionNumber: '3',  title: 'Noble Energy Piping Specification',
+  { sectionNumber: '3',  title: 'Operator Piping Specification',
     appliesTo: 'both', requirementType: 'document',
     notes: 'Current revision.' },
   { sectionNumber: '4',  title: 'Welding Procedure Specification (WPS)',
@@ -52,14 +62,14 @@ export const MASTER_CHECKLIST: ChecklistEntry[] = [
   { sectionNumber: '10', title: 'NDT Job Logs and Films',
     appliesTo: 'both', requirementType: 'records', linkedRecordType: 'nde_report',
     notes: 'Films provided separately.' },
-  { sectionNumber: '11', title: 'Weld Log Overview Sheet with Inspection Percentages (Noble Template)',
+  { sectionNumber: '11', title: 'Weld Log Overview Sheet with Inspection Percentages',
     appliesTo: 'both', requirementType: 'derived', linkedRecordType: 'weld',
     notes: 'Rolls up section 12; never scored independently.' },
-  { sectionNumber: '12', title: 'Detailed Weld Log (Noble Template)',
+  { sectionNumber: '12', title: 'Detailed Weld Log',
     appliesTo: 'both', requirementType: 'records', linkedRecordType: 'weld' },
   { sectionNumber: '13', title: 'Torque Wrench Calibration Certificates',
     appliesTo: 'both', requirementType: 'equipment_certs', linkedRecordType: 'torque_wrench' },
-  { sectionNumber: '14', title: 'Detailed Torque Log (Noble Template)',
+  { sectionNumber: '14', title: 'Detailed Torque Log',
     appliesTo: 'both', requirementType: 'records', linkedRecordType: 'torque_connection' },
   { sectionNumber: '15', title: 'Material Test Reports',
     appliesTo: 'both', requirementType: 'records', linkedRecordType: 'material_heat',

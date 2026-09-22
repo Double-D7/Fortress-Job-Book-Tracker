@@ -7,7 +7,10 @@
  * than by a flag a week later.
  */
 import { describe, expect, it } from 'vitest'
-import { normalizeFilename, prepareUpload, previewUploads } from '@/lib/domain/upload'
+import {
+  normalizeFilename, prepareUpload, previewUploads, registerForSection,
+} from '@/lib/domain/upload'
+import { checkFilename } from '@/lib/domain/naming'
 import { getDataProvider, type Viewer } from '@/lib/data/provider'
 import { collectedOf, scoreBook, scoreSection } from '@/lib/domain/scoring'
 import { buildDp452Bundle } from '@/lib/data/seed/dp452'
@@ -21,30 +24,88 @@ const ctx = { book: b.book, section: def, sectionId: section.id, existing: [] as
 const file = (name: string, sha = 'a'.repeat(64), size = 1024) =>
   ({ originalFilename: name, byteSize: size, sha256: sha, mimeType: 'application/pdf' })
 
-describe('the name a file ships under', () => {
-  it('leads with the section number the operator audits by', () => {
-    expect(normalizeFilename('wrench 5155 cert.pdf', '13', 'DP452'))
-      .toBe('13 - DP452 wrench 5155 cert.pdf')
+describe('the name a file ships under, FDS-JBMP-001 Appendix B', () => {
+  // Pattern: [SS]-[TYPE]-[IDENTIFIER]-[DESCRIPTOR]-[YYYYMMDD]-R[n].ext
+  // The app used to produce "15 - DP452 MTR SU78500 3inch sch40 pipe.pdf",
+  // which breaks the convention five ways at once.
+  it('reproduces the worked examples from Appendix B', () => {
+    expect(normalizeFilename('3inch SCH40 PIPE.pdf', '15', 'DP452', {
+      typeCode: 'MTR', identifier: 'SU78500', documentDate: '2026-01-14', revision: 0,
+    })).toBe('15-MTR-SU78500-3inch-SCH40-PIPE-20260114-R0.pdf')
+
+    expect(normalizeFilename('600FT.pdf', '13', 'DP452', {
+      typeCode: 'CAL', identifier: 'TQW1108', documentDate: '2025-02-13', revision: 0,
+    })).toBe('13-CAL-TQW1108-600FT-20250213-R0.pdf')
   })
 
-  it('does not double a prefix the tech already typed', () => {
+  it('defaults the type code from the section', () => {
+    // §15 is Material Test Reports; a tech should not have to say so.
+    expect(normalizeFilename('pipe.pdf', '15', 'DP452', {
+      identifier: 'SU78500', documentDate: '2026-01-14',
+    })).toMatch(/^15-MTR-/)
+    expect(normalizeFilename('cert.pdf', '13', 'DP452', {
+      identifier: 'TQW1108', documentDate: '2025-02-13',
+    })).toMatch(/^13-CAL-/)
+  })
+
+  it('pads the section to two digits so files sort into section order', () => {
+    expect(normalizeFilename('wpq.pdf', '6', 'DP452', {
+      identifier: 'HS2', documentDate: '2024-09-18', revision: 1,
+    })).toBe('06-WPQ-HS2-wpq-20240918-R1.pdf')
+  })
+
+  it('shows a gap rather than inventing an identifier or a date', () => {
+    // §9.1: identity is never inferred from a filename. A guessed heat
+    // number reads as a fact; NOID reads as unfinished.
+    const n = normalizeFilename('a2350.pdf', '15', 'DP452')
+    expect(n).toBe('15-MTR-NOID-a2350-NODATE-R0.pdf')
+  })
+
+  it('strips the status words and characters §9.2 forbids', () => {
+    const n = normalizeFilename("Smith's FINAL cert (Copy) UPDATED.pdf", '13', 'DP452', {
+      identifier: 'TQW1108', documentDate: '2025-02-13',
+    })
+    expect(n).not.toMatch(/FINAL|Copy|UPDATED|'|\(|\)/)
+    expect(n).not.toMatch(/\s/)
+  })
+
+  it('does not double a section prefix the tech already typed', () => {
     for (const typed of ['13 - cert.pdf', '13. cert.pdf', '13_cert.pdf', 'Section 13 - cert.pdf']) {
-      expect(normalizeFilename(typed, '13', 'DP452')).toBe('13 - DP452 cert.pdf')
+      expect(normalizeFilename(typed, '13', 'DP452', {
+        identifier: 'TQW1108', documentDate: '2025-02-13',
+      })).toBe('13-CAL-TQW1108-cert-20250213-R0.pdf')
     }
   })
 
-  it('leaves a job number already in the name alone', () => {
-    expect(normalizeFilename('DP452 torque certs.pdf', '13', 'DP452'))
-      .toBe('13 - DP452 torque certs.pdf')
+  it('drops a date carried in the source name', () => {
+    // Appendix B: the date element is the one the document bears, not
+    // whatever the file was called.
+    expect(normalizeFilename('TWQ-1108 600LB 2-13-2025.pdf', '13', 'DP452', {
+      identifier: 'TQW1108', documentDate: '2025-02-13',
+    })).toBe('13-CAL-TQW1108-TWQ-1108-600LB-20250213-R0.pdf')
   })
 
   it('handles a range section and a file with no extension', () => {
-    expect(normalizeFilename('iso maps', '19-22', 'DP452')).toBe('19-22 - DP452 iso maps')
+    expect(normalizeFilename('iso maps', '19-22', 'DP452', {
+      identifier: 'AREA7200', documentDate: '2026-02-20',
+    })).toBe('19-22-MRK-AREA7200-iso-maps-20260220-R0')
   })
 
-  it('strips characters a filesystem would refuse', () => {
-    expect(normalizeFilename('cert: 5155/final?.pdf', '13', 'DP452'))
-      .toBe('13 - DP452 cert- 5155-final-.pdf')
+  it('recognises the baseline review\'s real bad names as non-conforming', () => {
+    for (const bad of [
+      "MTR's 3INCH SCH 40 PIPE SU78500, SQ80025, SU78494, SU78495.pdf",
+      'a2350.pdf',
+      'TWQ-1108 600LB 2-13-2025.pdf',
+    ]) {
+      expect(checkFilename(bad).length).toBeGreaterThan(0)
+    }
+    expect(checkFilename('15-MTR-SU78500-3in-SCH40-PIPE-20260114-R0.pdf')).toEqual([])
+  })
+
+  it('points a section at the right controlled register', () => {
+    expect(registerForSection('15')).toBe('material_heat')
+    expect(registerForSection('13')).toBe('torque_wrench')
+    expect(registerForSection('6')).toBe('welder')
   })
 })
 
@@ -144,12 +205,15 @@ describe('committing an upload', () => {
     const s = before!.sections.find((x) => x.sectionDefinitionId === d.id)!
     expect(collectedOf(scoreSection(d, s, before!))).toBe(0)
 
-    const res = await p.addDocuments(viewer, 'book-dp452', '16', [
-      file('pressure test procedure.pdf', '7'.repeat(64), 2048),
-    ])
+    const res = await p.addDocuments(viewer, 'book-dp452', '16', [{
+      ...file('pressure test procedure.pdf', '7'.repeat(64), 2048),
+      classification: { identifier: 'HYDRO-A', documentDate: '2026-01-05' },
+    }])
     expect(res.ok).toBe(true)
     expect(res.added).toHaveLength(1)
-    expect(res.added[0]!.normalizedFilename).toBe('16 - DP452 pressure test procedure.pdf')
+    // Appendix B, with the type code defaulted from the section.
+    expect(res.added[0]!.normalizedFilename)
+      .toBe('16-PRC-HYDRO-A-pressure-test-procedure-20260105-R0.pdf')
 
     const after = await p.getBundle(viewer, 'book-dp452')
     const s2 = after!.sections.find((x) => x.sectionDefinitionId === d.id)!

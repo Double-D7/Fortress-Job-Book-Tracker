@@ -17,6 +17,7 @@
 import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, Check, FileUp, Info, Loader2, Upload, X } from 'lucide-react'
+import { DEFAULT_TYPE_BY_SECTION, TYPE_CODES, type TypeCode } from '@/lib/domain/naming'
 import { Button, Card, CardBody, CardHeader, CardTitle, Chip } from '@/components/ui/primitives'
 import { bytes, num } from '@/lib/utils'
 import type { UploadPreview } from '@/lib/domain/upload'
@@ -26,9 +27,16 @@ interface Props {
   sectionNumber: string
   sectionTitle: string
   canUpload: boolean
+  /** Keys from this section's controlled register, for the identifier
+   *  field. §9.1: identity comes from a register, never from a filename. */
+  registerKeys?: { value: string; label: string }[]
+  registerLabel?: string | null
 }
 
-export function SectionUpload({ bookId, sectionNumber, sectionTitle, canUpload }: Props) {
+export function SectionUpload({
+  bookId, sectionNumber, sectionTitle, canUpload,
+  registerKeys = [], registerLabel,
+}: Props) {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
   const [picked, setPicked] = useState<File[]>([])
@@ -38,11 +46,27 @@ export function SectionUpload({ bookId, sectionNumber, sectionTitle, canUpload }
   const [done, setDone] = useState<{ added: number; rejected: number } | null>(null)
   const [dragging, setDragging] = useState(false)
 
+  // The three Appendix B elements that cannot be derived from a vendor's
+  // filename. They apply to the whole batch, because a batch is normally
+  // one document type for one register key on one date — four MTRs for
+  // four heats go up as four uploads, which is also what Appendix A §15
+  // requires ("one subject per file").
+  const [typeCode, setTypeCode] = useState<TypeCode>(
+    DEFAULT_TYPE_BY_SECTION[sectionNumber] ?? 'COC',
+  )
+  const [identifier, setIdentifier] = useState('')
+  const [documentDate, setDocumentDate] = useState('')
+
+  const classification = {
+    typeCode, identifier: identifier.trim() || null, documentDate: documentDate || null,
+  }
+
   const base = `/api/books/${bookId}/sections/${encodeURIComponent(sectionNumber)}/documents`
 
   function body(files: File[]): FormData {
     const fd = new FormData()
     for (const f of files) fd.append('files', f)
+    fd.append('classification', JSON.stringify(classification))
     return fd
   }
 
@@ -63,6 +87,10 @@ export function SectionUpload({ bookId, sectionNumber, sectionTitle, canUpload }
     } finally {
       setBusy(null)
     }
+  }
+
+  async function repreview() {
+    if (picked.length) await choose(picked)
   }
 
   async function commit() {
@@ -112,6 +140,67 @@ export function SectionUpload({ bookId, sectionNumber, sectionTitle, canUpload }
         )}
       </CardHeader>
       <CardBody className="space-y-3">
+        {/* Appendix B needs these, and no amount of filename parsing can
+            honestly supply them. Asking is the correct design, not a
+            shortfall: §9.1 says identity resolves to a register entry and
+            is never inferred from a filename. */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <label className="space-y-1">
+            <span className="block text-2xs font-medium text-ink-secondary">Document type</span>
+            <select
+              value={typeCode}
+              onChange={(e) => { setTypeCode(e.target.value as TypeCode); void repreview() }}
+              className="min-w-0 w-full rounded-md border border-hairline bg-surface-raised px-2 py-1.5 text-xs text-ink"
+            >
+              {Object.entries(TYPE_CODES).map(([code, label]) => (
+                <option key={code} value={code}>{code} — {label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <span className="block text-2xs font-medium text-ink-secondary">
+              {registerLabel ?? 'Identifier'}
+            </span>
+            {registerKeys.length ? (
+              <select
+                value={identifier}
+                onChange={(e) => { setIdentifier(e.target.value); void repreview() }}
+                className="min-w-0 w-full rounded-md border border-hairline bg-surface-raised px-2 py-1.5 text-xs text-ink"
+              >
+                <option value="">— pick one —</option>
+                {registerKeys.map((k) => (
+                  <option key={k.value} value={k.value}>{k.label}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                onBlur={() => void repreview()}
+                placeholder="register key"
+                className="min-w-0 w-full rounded-md border border-hairline bg-surface-raised px-2 py-1.5 text-xs text-ink placeholder:text-ink-muted"
+              />
+            )}
+          </label>
+
+          <label className="space-y-1">
+            <span className="block text-2xs font-medium text-ink-secondary">
+              Date on the document
+            </span>
+            <input
+              type="date" value={documentDate}
+              onChange={(e) => { setDocumentDate(e.target.value); void repreview() }}
+              className="min-w-0 w-full rounded-md border border-hairline bg-surface-raised px-2 py-1.5 text-xs text-ink"
+            />
+          </label>
+        </div>
+        <p className="text-2xs leading-relaxed text-ink-muted">
+          The date the document itself carries — calibration, test, report or issue date — not
+          today. Leave anything blank and the file still files; the name records the gap and it
+          reads as a Minor finding until it is filled in.
+        </p>
+
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
           onDragLeave={() => setDragging(false)}

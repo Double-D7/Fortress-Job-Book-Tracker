@@ -273,29 +273,94 @@ export function ruleHeatWithoutMtr(b: JobBookBundle): Finding[] {
 /** A pressure test with no recorder calibration certificate valid on the
  *  test date. */
 export function rulePressureTestNoRecorderCert(b: JobBookBundle): Finding[] {
-  // The recorder certificates live inside the section 17 test packs. Until
-  // those are read, "no valid certificate" means "not looked at yet".
+  // The instrument certificates live inside the section 17 test packs.
+  // Until those are read, "no valid certificate" means "not looked at yet".
   if (sectionIsUnread(b, '17')) return []
+
   const out: Finding[] = []
   for (const t of b.pressureTests) {
-    const cert = b.certificates.find((c) => c.id === t.recorderCertId)
-    const valid = cert?.issueDate && t.testDate
-      ? t.testDate >= cert.issueDate && (!cert.expiryDate || t.testDate <= cert.expiryDate)
-      : false
-    if (valid) continue
-    out.push({
-      ruleId: 'pressure.no_valid_recorder_cert',
-      severity: 'critical',
-      title: `Pressure test ${t.testIdentifier} has no valid recorder calibration certificate`,
-      detail: cert
-        ? `Recorder ${t.recorderSerial ?? ''} certificate runs ${cert.issueDate ?? 'an unread date'} to ` +
-          `${cert.expiryDate ?? 'open'}, which does not cover the test date ${t.testDate}.`
-        : `No recorder calibration certificate is linked to this test.`,
-      entityType: 'pressure_test', entityId: t.id, sectionNumber: '17',
-      fingerprint: fp('pressure.no_valid_recorder_cert', t.id),
-    })
+    // All three, not one. FDS-JBMP-001 §11.1 makes it a Critical finding to
+    // accept a test "without gauge, recorder and pressure safety valve
+    // certificates valid on the test date". Only the recorder was checked,
+    // so two of the three instruments could be uncertified and the book
+    // would say nothing.
+    const instruments = [
+      { label: 'gauge',    serial: t.gaugeSerial,    certId: t.gaugeCertId },
+      { label: 'recorder', serial: t.recorderSerial, certId: t.recorderCertId },
+      { label: 'PSV',      serial: t.psvSerial,      certId: t.psvCertId },
+    ] as const
+
+    const failures: string[] = []
+    for (const inst of instruments) {
+      const cert = b.certificates.find((c) => c.id === inst.certId)
+      if (!cert) { failures.push(`no ${inst.label} certificate is linked`); continue }
+      if (!cert.issueDate) {
+        failures.push(`the ${inst.label} certificate is on file but has not been read`)
+        continue
+      }
+      if (!t.testDate) { failures.push(`the test carries no date, so the ${inst.label} certificate cannot be checked`); continue }
+      if (t.testDate < cert.issueDate) {
+        failures.push(`the ${inst.label} certificate is dated ${cert.issueDate}, after the test`)
+        continue
+      }
+      if (cert.expiryDate && t.testDate > cert.expiryDate) {
+        failures.push(`the ${inst.label} certificate expired ${cert.expiryDate}, before the test`)
+      }
+    }
+
+    if (failures.length) {
+      out.push({
+        ruleId: 'pressure.no_valid_instrument_cert',
+        severity: 'critical',
+        title: `Pressure test ${t.testIdentifier} was accepted without all three instruments certified`,
+        detail: `A test needs gauge, recorder and pressure safety valve certificates valid on ` +
+          `the test date${t.testDate ? ` (${t.testDate})` : ''}. For this test: ` +
+          `${failures.join('; ')}.`,
+        entityType: 'pressure_test', entityId: t.id, sectionNumber: '17',
+        fingerprint: fp('pressure.no_valid_instrument_cert', t.id),
+      })
+    }
+
+    // "No test present as certificates only." Appendix A §17. The baseline
+    // review found 13 of 21 facility packages holding instrument
+    // certificates and no result document — a test that was performed, or
+    // was not, and the book cannot say which.
+    if (!t.resultDocumentId && !t.chartDocumentId) {
+      out.push({
+        ruleId: 'pressure.no_result_document',
+        severity: 'critical',
+        title: `Pressure test ${t.testIdentifier} has certificates but no result document`,
+        detail: 'The package holds instrument certificates and nothing recording what the ' +
+          'test actually showed. A test with no result is not evidence that a test passed.',
+        entityType: 'pressure_test', entityId: t.id, sectionNumber: '17',
+        fingerprint: fp('pressure.no_result_document', t.id),
+      })
+    }
+
+    // Hold data. Appendix A §17 requires start and end pressure, duration
+    // and ambient temperature — a pass with no readings behind it is the
+    // "result with no recorded basis" §11.2 calls a Major finding.
+    const holdMissing = [
+      t.startPressurePsi == null && 'start pressure',
+      t.endPressurePsi == null && 'end pressure',
+      t.durationMinutes == null && 'hold duration',
+      t.ambientTempF == null && 'ambient temperature',
+    ].filter((x): x is string => typeof x === 'string')
+
+    if (holdMissing.length && (t.resultDocumentId || t.chartDocumentId)) {
+      out.push({
+        ruleId: 'pressure.hold_data_incomplete',
+        severity: 'warning',
+        title: `Pressure test ${t.testIdentifier} is missing hold data`,
+        detail: `Recorded without ${holdMissing.join(', ')}. Appendix A §17 requires start and ` +
+          'end pressure, duration and ambient temperature, so a result can be checked rather ' +
+          'than taken on trust.',
+        entityType: 'pressure_test', entityId: t.id, sectionNumber: '17',
+        fingerprint: fp('pressure.hold_data_incomplete', t.id),
+      })
+    }
   }
-  return cap('pressure.no_valid_recorder_cert', out)
+  return cap('pressure.instrument_certs', out)
 }
 
 /**
@@ -1235,8 +1300,12 @@ const RULE_SUMMARIES: Record<string, (n: number, sample: Finding) => string> = {
     `${n} NDE report${n === 1 ? '' : 's'} signed by a technician whose certification did not cover the date`,
   'material.heat_without_mtr': (n) =>
     `${n} heat number${n === 1 ? '' : 's'} referenced by welds have no MTR on file`,
-  'pressure.no_valid_recorder_cert': (n) =>
-    `${n} pressure test${n === 1 ? '' : 's'} have no recorder calibration valid on the test date`,
+  'pressure.no_valid_instrument_cert': (n) =>
+    `${n} pressure test${n === 1 ? '' : 's'} were accepted without gauge, recorder and PSV certificates valid on the test date`,
+  'pressure.no_result_document': (n) =>
+    `${n} pressure test${n === 1 ? '' : 's'} hold certificates but no result document`,
+  'pressure.hold_data_incomplete': (n) =>
+    `${n} pressure test${n === 1 ? '' : 's'} are missing start pressure, end pressure, duration or ambient temperature`,
   'document.wrong_job': (n) =>
     `${n} document${n === 1 ? '' : 's'} reference a different job`,
   'document.wrong_job_filename': (n) =>

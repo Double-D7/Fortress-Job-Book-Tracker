@@ -490,6 +490,25 @@ export interface PressureTest {
   recorderCertId?: string | null
   chartDocumentId?: string | null
   witnessedBy?: string | null
+  /**
+   * The three instruments a test needs certified on its test date.
+   *
+   * FDS-JBMP-001 §11.1 makes accepting a test without gauge, recorder AND
+   * pressure safety valve certificates valid on the test date a Critical
+   * finding. Only the recorder was modelled, so two thirds of that check
+   * could not be made.
+   */
+  gaugeSerial?: string | null
+  gaugeCertId?: string | null
+  psvSerial?: string | null
+  psvCertId?: string | null
+  /** Hold data. Appendix A §17 requires start and end pressure, duration
+   *  and ambient temperature, not merely a pass or fail. */
+  startPressurePsi?: number | null
+  endPressurePsi?: number | null
+  ambientTempF?: number | null
+  /** Appendix A §17: "No test present as certificates only." */
+  resultDocumentId?: string | null
 }
 
 export interface CpTestPoint {

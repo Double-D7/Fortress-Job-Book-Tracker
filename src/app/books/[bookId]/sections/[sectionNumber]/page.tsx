@@ -3,6 +3,7 @@ import { notFound, redirect} from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { collectedOf, scoreSection } from '@/lib/domain/scoring'
+import type { JobBookBundle } from '@/lib/domain/types'
 import { evaluateFlags } from '@/lib/domain/flags'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, ProgressBar,
@@ -10,12 +11,63 @@ import {
 } from '@/components/ui/primitives'
 import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
+import { registerForSection } from '@/lib/domain/upload'
 import { bytes, num, pct } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
 
 /** Mirrors the RLS write predicate; the database remains the control. */
 const CAN_UPLOAD = new Set(['fortress_admin', 'qaqc_manager', 'qaqc_tech'])
+
+const REGISTER_LABELS: Record<string, string> = {
+  material_heat: 'Heat number', torque_wrench: 'Wrench ID', welder: 'Welder stamp',
+  cwi: 'CWI', ndt_technician: 'NDT technician', nde_report: 'Report number',
+  pressure_test: 'Test number', isometric: 'Isometric', weld_line: 'Line',
+  cp_test_point: 'Test point', ut_reading: 'Location', construction_area: 'Construction area',
+}
+
+/**
+ * The controlled register a section's identifier is picked from.
+ *
+ * §9.1: "Every reference to a welder, an inspector, a technician, a wrench,
+ * a heat or a drawing resolves to a register entry. Identity is never
+ * inferred from a filename and never entered as free text." A dropdown is
+ * that rule made unavoidable.
+ */
+function registerKeysFor(sectionNumber: string, b: JobBookBundle) {
+  switch (registerForSection(sectionNumber)) {
+    case 'material_heat':
+      return b.materialHeats.map((h) => ({ value: h.heatNumber, label: h.heatNumber }))
+    case 'torque_wrench':
+      return b.torqueWrenches.map((w) => ({ value: w.wrenchId, label: w.wrenchId }))
+    case 'welder':
+      return b.welders.map((w) => ({ value: w.initials, label: `${w.initials} — ${w.fullName}` }))
+    case 'cwi':
+      return b.cwis.map((c) => ({ value: c.initials, label: `${c.initials} — ${c.fullName}` }))
+    case 'ndt_technician':
+      return b.ndtTechnicians.map((t) => ({
+        value: t.initials ?? t.fullName, label: t.fullName }))
+    case 'nde_report':
+      return b.ndeReports.map((r) => ({
+        value: r.reportNumber ?? r.id.slice(0, 8), label: r.reportNumber ?? r.id.slice(0, 8) }))
+    case 'pressure_test':
+      return b.pressureTests.map((t) => ({ value: t.testIdentifier, label: t.testIdentifier }))
+    case 'weld_line':
+      return b.weldLines.map((l) => ({ value: l.lineCode, label: l.lineCode }))
+    case 'construction_area':
+      return (b.book.constructionAreas ?? []).map((a) => ({ value: a, label: a }))
+    case 'isometric': {
+      // No isometric register exists yet, so this offers what the records
+      // actually reference rather than an empty list.
+      const isos = new Set<string>()
+      for (const w of b.welds) if (w.isometricNumber) isos.add(w.isometricNumber)
+      for (const c of b.torqueConnections) if (c.isoNumber) isos.add(c.isoNumber)
+      return [...isos].sort().map((i) => ({ value: i, label: i }))
+    }
+    default:
+      return []
+  }
+}
 
 /**
  * Section detail.
@@ -135,6 +187,8 @@ export default async function SectionDetail({
         sectionNumber={number}
         sectionTitle={def.title}
         canUpload={CAN_UPLOAD.has(viewer.role)}
+        registerLabel={REGISTER_LABELS[registerForSection(number) ?? ''] ?? 'Identifier'}
+        registerKeys={registerKeysFor(number, b)}
       />
 
       <Card>

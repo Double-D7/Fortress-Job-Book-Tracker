@@ -55,26 +55,31 @@ end $$;
 
 -- ---------------------------------------------------------------------
 -- Fixtures: two operators who must never see each other's work.
+--
+-- Order matters, and the fact that it does is itself the allowlist
+-- working: 0013 refuses an auth account for an address with no invitation,
+-- so the app_user rows are created first. Writing these the other way
+-- round is how this suite caught its own regression.
 -- ---------------------------------------------------------------------
+insert into client_org (id, name) values
+  ('aaaaaaaa-0000-0000-0000-000000000001','Noble Energy'),
+  ('aaaaaaaa-0000-0000-0000-000000000002','Chevron')
+on conflict do nothing;
+
+insert into app_user (id, email, full_name, role, client_org_id) values
+  ('bbbbbbbb-0000-0000-0000-000000000001','noble@example.com','Noble Operator','client_user','aaaaaaaa-0000-0000-0000-000000000001'),
+  ('bbbbbbbb-0000-0000-0000-000000000002','chevron@example.com','Chevron Operator','client_user','aaaaaaaa-0000-0000-0000-000000000002'),
+  ('bbbbbbbb-0000-0000-0000-000000000003','tech@fortressds.com','A Tech','qaqc_tech',null),
+  ('bbbbbbbb-0000-0000-0000-000000000004','admin@fortressds.com','An Admin','fortress_admin',null),
+  ('bbbbbbbb-0000-0000-0000-000000000005','manager@fortressds.com','A Manager','qaqc_manager',null)
+on conflict do nothing;
+
 insert into auth.users (id, email) values
   ('11111111-1111-1111-1111-111111111111','noble@example.com'),
   ('22222222-2222-2222-2222-222222222222','chevron@example.com'),
   ('33333333-3333-3333-3333-333333333333','tech@fortressds.com'),
   ('44444444-4444-4444-4444-444444444444','admin@fortressds.com'),
   ('55555555-5555-5555-5555-555555555555','manager@fortressds.com')
-on conflict do nothing;
-
-insert into client_org (id, name) values
-  ('aaaaaaaa-0000-0000-0000-000000000001','Noble Energy'),
-  ('aaaaaaaa-0000-0000-0000-000000000002','Chevron')
-on conflict do nothing;
-
-insert into app_user (id, auth_user_id, email, full_name, role, client_org_id) values
-  ('bbbbbbbb-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','noble@example.com','Noble Operator','client_user','aaaaaaaa-0000-0000-0000-000000000001'),
-  ('bbbbbbbb-0000-0000-0000-000000000002','22222222-2222-2222-2222-222222222222','chevron@example.com','Chevron Operator','client_user','aaaaaaaa-0000-0000-0000-000000000002'),
-  ('bbbbbbbb-0000-0000-0000-000000000003','33333333-3333-3333-3333-333333333333','tech@fortressds.com','A Tech','qaqc_tech',null),
-  ('bbbbbbbb-0000-0000-0000-000000000004','44444444-4444-4444-4444-444444444444','admin@fortressds.com','An Admin','fortress_admin',null),
-  ('bbbbbbbb-0000-0000-0000-000000000005','55555555-5555-5555-5555-555555555555','manager@fortressds.com','A Manager','qaqc_manager',null)
 on conflict do nothing;
 
 insert into project (id, client_org_id, name) values
@@ -208,7 +213,7 @@ end $$;
 do $$
 declare v_linked uuid;
 begin
-  -- Invited first, then authenticates. The ordinary flow.
+  -- The ordinary flow: invited, then authenticates.
   insert into app_user (email, full_name, role)
   values ('invited@fortressds.com','Invited Tech','qaqc_tech');
   insert into auth.users (id, email)
@@ -217,26 +222,26 @@ begin
   perform assert(v_linked = '66666666-6666-6666-6666-666666666666',
     'someone invited before they sign in is linked when they do');
 
-  -- Authenticates first, invited afterwards. The common real case, since
-  -- people try the link before anyone has set them up.
-  insert into auth.users (id, email)
-  values ('77777777-7777-7777-7777-777777777777','early@fortressds.com');
-  insert into app_user (email, full_name, role)
-  values ('early@fortressds.com','Early Bird','qaqc_manager');
-  select auth_user_id into v_linked from app_user where email = 'early@fortressds.com';
-  perform assert(v_linked = '77777777-7777-7777-7777-777777777777',
-    'someone who signed in before being invited is linked when they are');
+  -- 0013 made the reverse order impossible, and that is the point: an
+  -- account cannot exist without an invitation, so "authenticated but not
+  -- yet invited" is no longer a state the system can reach. 0011 allowed
+  -- it and relied on app_user for authorization; this is stricter.
+  perform assert(
+    refused('44444444-4444-4444-4444-444444444444',
+      'insert into auth.users (id, email) values (gen_random_uuid(), ''early@fortressds.com'')'),
+    'an account cannot be created before the invitation exists');
+  perform assert(
+    (select count(*) from auth.users where email = 'early@fortressds.com') = 0,
+    'and no account was left behind by the attempt');
 
-  -- The property that matters: authenticating with an uninvited address
-  -- creates nothing and reaches nothing.
-  insert into auth.users (id, email)
-  values ('88888888-8888-8888-8888-888888888888','stranger@example.com');
+  -- The property that matters most.
+  perform assert(
+    refused('44444444-4444-4444-4444-444444444444',
+      'insert into auth.users (id, email) values (gen_random_uuid(), ''stranger@example.com'')'),
+    'authenticating with an uninvited address is refused outright');
   perform assert(
     (select count(*) from app_user where email = 'stranger@example.com') = 0,
-    'authenticating with an uninvited address creates no account');
-  perform assert(
-    as_user('88888888-8888-8888-8888-888888888888','select count(*)::text from job_book') = '0',
-    'and reaches no job book');
+    'and creates no account');
 
   perform assert(
     refused('33333333-3333-3333-3333-333333333333',

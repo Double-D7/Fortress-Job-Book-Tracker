@@ -35,6 +35,15 @@ async function readForm(request: Request): Promise<
     return { ok: false, error: 'Expected a multipart form.' }
   }
 
+  let classification: Record<string, unknown> = {}
+  try {
+    const raw = form.get('classification')
+    if (typeof raw === 'string') classification = JSON.parse(raw)
+  } catch {
+    // A malformed classification is not a reason to lose the upload. The
+    // name records the gap instead, which is a Minor finding and fixable.
+  }
+
   const entries = form.getAll('files').filter((f): f is File => f instanceof File)
   if (!entries.length) return { ok: false, error: 'No files in the request.' }
   if (entries.length > MAX_FILES) {
@@ -58,6 +67,7 @@ async function readForm(request: Request): Promise<
       // provider ignores them; the persistent one cannot store a document
       // it was only told the size of.
       bytes: new Uint8Array(buf),
+      classification,
     })
   }
   return { ok: true, files }

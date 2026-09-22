@@ -36,9 +36,9 @@ describe('§11.1 — a flowline book scaffolds all 22 sections', () => {
 
   it('preserves the checklist titles verbatim', () => {
     const s12 = bundle.sectionDefinitions.find((d) => d.sectionNumber === '12')!
-    expect(s12.title).toBe('Detailed Weld Log (Noble Template)')
+    expect(s12.title).toBe('Detailed Weld Log')
     const s11 = bundle.sectionDefinitions.find((d) => d.sectionNumber === '11')!
-    expect(s11.title).toBe('Weld Log Overview Sheet with Inspection Percentages (Noble Template)')
+    expect(s11.title).toBe('Weld Log Overview Sheet with Inspection Percentages')
     const s17 = bundle.sectionDefinitions.find((d) => d.sectionNumber === '17')!
     expect(s17.title).toBe('Pressure Testing Results with Recorder Calibration Certificates')
   })

@@ -13,9 +13,17 @@
  * outcome of preparing a file is a proposal plus a list of things the tech
  * should look at before committing.
  */
-import type { DocumentRecord, JobBook, SectionDefinition } from './types'
+import type { DocumentRecord, IsoDate, JobBook, SectionDefinition } from './types'
+import {
+  DEFAULT_TYPE_BY_SECTION, REGISTER_BY_SECTION, buildFilename, checkFilename,
+  toDescriptor, type TypeCode,
+} from './naming'
 
 export type UploadIssueKind =
+  /** The name cannot be made to conform because a required element is not
+   *  yet known. Minor under §11.3: recorded, corrected before the next
+   *  gate, never a reason to stop a tech working. */
+  | 'name_incomplete'
   /** Byte-identical to a file already in the book. */
   | 'duplicate_content'
   /** Same filename already in this section, different content. */
@@ -49,6 +57,8 @@ export interface PreparedUpload {
   /** Set when this supersedes an existing document of the same name. */
   supersedesDocumentId: string | null
   version: number
+  /** Appendix B elements still missing from the name. */
+  nameMissing: ('identifier' | 'documentDate')[]
 }
 
 const ARCHIVE_EXT = new Set(['zip', 'rar', '7z', 'tar', 'gz'])
@@ -59,33 +69,79 @@ export function extensionOf(filename: string): string {
 }
 
 /**
- * The filename the package ships under.
+ * What the file will be named in the package.
  *
- * The operator audits a turnover package by walking the section numbering,
- * so every file leads with its section. The tech's original name is kept
- * on the record beside this one and never overwritten — when an auditor
- * asks why a file is named what it is, the answer has to be available.
+ * FDS-JBMP-001 Appendix B:
+ *   [SS]-[TYPE]-[IDENTIFIER]-[DESCRIPTOR]-[YYYYMMDD]-R[n].[ext]
+ *
+ * The previous version of this produced `15 - DP452 MTR SU78500.pdf`,
+ * which breaks the convention in four ways at once — spaces, no type code,
+ * no register identifier, no document date, no revision. Every file this
+ * application named was a Minor finding under §11.3 against Fortress's own
+ * standard.
+ *
+ * `classification` carries the three elements that cannot honestly be
+ * derived from a vendor's filename. Where the tech has not supplied them
+ * the name is built with visible gaps rather than invented values: a
+ * guessed heat number reads as a fact, and §9.1 exists because
+ * filename-derived identity is how one welder ended up under four
+ * spellings.
  */
+export interface DocumentClassification {
+  typeCode?: TypeCode
+  /** A key from the controlled register for this section. §9.1. */
+  identifier?: string | null
+  /** The date the DOCUMENT bears — calibration, test, report, issue —
+   *  never the date it was uploaded. */
+  documentDate?: IsoDate | null
+  revision?: number
+}
+
 export function normalizeFilename(
   original: string,
   sectionNumber: string,
   jobNumber: string,
+  classification: DocumentClassification = {},
 ): string {
-  const trimmed = original.trim().replace(/\s+/g, ' ')
-  const ext = extensionOf(trimmed)
-  const stem = ext ? trimmed.slice(0, -(ext.length + 1)) : trimmed
+  return buildConformingName(original, sectionNumber, jobNumber, classification).filename
+}
 
-  // Strip a section prefix the tech already typed, in any of the forms the
+export function buildConformingName(
+  original: string,
+  sectionNumber: string,
+  jobNumber: string,
+  classification: DocumentClassification = {},
+) {
+  const ext = extensionOf(original)
+  const stem = ext ? original.slice(0, -(ext.length + 1)) : original
+
+  // Drop a section prefix the tech already typed, in the forms the
   // delivered books actually use: "13 - ", "13. ", "13_", "Section 13 ".
   const withoutPrefix = stem
     .replace(/^(?:section\s*)?\d{1,2}(?:-\d{1,2})?\s*[-._)]\s*/i, '')
     .trim()
 
-  const body = withoutPrefix || stem
-  const safe = body.replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
-  const jobTag = jobNumber.trim().toUpperCase()
-  const withJob = safe.toUpperCase().includes(jobTag) ? safe : `${jobTag} ${safe}`
-  return ext ? `${sectionNumber} - ${withJob}.${ext}` : `${sectionNumber} - ${withJob}`
+  const descriptor = toDescriptor(withoutPrefix || stem) ||
+    // A file with nothing usable left still needs to say what it is.
+    toDescriptor(jobNumber) || 'document'
+
+  return buildFilename({
+    sectionNumber,
+    typeCode: classification.typeCode
+      ?? DEFAULT_TYPE_BY_SECTION[sectionNumber]
+      ?? 'COC',
+    identifier: classification.identifier ?? null,
+    descriptor,
+    documentDate: classification.documentDate ?? null,
+    revision: classification.revision ?? 0,
+    extension: ext,
+  })
+}
+
+/** Which controlled register this section's identifier comes from, so the
+ *  upload screen can offer the right list instead of a free text box. */
+export function registerForSection(sectionNumber: string): string | null {
+  return REGISTER_BY_SECTION[sectionNumber] ?? null
 }
 
 /** Job numbers in the operator's format, e.g. DP452, CC19. */
@@ -96,6 +152,8 @@ export interface PrepareInput {
   byteSize: number
   sha256: string
   mimeType?: string | null
+  /** What the tech said this document is. See `DocumentClassification`. */
+  classification?: DocumentClassification
   /**
    * The file's contents, when the caller has them.
    *
@@ -127,9 +185,16 @@ export function prepareUpload(
   const live = existing.filter((d) => !d.deletedAt)
   const issues: UploadIssue[] = []
 
-  const normalizedFilename = normalizeFilename(
+  const built = buildConformingName(
     file.originalFilename, section.sectionNumber, book.jobNumber,
+    {
+      ...file.classification,
+      // A revision is the supersede count, which is known below; it is
+      // filled in after the same-name check.
+      revision: file.classification?.revision,
+    },
   )
+  const normalizedFilename = built.filename
 
   if (file.byteSize === 0) {
     issues.push({
@@ -179,6 +244,21 @@ export function prepareUpload(
     })
   }
 
+  if (built.missing.length) {
+    const what = built.missing
+      .map((m) => m === 'identifier'
+        ? `a ${registerForSection(section.sectionNumber) ?? 'register'} identifier`
+        : "the document's own date")
+      .join(' and ')
+    issues.push({
+      kind: 'name_incomplete', blocking: false,
+      message: `The package name needs ${what}. Appendix B requires ` +
+        `[SS]-[TYPE]-[IDENTIFIER]-[DESCRIPTOR]-[YYYYMMDD]-R[n]; this will file as ` +
+        `${built.filename} until they are supplied. A non-conforming name is a Minor ` +
+        `finding, not a blocker — the file is filed either way.`,
+    })
+  }
+
   if (ARCHIVE_EXT.has(extensionOf(file.originalFilename))) {
     issues.push({
       kind: 'archive', blocking: false,
@@ -197,6 +277,7 @@ export function prepareUpload(
     willBeAdded: !issues.some((i) => i.blocking),
     supersedesDocumentId: sameName?.id ?? null,
     version: sameName ? sameName.version + 1 : 1,
+    nameMissing: built.missing,
   }
 }
 
