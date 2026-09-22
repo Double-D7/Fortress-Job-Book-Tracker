@@ -455,6 +455,41 @@ do $$ begin
 end $$;
 
 \echo ''
+\echo 'No mutating function is reachable without a session'
+do $$
+declare v_fn text; v_bad text[] := '{}';
+begin
+  -- 0012's rule, asserted rather than assumed: `anon` inherits from
+  -- PUBLIC, so a function revoked from `anon` alone is still wide open.
+  -- 0015 made exactly that mistake and shipped it.
+  foreach v_fn in array array[
+    'approve_section','create_job_book','invite_user','set_section_score',
+    'log_document_access','record_gate_review','assign_custodian'
+  ] loop
+    if exists (
+      select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname = v_fn
+         and (has_function_privilege('anon', p.oid, 'execute')
+              or has_function_privilege('public', p.oid, 'execute'))
+    ) then
+      v_bad := v_bad || v_fn;
+    end if;
+  end loop;
+  perform assert(cardinality(v_bad) = 0,
+    'every mutating function is revoked from PUBLIC and anon, not just anon'
+      || case when cardinality(v_bad) > 0
+              then ' (still open: ' || array_to_string(v_bad, ', ') || ')' else '' end);
+
+  -- …and still reachable by the people who need them.
+  perform assert(
+    has_function_privilege('authenticated',
+      'record_gate_review(uuid, gate_id, gate_outcome, jsonb, numeric, uuid, uuid, date, text, text)',
+      'execute')
+    and has_function_privilege('authenticated', 'assign_custodian(uuid, uuid)', 'execute'),
+    'while a signed-in user can still call them');
+end $$;
+
+\echo ''
 \echo 'Row Level Security is on, and forced, everywhere'
 do $$ begin
   perform assert(

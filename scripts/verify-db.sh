@@ -63,6 +63,16 @@ do $$ begin
 -- Supabase Storage. Stubbed to the shape the migrations touch so the
 -- document-bucket policies can be applied and checked here too; the real
 -- thing carries far more, none of which these migrations depend on.
+-- Supabase grants on NEW objects through ALTER DEFAULT PRIVILEGES, which
+-- applies at CREATE time. Setting it here rather than blanket-granting
+-- after the migrations is what makes a REVOKE inside a migration mean
+-- something: a blanket grant afterwards would silently undo every one of
+-- them, and this suite would then certify a locked-down RPC surface that
+-- is in fact wide open. 0015 shipped exactly that mistake.
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+
 create schema if not exists storage;
 create table if not exists storage.buckets (
   id text primary key, name text not null, public boolean not null default false,
@@ -80,15 +90,11 @@ for f in supabase/migrations/*.sql; do
   echo "ok"
 done
 
-# Supabase grants these to anon/authenticated by default; RLS is what
-# actually decides visibility, and the migrations' own REVOKEs on
-# audit_event must be re-applied after any blanket grant.
+# Schema usage only. The per-object grants came from the default
+# privileges set before the migrations ran, so each migration's own
+# REVOKEs survive — see the note above.
 psql "$DB_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
 grant usage on schema public to anon, authenticated, service_role;
-grant all on all tables in schema public to anon, authenticated;
-grant all on all sequences in schema public to anon, authenticated;
-grant execute on all functions in schema public to anon, authenticated;
-revoke update, delete, truncate on audit_event from anon, authenticated;
 -- Supabase grants these on the storage schema; RLS is what decides which
 -- objects are actually visible.
 grant usage on schema storage to anon, authenticated;
