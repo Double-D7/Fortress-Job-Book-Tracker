@@ -97,6 +97,17 @@ export const COLUMNS = {
     'computed_pct', 'internal_notes', 'expected_count', 'computed_at', 'collected_pct',
     'expected_by',
   ],
+  weld: [
+    'id', 'weld_line_id', 'job_book_id', 'weld_number', 'sort_order', 'weld_date',
+    'welder_pass_assignment', 'root_welder_id', 'hot_welder_id', 'fill_welder_id',
+    'cap_welder_id', 'welder_stamp', 'welder_id', 'joint_type', 'component_description',
+    'part_length', 'heat_numbers', 'cwi_initials', 'cwi_id', 'cwi_visual_result',
+    'visual_inspection_date', 'ndt_company', 'xray_number', 'ndt_ticket_number',
+    'ndt_method', 'ndt_result', 'ndt_report_id', 'status', 'comments',
+    'construction_area', 'equipment_tag', 'isometric_number', 'pressure_test_ref',
+    'pipe_size_schedule', 'pipe_grade', 'design_pressure_psi',
+    'entered_at', 'entry_source', 'visual_entered_at',
+  ],
   welder: [
     'id', 'full_name', 'initials', 'employer', 'active', 'name_aliases',
     'entered_at', 'entry_source',

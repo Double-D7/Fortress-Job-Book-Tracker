@@ -240,22 +240,74 @@ export function xrayTotals(
  * work performed while it was live; a weld performed before qualification
  * or after expiry is a finding regardless of today's status.
  */
+/**
+ * Why a weld is or is not covered by a qualification.
+ *
+ *   qualified       — a record covers the date, start and end both known
+ *   expired         — a record exists and the date falls after its expiry
+ *   not_yet         — the date falls before the qualification was granted
+ *   unverifiable    — a record exists whose START is unknown, so currency
+ *                     cannot be confirmed either way
+ *   no_record       — no qualification on file for this welder at all
+ *
+ * `unverifiable` is the one that has to exist separately, and the reason is
+ * concrete. Importing the Weld Log Overview Sheet gives every welder an
+ * expiry and no qualification date, because that is all the sheet carries.
+ * Collapsing that into "not qualified" raises a Critical finding against
+ * every weld in the book — 1,256 of them on DP-318 — each one asserting
+ * that no qualification covers a date the expiry plainly covers. A
+ * thousand false Criticals do not overstate the problem; they bury the
+ * real ones and teach people to close the queue without reading it.
+ */
+export type QualificationVerdict =
+  | 'qualified' | 'expired' | 'not_yet' | 'unverifiable' | 'no_record'
+
+export interface QualificationCheck {
+  verdict: QualificationVerdict
+  qualification: WelderQualification | null
+}
+
+export function qualificationOn(
+  welderId: string,
+  date: string,
+  quals: WelderQualification[],
+): QualificationCheck {
+  const mine = quals.filter((q) => q.welderId === welderId)
+  if (mine.length === 0) return { verdict: 'no_record', qualification: null }
+
+  const covering = mine.find(
+    (q) => !!q.qualificationDate && isWithin(date, q.qualificationDate, q.expiryDate ?? null),
+  )
+  if (covering) return { verdict: 'qualified', qualification: covering }
+
+  // Expiry known and passed is a definite answer even when the start is
+  // not: a qualification that expired before the weld did not cover it,
+  // whenever it began.
+  const expired = mine.find((q) => !!q.expiryDate && q.expiryDate < date)
+  const allExpired = mine.every((q) => !!q.expiryDate && q.expiryDate < date)
+  if (expired && allExpired) return { verdict: 'expired', qualification: expired }
+
+  // A record whose start is unknown and whose expiry has not passed: it
+  // may well cover the weld, and nothing on file establishes that it does.
+  const openStart = mine.find((q) => !q.qualificationDate)
+  if (openStart) return { verdict: 'unverifiable', qualification: openStart }
+
+  const notYet = mine.find((q) => !!q.qualificationDate && q.qualificationDate > date)
+  if (notYet) return { verdict: 'not_yet', qualification: notYet }
+
+  return { verdict: 'expired', qualification: mine[0] ?? null }
+}
+
+/** True only for a qualification known to cover the date. Everything else
+ *  — expired, not yet granted, or on file with an unknown start — is not a
+ *  qualification for this weld. Callers that need to tell those apart use
+ *  `qualificationOn`. */
 export function qualifiedOn(
   welderId: string,
   date: string,
   quals: WelderQualification[],
 ): boolean {
-  return quals.some(
-    (q) =>
-      q.welderId === welderId &&
-      // No qualification date means the record has been read only in part
-      // — the overview sheet gives an expiry and no start. Treating that
-      // as an open window would qualify every weld the welder ever made,
-      // which is the same inversion `certValidOn` refuses for an unread
-      // certificate.
-      !!q.qualificationDate &&
-      isWithin(date, q.qualificationDate, q.expiryDate ?? null),
-  )
+  return qualificationOn(welderId, date, quals).verdict === 'qualified'
 }
 
 export interface ContinuityStatus {

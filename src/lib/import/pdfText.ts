@@ -255,3 +255,78 @@ export function columnAt(x: number, columnStarts: number[]): number {
   }
   return best
 }
+
+/**
+ * A PDF page's text back into a grid.
+ *
+ * The weld log parsers take `unknown[][]` — a spreadsheet grid — because
+ * that is what a workbook gives them. A PDF export of the same workbook
+ * holds the same table, drawn rather than tabulated. Recovering the grid
+ * lets one parser read both, instead of a second parser that has to be
+ * kept in step with the first and will not be.
+ *
+ * COLUMNS COME FROM THE WHOLE PAGE, NOT THE HEADER ROW. A header cell can
+ * be blank, or wrapped onto two lines, or centred over a column whose body
+ * cells are left-aligned. Clustering every run's x position across the
+ * page finds the columns that the body actually uses, which is what the
+ * data is in.
+ */
+export interface PdfGridOptions {
+  /**
+   * How far apart two runs must start to belong to different columns.
+   *
+   * Derived from the page when omitted: the widest gap that still leaves
+   * more columns than a table of one. A fixed value cannot work, because a
+   * 20-column weld log and a 4-column certificate are set at different
+   * scales.
+   */
+  columnGap?: number
+  /** Ignore runs left of this, for a page with a margin block. */
+  minX?: number
+}
+
+/** 1-D clustering of x positions: a new cluster starts wherever the gap to
+ *  the previous position exceeds `gap`. */
+function clusterColumns(xs: number[], gap: number): number[] {
+  const sorted = [...xs].sort((a, b) => a - b)
+  const starts: number[] = []
+  let previous = -Infinity
+  for (const x of sorted) {
+    if (x - previous > gap) starts.push(x)
+    previous = x
+  }
+  return starts
+}
+
+export function pdfGrid(page: PdfPage, opts: PdfGridOptions = {}): string[][] {
+  const runs = page.lines.flatMap((l) => l.runs).filter((r) => r.x >= (opts.minX ?? -Infinity))
+  if (runs.length === 0) return []
+
+  // A column gap narrower than the narrowest real column splits cells; one
+  // wider merges them. Six points is about one character at the 8pt these
+  // logs are set in, which separates adjacent columns without splitting a
+  // cell whose text starts a little indented.
+  const gap = opts.columnGap ?? 6
+  const starts = clusterColumns(runs.map((r) => r.x), gap)
+
+  return page.lines.map((line) => {
+    const row: string[] = new Array(starts.length).fill('')
+    for (const run of line.runs) {
+      if (run.x < (opts.minX ?? -Infinity)) continue
+      const c = columnAt(run.x, starts)
+      // Two runs in one cell — a wrapped value, or a kerning split the text
+      // operator did not close — are joined rather than one overwriting
+      // the other.
+      row[c] = row[c] ? `${row[c]} ${run.text.trim()}` : run.text.trim()
+    }
+    return row
+  })
+}
+
+/** Every page's grid, concatenated. A weld log runs to dozens of pages and
+ *  the header repeats on each; the parsers already skip repeated headers. */
+export function pdfGridAllPages(
+  extraction: PdfExtraction, opts: PdfGridOptions = {},
+): string[][] {
+  return extraction.pages.flatMap((p) => pdfGrid(p, opts))
+}

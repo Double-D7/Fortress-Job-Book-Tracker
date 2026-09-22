@@ -25,6 +25,10 @@ import {
 import {
   planOverviewIngest, rowsForPlan, type OverviewIngestPlan,
 } from '@/lib/import/overviewIngest'
+import {
+  parseFacilityWeldRows, planWeldLogIngest, readWeldLogGrid, rowsForWeldPlan,
+  type WeldLogIngestPlan,
+} from '@/lib/import/weldLogIngest'
 import { buildDp452Bundle } from './seed/dp452'
 import { buildGreeleyBundle } from './seed/greeley'
 
@@ -184,6 +188,15 @@ export interface DataProvider {
   commitOverviewImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<OverviewImportResult>
+
+  /** The same two steps for the Detailed Weld Log (§12), which reads a
+   *  workbook or a PDF export of one. */
+  previewWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportPreview>
+  commitWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportResult>
 }
 
 export interface OverviewImportPreview {
@@ -201,6 +214,50 @@ export interface OverviewImportResult {
   qualificationsRecorded: number
   peopleCreated: number
   skipped: { stamp: string; reason: string }[]
+}
+
+export interface WeldLogImportPreview {
+  ok: boolean
+  error?: string
+  plan?: WeldLogIngestPlan
+}
+
+export interface WeldLogImportResult {
+  ok: boolean
+  error?: string
+  weldLinesCreated: number
+  weldsCreated: number
+  weldsUpdated: number
+}
+
+/**
+ * Parse a detailed weld log and plan its import against one book.
+ *
+ * Shared by both providers so the preview a tech reads is the same
+ * computation the commit performs — the one place where a divergence
+ * would be invisible and would matter.
+ */
+export function buildWeldLogPreview(
+  bundle: JobBookBundle, file: Uint8Array, filename: string,
+): WeldLogImportPreview {
+  const read = readWeldLogGrid(file, filename)
+  if (read.error) return { ok: false, error: read.error }
+  if (read.grid.length === 0) {
+    return { ok: false, error: 'No rows found in that file.' }
+  }
+
+  const parsed = parseFacilityWeldRows(read.grid, {
+    sheetName: read.sheetsParsed[0] ?? 'Weld Log',
+    defaultDesignPressurePsi: bundle.book.defaultDesignPressurePsi ?? null,
+  })
+  if (parsed.rows.length === 0) {
+    return {
+      ok: false,
+      error: parsed.issues[0]?.message
+        ?? 'No weld rows could be read. The column headers did not match anything this reader knows.',
+    }
+  }
+  return { ok: true, plan: planWeldLogIngest(parsed, bundle, read.format) }
 }
 
 export interface StaffMember {
@@ -727,6 +784,60 @@ class SeedProvider implements DataProvider {
       })
     }
     return { ok: true }
+  }
+
+  async previewWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportPreview> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    return buildWeldLogPreview(b, file, filename)
+  }
+
+  async commitWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportResult> {
+    const empty = { weldLinesCreated: 0, weldsCreated: 0, weldsUpdated: 0 }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.', ...empty }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    const preview = buildWeldLogPreview(b, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
+    }
+
+    let n = 0
+    const rows = rowsForWeldPlan(preview.plan, b, {
+      enteredAt: new Date().toISOString(),
+      entrySource: 'field_entry',
+      newId: () => `seed-line-${jobBookId}-${(n += 1)}`,
+    })
+
+    // Welds are keyed by a stable id derived from the weld number, so a
+    // re-import replaces rather than duplicates — the same property the
+    // database relies on.
+    const byId = new Map(b.welds.map((w) => [w.id, w]))
+    for (const w of rows.welds) byId.set(w.id, w)
+
+    this.commit(jobBookId, idx, {
+      ...b,
+      weldLines: [...b.weldLines, ...rows.weldLines],
+      welds: [...byId.values()],
+    })
+
+    return {
+      ok: true,
+      weldLinesCreated: rows.weldLines.length,
+      weldsCreated: preview.plan.weldsToCreate,
+      weldsUpdated: preview.plan.weldsToUpdate,
+    }
   }
 
   async assignCustodian(

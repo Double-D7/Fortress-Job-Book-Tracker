@@ -12,6 +12,7 @@ import {
 import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
 import { OverviewImport } from '@/components/OverviewImport'
+import { WeldLogImport } from '@/components/WeldLogImport'
 import { registerForSection } from '@/lib/domain/upload'
 import { bytes, num, pct } from '@/lib/utils'
 
@@ -200,6 +201,16 @@ export default async function SectionDetail({
       */}
       {number === '11' && (
         <OverviewImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
+      )}
+
+      {/*
+        §12 is the population every other integrity claim resolves to — a
+        weld's welder, its date, its inspection. Holding it as a PDF and
+        stopping there is why the weld grid, the qualification checks and
+        the tier rules had nothing to read.
+      */}
+      {number === '12' && (
+        <WeldLogImport bookId={bookId} canUpload={CAN_UPLOAD.has(viewer.role)} />
       )}
 
       <Card>

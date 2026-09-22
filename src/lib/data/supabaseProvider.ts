@@ -20,10 +20,11 @@ import type {
 import type {
   ActionResult, CreateResult, DataProvider, GateDecision, GateSideFacts,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
-  UploadResult, Viewer,
+  UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
-import { buildOverviewPreview, redactForViewer } from './provider'
+import { buildOverviewPreview, buildWeldLogPreview, redactForViewer } from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
+import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
 import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -654,6 +655,72 @@ export class SupabaseProvider implements DataProvider {
       skipped: preview.plan.welders
         .filter((w) => w.action === 'skip')
         .map((w) => ({ stamp: w.stamp || w.name, reason: w.skipReason ?? '' })),
+    }
+  }
+
+  async previewWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportPreview> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildWeldLogPreview(bundle, file, filename)
+  }
+
+  async commitWeldLogImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<WeldLogImportResult> {
+    const empty = { weldLinesCreated: 0, weldsCreated: 0, weldsUpdated: 0 }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+
+    // Re-planned against the book as it stands now, never taken from the
+    // browser. A plan supplied by a client is a client asserting what is
+    // in a document it also supplied.
+    const preview = buildWeldLogPreview(bundle, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
+    }
+
+    const rows = rowsForWeldPlan(preview.plan, bundle, {
+      enteredAt: new Date().toISOString(),
+      entrySource: 'field_entry',
+      newId: () => randomUUID(),
+    })
+
+    const supabase = await createClient()
+
+    if (rows.weldLines.length > 0) {
+      const { error } = await supabase.from('weld_line').insert(
+        rows.weldLines.map((l) => domainToRow(l, COLUMNS.weld_line)),
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    // `facilityWeldRecordId` derives the id from the book and the weld
+    // number, so re-importing a corrected log updates the same rows rather
+    // than laying a second copy of the book beside the first.
+    const CHUNK = 500
+    for (let i = 0; i < rows.welds.length; i += CHUNK) {
+      const { error } = await supabase.from('weld').upsert(
+        rows.welds.slice(i, i + CHUNK).map((w) => domainToRow(w, COLUMNS.weld)),
+        { onConflict: 'id' },
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+    }
+
+    await this.refreshScores(jobBookId, viewer)
+
+    return {
+      ok: true,
+      weldLinesCreated: rows.weldLines.length,
+      weldsCreated: preview.plan.weldsToCreate,
+      weldsUpdated: preview.plan.weldsToUpdate,
     }
   }
 

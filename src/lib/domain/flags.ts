@@ -17,7 +17,8 @@ import { today } from './dates'
 import { certValidOn, evaluateCert } from './certificates'
 import { checkWrenchCalibration, isInspected, reconcileWrenches, suggestWrenchTypo, torqueTotals, torqueWithinTolerance } from './torque'
 import {
-  checkFlatRule, creditedWelders, isCountable, isXrayed, qualifiedOn, rollupByWelder,
+  checkFlatRule, creditedWelders, isCountable, isXrayed, qualificationOn, qualifiedOn,
+  rollupByWelder,
 } from './welders'
 import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
 import { reconcileCp, reconcileHeats } from './reconcile'
@@ -79,20 +80,73 @@ const MAX_RECORDS_PER_GROUP = 200
 // Critical rules
 // ---------------------------------------------------------------------
 
-/** A weld performed on a date when the welder held no active qualification. */
+/**
+ * A weld performed on a date the welder's qualification did not cover.
+ *
+ * Split three ways, because "not qualified" and "cannot be shown to be
+ * qualified" are different accusations and only one of them is a §11.1
+ * Critical.
+ *
+ * The distinction is not academic. Importing the Weld Log Overview Sheet
+ * populates the register with an expiry and no qualification date — that
+ * is all the sheet carries — and a rule that reads a missing start as a
+ * missing qualification raises a Critical against every weld in the book.
+ * On DP-318 that is 1,256 findings, each asserting that no qualification
+ * covers a date whose expiry plainly covers it. The real findings would be
+ * somewhere in there, unfindable.
+ */
 export function ruleWelderNotQualified(b: JobBookBundle): Finding[] {
   const out: Finding[] = []
   for (const w of b.welds) {
     if (!isCountable(w) || !w.weldDate) continue
     for (const welderId of creditedWelders(w)) {
-      if (qualifiedOn(welderId, w.weldDate, b.welderQualifications)) continue
+      const { verdict, qualification } = qualificationOn(
+        welderId, w.weldDate, b.welderQualifications,
+      )
+      if (verdict === 'qualified') continue
       const welder = b.welders.find((x) => x.id === welderId)
+      const who = welder?.initials ?? welderId
+      const name = welder?.fullName ?? welderId
+
+      if (verdict === 'unverifiable') {
+        // Warning, not Critical: the evidence gap is in Fortress's own
+        // records, not in the welder's competence, and the fix is filing
+        // the WPQ rather than stopping the work.
+        out.push({
+          ruleId: 'welder.qualification_currency_unverifiable',
+          severity: 'warning',
+          title: `${who}'s qualification currency cannot be confirmed for ${w.weldDate}`,
+          detail:
+            `Weld ${w.weldNumber} was performed on ${w.weldDate}. The register holds a ` +
+            `qualification for ${name} expiring ${qualification?.expiryDate ?? 'on an unrecorded date'}, ` +
+            `but not the date it was granted — which is all the overview sheet records. The ` +
+            `expiry has not passed, so this is not an expired qualification; it is a ` +
+            `qualification whose window cannot be closed. Filing the WPQ itself in section 6 ` +
+            `resolves it.`,
+          entityType: 'weld', entityId: w.id, sectionNumber: '6',
+          fingerprint: fp('welder.qualification_currency_unverifiable', w.id, welderId),
+        })
+        continue
+      }
+
       out.push({
         ruleId: 'welder.not_qualified_on_weld_date',
         severity: 'critical',
-        title: `Welder ${welder?.initials ?? welderId} had no valid qualification on ${w.weldDate}`,
-        detail: `Weld ${w.weldNumber} was performed on ${w.weldDate}. No welder performance ` +
-          `qualification for ${welder?.fullName ?? welderId} covers that date.`,
+        title:
+          verdict === 'no_record'
+            ? `${who} has no qualification on file, and welded on ${w.weldDate}`
+            : verdict === 'not_yet'
+              ? `${who} was not yet qualified on ${w.weldDate}`
+              : `${who}'s qualification had expired on ${w.weldDate}`,
+        detail:
+          verdict === 'no_record'
+            ? `Weld ${w.weldNumber} was performed on ${w.weldDate}. No welder performance ` +
+              `qualification for ${name} is on file at all.`
+            : verdict === 'not_yet'
+              ? `Weld ${w.weldNumber} was performed on ${w.weldDate}, before ${name}'s ` +
+                `qualification was granted on ${qualification?.qualificationDate}.`
+              : `Weld ${w.weldNumber} was performed on ${w.weldDate}. ${name}'s qualification ` +
+                `expired ${qualification?.expiryDate}.`,
         entityType: 'weld', entityId: w.id, sectionNumber: '6',
         fingerprint: fp('welder.not_qualified_on_weld_date', w.id, welderId),
       })
