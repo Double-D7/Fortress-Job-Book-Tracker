@@ -18,6 +18,7 @@ import type {
 } from '@/lib/domain/types'
 import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
 import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
+import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
 import { aggregateFindings, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -309,6 +310,18 @@ export interface DataProvider {
   /** Add a note. An external author's note is always shared — the
    *  database refuses an internal one from them. */
   addNote(viewer: Viewer, jobBookId: string, input: NoteInput): Promise<ActionResult>
+
+  // -- Notifications -----------------------------------------------------
+
+  /** This viewer's own notifications, newest first. Nobody can read
+   *  anybody else's, including an admin. */
+  listNotifications(
+    viewer: Viewer, opts?: { unreadOnly?: boolean; limit?: number },
+  ): Promise<NotificationItem[]>
+
+  /** Mark this viewer's unread notifications read, on one book or all.
+   *  Returns how many were still unread. */
+  markNotificationsRead(viewer: Viewer, jobBookId?: string): Promise<ActionResult>
 }
 
 /** One audit, as a person records it. */
@@ -605,6 +618,9 @@ export interface BookNote {
   /** 'internal' is Fortress only. 'client' is everyone who can read the
    *  book — the operator and any granted inspector. */
   visibility: 'internal' | 'client'
+  /** How loudly the author asked to be heard. Routing only — it decides
+   *  who is notified and never touches the §11 register or the score. */
+  severity: NoteSeverity
   createdAt: string
 }
 
@@ -612,6 +628,27 @@ export interface NoteInput {
   body: string
   sectionNumber?: string | null
   visibility?: 'internal' | 'client'
+  severity?: NoteSeverity
+}
+
+/**
+ * One unread marker, joined to enough of its note to render a line.
+ *
+ * The body is carried here because the row was read under the note's own
+ * policy — `listNotifications` reads `inspector_comment`, so a
+ * notification can never show more than the note would.
+ */
+export interface NotificationItem {
+  id: string
+  jobBookId: string
+  jobNumber: string
+  noteId: string
+  severity: NoteSeverity
+  sectionNumber: string | null
+  authorName: string
+  body: string
+  createdAt: string
+  readAt: string | null
 }
 
 /** Facts a gate evaluation needs that the bundle does not carry. */
@@ -760,6 +797,9 @@ class SeedProvider implements DataProvider {
   private grants = new Map<string, InspectorGrant>()
   /** Notes, by book. */
   private notes = new Map<string, BookNote[]>()
+  /** Unread markers. Flat, with the recipient on each row, mirroring the
+   *  `notification` table rather than a per-user map. */
+  private notifications: (NotificationItem & { userId: string })[] = []
 
   private seeded(): JobBookBundle[] {
     // Stamped, not raw. `computedPct` is a cache the client-facing views
@@ -1734,7 +1774,7 @@ class SeedProvider implements DataProvider {
     }
 
     const list = this.notes.get(jobBookId) ?? []
-    list.push({
+    const note: BookNote = {
       id: `seed-note-${jobBookId}-${list.length + 1}`,
       jobBookId,
       sectionNumber: input.sectionNumber ?? null,
@@ -1743,9 +1783,74 @@ class SeedProvider implements DataProvider {
       authorRole: viewer.role,
       body,
       visibility,
+      severity: input.severity ?? 'info',
       createdAt: new Date().toISOString(),
-    })
+    }
+    list.push(note)
     this.notes.set(jobBookId, list)
+    this.fanOut(b, note)
+    return { ok: true }
+  }
+
+  /**
+   * The seed mirror of 0024's `fan_out_note_notifications()` trigger.
+   *
+   * Shares `recipientsFor` with the interface rather than restating the
+   * rule, so the demo and the database cannot disagree about who is
+   * told — the SQL is checked against the same function's behaviour in
+   * notifications.test.ts.
+   */
+  private fanOut(b: JobBookBundle, note: BookNote): void {
+    const custodianId = b.book.custodianId ?? null
+    // Everybody in the directory who works this book. The seed data has
+    // no job_assignment table, so a Fortress writer counts as assigned —
+    // which is what `canSee` already assumes for this provider.
+    const candidates: Candidate[] = [...this.directory.values()]
+      .filter((u) => u.isActive)
+      .map((u) => ({
+        userId: u.id,
+        role: u.role,
+        isCustodian: u.id === custodianId,
+        isAssigned: WRITER_ROLES.has(u.role),
+      }))
+
+    for (const userId of recipientsFor(note, candidates)) {
+      this.notifications.push({
+        id: `seed-notif-${this.notifications.length + 1}`,
+        userId,
+        jobBookId: b.book.id,
+        jobNumber: b.book.jobNumber,
+        noteId: note.id,
+        severity: note.severity,
+        sectionNumber: note.sectionNumber,
+        authorName: note.authorName,
+        body: note.body,
+        createdAt: note.createdAt,
+        readAt: null,
+      })
+    }
+  }
+
+  async listNotifications(
+    viewer: Viewer, opts?: { unreadOnly?: boolean; limit?: number },
+  ): Promise<NotificationItem[]> {
+    const mine = this.notifications
+      .filter((n) => n.userId === viewer.id)
+      .filter((n) => (opts?.unreadOnly ? n.readAt === null : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    return mine.slice(0, opts?.limit ?? 50).map(({ userId, ...rest }) => rest)
+  }
+
+  async markNotificationsRead(
+    viewer: Viewer, jobBookId?: string,
+  ): Promise<ActionResult> {
+    const at = new Date().toISOString()
+    for (const n of this.notifications) {
+      if (n.userId !== viewer.id || n.readAt) continue
+      if (jobBookId && n.jobBookId !== jobBookId) continue
+      n.readAt = at
+    }
     return { ok: true }
   }
 

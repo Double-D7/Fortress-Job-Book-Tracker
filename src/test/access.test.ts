@@ -392,6 +392,63 @@ describe('notes', () => {
     expect(res.ok).toBe(false)
   })
 
+  it('tells somebody, which is the whole point of the note', async () => {
+    // The gap this closes: 0023 gave the inspector a note and nobody a
+    // reason to look at it. A note that reaches no one is a row.
+    const p = getDataProvider()
+    await p.issueInspectorGrant(manager, BOOK, {
+      userId: inspector.id, canComment: true,
+    })
+    const before = (await p.listNotifications(manager)).length
+
+    await p.addNote(inspector, BOOK, {
+      body: 'Weld 42 radiograph is illegible.', severity: 'critical',
+    })
+
+    const after = await p.listNotifications(manager)
+    expect(after.length).toBeGreaterThan(before)
+    expect(after[0]!.body).toContain('illegible')
+    expect(after[0]!.severity).toBe('critical')
+    expect(after[0]!.readAt).toBeNull()
+  })
+
+  it('never notifies the person who wrote the note', async () => {
+    const p = getDataProvider()
+    await p.addNote(manager, BOOK, { body: 'My own note.', severity: 'critical' })
+    const mine = await p.listNotifications(manager)
+    expect(mine.some((n) => n.body === 'My own note.')).toBe(false)
+  })
+
+  it('never notifies the operator or the inspector', async () => {
+    // The side channel this feature could open: a notification carrying
+    // an internal note to somebody the read policy withholds it from.
+    const p = getDataProvider()
+    await p.issueInspectorGrant(manager, BOOK, {
+      userId: inspector.id, canComment: true,
+    })
+    await p.addNote(tech, BOOK, { body: 'INTERNAL.', severity: 'critical' })
+    expect(await p.listNotifications(inspector)).toEqual([])
+    expect(await p.listNotifications(client)).toEqual([])
+  })
+
+  it('marks read, and touches nobody else’s list', async () => {
+    const p = getDataProvider()
+    // Deliberately NOT asserting the tech ends at zero. Notifications
+    // are module state and earlier tests have already left them some —
+    // the first version of this test asserted an empty list and failed
+    // against correct code. What matters is that one person reading
+    // their own list changes nothing about anyone else's.
+    await p.addNote(tech, BOOK, { body: 'For the manager.', severity: 'warning' })
+    const techBefore = (await p.listNotifications(tech, { unreadOnly: true })).length
+    expect((await p.listNotifications(manager, { unreadOnly: true })).length)
+      .toBeGreaterThan(0)
+
+    await p.markNotificationsRead(manager)
+    expect(await p.listNotifications(manager, { unreadOnly: true })).toEqual([])
+    expect((await p.listNotifications(tech, { unreadOnly: true })).length)
+      .toBe(techBefore)
+  })
+
   it('refuses an empty note', async () => {
     const p = getDataProvider()
     expect((await p.addNote(manager, BOOK, { body: '   ' })).ok).toBe(false)

@@ -19,13 +19,15 @@ import type {
 } from '@/lib/domain/types'
 import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
-  GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput, NoteInput,
+  GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
+  NoteInput, NotificationItem,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
 import { can, rolesWith } from '@/lib/domain/roles'
+import type { NoteSeverity } from '@/lib/domain/notifications'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
   buildWeldLogPreview, redactForViewer,
@@ -1200,7 +1202,7 @@ export class SupabaseProvider implements DataProvider {
     // keeps finding.
     const { data } = await supabase
       .from('inspector_comment')
-      .select('id, job_book_id, body, visibility, created_at, author_id, section_id')
+      .select('id, job_book_id, body, visibility, severity, created_at, author_id, section_id')
       .eq('job_book_id', jobBookId)
       .order('created_at')
     const notes = data ?? []
@@ -1235,6 +1237,7 @@ export class SupabaseProvider implements DataProvider {
         authorRole: (author?.role as UserRole) ?? 'fortress_read_only',
         body: n.body as string,
         visibility: n.visibility as BookNote['visibility'],
+        severity: n.severity as NoteSeverity,
         createdAt: n.created_at as string,
       }
     })
@@ -1283,6 +1286,9 @@ export class SupabaseProvider implements DataProvider {
       author_id: viewer.id,
       body,
       visibility,
+      // Quiet unless the author says otherwise. The trigger fans a note
+      // out on insert, so this value decides who is interrupted.
+      severity: input.severity ?? 'info',
     })
     if (error) {
       // The policy's refusal is the common case here and its generic
@@ -1300,6 +1306,89 @@ export class SupabaseProvider implements DataProvider {
       return { ok: false, error: describe(error) }
     }
     return { ok: true }
+  }
+
+  // -- Notifications -----------------------------------------------------
+
+  async listNotifications(
+    viewer: Viewer, opts?: { unreadOnly?: boolean; limit?: number },
+  ): Promise<NotificationItem[]> {
+    const supabase = await createClient()
+    // No `user_id` filter: `notification_read` is `user_id =
+    // current_app_user_id()`, so the database has already answered it.
+    // Adding one here would be a second copy of the rule, and the kind
+    // that looks like the control.
+    let q = supabase
+      .from('notification')
+      .select('id, job_book_id, note_id, created_at, read_at')
+      .order('created_at', { ascending: false })
+      .limit(opts?.limit ?? 50)
+    if (opts?.unreadOnly) q = q.is('read_at', null)
+    const { data } = await q
+    const rows = data ?? []
+    if (rows.length === 0) return []
+
+    // The note is read through `inspector_comment` under its own policy,
+    // so a notification can never surface more than the note would. A
+    // note whose visibility later excluded this reader simply drops out
+    // of the join, which is the behaviour we want.
+    const noteIds = [...new Set(rows.map((r) => r.note_id as string))]
+    const bookIds = [...new Set(rows.map((r) => r.job_book_id as string))]
+    const [{ data: notes }, { data: books }] = await Promise.all([
+      supabase.from('inspector_comment')
+        .select('id, body, severity, author_id, section_id').in('id', noteIds),
+      supabase.from('job_book').select('id, job_number').in('id', bookIds),
+    ])
+    const note = new Map((notes ?? []).map((n) => [n.id as string, n]))
+
+    const authorIds = [...new Set((notes ?? []).map((n) => n.author_id as string))]
+    const [{ data: authors }, { data: sections }, { data: defs }] = await Promise.all([
+      authorIds.length
+        ? supabase.from('app_user').select('id, full_name').in('id', authorIds)
+        : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
+      supabase.from('job_book_section')
+        .select('id, section_definition_id').in('job_book_id', bookIds),
+      supabase.from('section_definition').select('id, section_number'),
+    ])
+    const person = new Map((authors ?? []).map((a) => [a.id as string, a.full_name as string]))
+    const jobNumber = new Map((books ?? []).map((b) => [b.id as string, b.job_number as string]))
+    const defNumber = new Map(
+      (defs ?? []).map((d) => [d.id as string, d.section_number as string]))
+    const sectionNumber = new Map((sections ?? []).map(
+      (s) => [s.id as string, defNumber.get(s.section_definition_id as string) ?? null]))
+
+    const out: NotificationItem[] = []
+    for (const r of rows) {
+      const n = note.get(r.note_id as string)
+      // The note is gone, or this reader may no longer see it. Either
+      // way there is nothing to show, and a row saying "a note you
+      // cannot read" would be worse than silence.
+      if (!n) continue
+      const sid = n.section_id as string | null
+      out.push({
+        id: r.id as string,
+        jobBookId: r.job_book_id as string,
+        jobNumber: jobNumber.get(r.job_book_id as string) ?? '—',
+        noteId: n.id as string,
+        severity: n.severity as NoteSeverity,
+        sectionNumber: sid ? sectionNumber.get(sid) ?? null : null,
+        authorName: person.get(n.author_id as string) ?? 'Unknown',
+        body: n.body as string,
+        createdAt: r.created_at as string,
+        readAt: (r.read_at as string | null) ?? null,
+      })
+    }
+    return out
+  }
+
+  async markNotificationsRead(
+    viewer: Viewer, jobBookId?: string,
+  ): Promise<ActionResult> {
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('mark_notifications_read', {
+      p_job_book_id: jobBookId ?? null,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
   }
 }
 

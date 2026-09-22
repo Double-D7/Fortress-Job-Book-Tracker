@@ -17,12 +17,19 @@
  */
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Eye, Loader2, Lock, MessageSquarePlus } from 'lucide-react'
+import { AlertTriangle, Eye, Loader2, Lock, MessageSquarePlus } from 'lucide-react'
 import type { BookNote } from '@/lib/data/provider'
 import { roleLabel } from '@/lib/domain/roles'
 import {
+  NOTE_SEVERITIES, SEVERITY_HELP, SEVERITY_LABELS, type NoteSeverity,
+} from '@/lib/domain/notifications'
+import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState,
 } from '@/components/ui/primitives'
+
+const SEVERITY_TONE: Record<NoteSeverity, 'critical' | 'progress' | 'idle'> = {
+  critical: 'critical', warning: 'progress', info: 'idle',
+}
 
 const field =
   'w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-xs text-ink ' +
@@ -48,6 +55,7 @@ export function BookNotes({
   const [body, setBody] = useState('')
   const [sectionNumber, setSectionNumber] = useState('')
   const [shared, setShared] = useState(!canChooseVisibility)
+  const [severity, setSeverity] = useState<NoteSeverity>('info')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -61,11 +69,12 @@ export function BookNotes({
           body,
           sectionNumber: sectionNumber || null,
           visibility: shared ? 'client' : 'internal',
+          severity,
         }),
       })
       const json = await res.json()
       if (!json.ok) { setError(json.error ?? 'That did not go through.'); return }
-      setBody(''); setSectionNumber(''); router.refresh()
+      setBody(''); setSectionNumber(''); setSeverity('info'); router.refresh()
     } catch {
       setError('Could not reach the server.')
     } finally {
@@ -89,6 +98,12 @@ export function BookNotes({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-medium text-ink">{n.authorName}</span>
                   <Chip tone="idle">{roleLabel(n.authorRole)}</Chip>
+                  {n.severity !== 'info' && (
+                    <Chip tone={SEVERITY_TONE[n.severity]}
+                          icon={<AlertTriangle size={11} />}>
+                      {SEVERITY_LABELS[n.severity]}
+                    </Chip>
+                  )}
                   {n.visibility === 'internal'
                     ? <Chip tone="brand" icon={<Lock size={11} />}>Fortress only</Chip>
                     : <Chip tone="info" icon={<Eye size={11} />}>Shared with the client</Chip>}
@@ -117,6 +132,19 @@ export function BookNotes({
               placeholder="What did you observe?"
             />
             <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1.5 text-2xs text-ink-secondary">
+                Urgency
+                <select
+                  className="rounded-md border border-hairline bg-surface px-2 py-1 text-xs text-ink focus:border-brand-bright focus:outline-none"
+                  value={severity}
+                  onChange={(e) => setSeverity(e.target.value as NoteSeverity)}
+                >
+                  {NOTE_SEVERITIES.map((s) => (
+                    <option key={s} value={s}>{SEVERITY_LABELS[s]}</option>
+                  ))}
+                </select>
+              </label>
+
               <label className="flex items-center gap-1.5 text-2xs text-ink-secondary">
                 Against
                 <select
@@ -153,6 +181,8 @@ export function BookNotes({
               </Button>
             </div>
 
+            <p className="text-2xs text-ink-secondary">{SEVERITY_HELP[severity]}</p>
+
             {canChooseVisibility && (
               <p className="text-2xs text-ink-secondary">
                 {shared
@@ -160,6 +190,14 @@ export function BookNotes({
                     'live grant on this book.'
                   : 'This stays inside Fortress. Nobody outside will see it — which is the ' +
                     'default, so a working note is never published by accident.'}
+              </p>
+            )}
+
+            {!canChooseVisibility && severity !== 'info' && (
+              <p className="text-2xs text-ink-secondary">
+                Marking a note urgent tells Fortress to look at it now. It does not raise a
+                formal finding or change the book&rsquo;s score — a Fortress reviewer decides
+                that separately, under the §11 classification rules.
               </p>
             )}
 

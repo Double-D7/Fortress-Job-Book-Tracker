@@ -1,15 +1,8 @@
 import Link from 'next/link'
 import { ShieldCheck } from 'lucide-react'
 import { currentViewer } from '@/lib/data/provider'
-
-const ROLE_LABELS: Record<string, string> = {
-  fortress_admin: 'Fortress Admin',
-  qaqc_manager: 'QA/QC Manager',
-  qaqc_tech: 'QA/QC Tech',
-  fortress_read_only: 'Fortress Read-Only',
-  client_user: 'Client User',
-  third_party_inspector: 'Third-Party Inspector',
-}
+import { roleLabel } from '@/lib/domain/roles'
+import { NotificationBell } from '@/components/NotificationBell'
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
   // Null only on a page that is itself public; the middleware redirects
@@ -29,9 +22,12 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
           <div className="ml-auto flex items-center gap-3">
             {viewer && <>
+              <NotificationBell />
               <div className="hidden text-right sm:block">
                 <div className="text-xs font-medium leading-tight">{viewer.fullName}</div>
-                <div className="text-2xs leading-tight text-ink-muted">{ROLE_LABELS[viewer.role]}</div>
+                {/* The capability table's label, not a fourth hand-written
+                    copy of the role names. */}
+                <div className="text-2xs leading-tight text-ink-muted">{roleLabel(viewer.role)}</div>
               </div>
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-raised text-2xs font-semibold text-ink-secondary">
                 {viewer.fullName.split(' ').map((p) => p[0]).join('').slice(0, 2)}
