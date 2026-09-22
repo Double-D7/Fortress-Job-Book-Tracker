@@ -653,6 +653,76 @@ export interface CoatingInspection extends EnteredRecord {
   notes?: string | null
 }
 
+/**
+ * FDS-JBMP-001 §10 — Three-Tier Verification.
+ *
+ * Tier 1 is the Custodian on their own book; Tier 2 is a different
+ * Custodian at JB-3 or above, and is the only scored tier; Tier 3 is the
+ * QA/QC Manager at Gate 4. The rules live in `domain/audits.ts`.
+ */
+export type AuditTier = 'tier_1_self' | 'tier_2_peer' | 'tier_3_manager'
+export type AuditOutcome = 'pass' | 'fail' | 'in_progress'
+/** §11's three defect classes, as an audit records them. */
+export type FindingClass = 'critical' | 'major' | 'minor'
+
+export interface JobBookAudit {
+  id: string
+  jobBookId: string
+  tier: AuditTier
+  /** Attempts are rows, not edits. A book that passed on the third try
+   *  did not pass the way one that passed first time did. */
+  attempt: number
+  auditorId?: string | null
+  scheduledFor?: IsoDate | null
+  startedAt?: string | null
+  completedAt?: string | null
+  outcome: AuditOutcome
+  /** 0–100. Null for Tiers 1 and 3, which are counted and signed rather
+   *  than scored, and for an audit still in progress. */
+  score?: number | null
+  /** Which sampling table produced `sampleSize`. A sample size with no
+   *  stated basis is a number somebody picked. */
+  samplePlan?: string | null
+  lotSize?: number | null
+  sampleSize?: number | null
+  /** §7 Gate 4: "at double sample size". */
+  doubleSample: boolean
+  notes?: string | null
+}
+
+export interface AuditFinding {
+  id: string
+  auditId: string
+  classification: FindingClass
+  sectionNumber?: string | null
+  summary: string
+  detail?: string | null
+  /** §11.5. A finding with no due date cannot be past due. */
+  dueAt?: IsoDate | null
+  resolvedAt?: string | null
+  resolvedBy?: string | null
+  resolution?: string | null
+}
+
+/** §10.4, form FDS-JB-F07. Carries the figures as they stood at
+ *  signature, because certifying today's numbers certifies nothing. */
+export interface CompletenessCertification {
+  jobBookId: string
+  certifiedBy: string
+  certifiedAt: string
+  completionPct: number
+  sectionsTotal: number
+  sectionsApproved: number
+  openCritical: number
+  openMajor: number
+  tier2AuditId?: string | null
+  tier3AuditId?: string | null
+  statement?: string | null
+  revokedAt?: string | null
+  revokedBy?: string | null
+  revokedReason?: string | null
+}
+
 export interface ComplianceFlag {
   id: string
   jobBookId: string
@@ -711,6 +781,21 @@ export interface JobBookBundle {
    * Collapsing the two would let a gate pass on a question nobody asked.
    */
   complianceFlags?: ComplianceFlag[]
+  /**
+   * The §10 audit history, where the caller has loaded it.
+   *
+   * Undefined and empty differ here for the same reason they differ on
+   * the NCR register. Five gate criteria across G1, G2 and G4 ask about
+   * audits, and an unloaded history must report indeterminate rather
+   * than "no audits, therefore none were required".
+   */
+  audits?: JobBookAudit[]
+  auditFindings?: AuditFinding[]
+  /**
+   * §10.4, form FDS-JB-F07. Present once the QA/QC Manager has signed.
+   * "No job book leaves Fortress without this signature."
+   */
+  completenessCertification?: CompletenessCertification | null
   /**
    * True once this bundle has been reduced for an external reader.
    *

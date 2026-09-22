@@ -125,6 +125,21 @@ export const COLUMNS = {
     'id', 'full_name', 'initials', 'employer', 'classification', 'active',
     'entered_at', 'entry_source',
   ],
+  job_book_audit: [
+    'id', 'job_book_id', 'tier', 'attempt', 'auditor_id', 'scheduled_for',
+    'started_at', 'completed_at', 'outcome', 'score', 'sample_plan',
+    'lot_size', 'sample_size', 'double_sample', 'notes', 'created_by',
+  ],
+  audit_finding: [
+    'id', 'audit_id', 'classification', 'section_number', 'summary', 'detail',
+    'due_at', 'resolved_at', 'resolved_by', 'resolution',
+  ],
+  completeness_certification: [
+    'job_book_id', 'certified_by', 'certified_at', 'completion_pct',
+    'sections_total', 'sections_approved', 'open_critical', 'open_major',
+    'tier_2_audit_id', 'tier_3_audit_id', 'statement',
+    'revoked_at', 'revoked_by', 'revoked_reason',
+  ],
   timeliness_period: [
     'id', 'job_book_id', 'period_start', 'period_end', 'within_standard',
     'total_measured', 'unmeasurable', 'rate_pct', 'computed_at', 'escalated_at',

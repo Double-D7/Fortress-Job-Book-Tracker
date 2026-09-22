@@ -24,6 +24,7 @@
  */
 
 import { certValidOn } from './certificates'
+import { selfAuditsDue, summarizeAudits } from './audits'
 import { entryTimeliness } from './timeliness'
 import { qualifiedOn } from './welders'
 import { scoreBook } from './scoring'
@@ -897,7 +898,7 @@ function gate4(
           'g4.tier3',
           G,
           'Tier 3 QA/QC Manager verification performed and documented.',
-          'No Tier 3 verification is recorded for this book. The three-tier audit model of §10 is not yet implemented in the application.',
+          'No Tier 3 QA/QC Manager verification is recorded for this book, or the §10 audit history was not loaded.',
         ),
   )
 
@@ -937,7 +938,7 @@ function gate4(
           'g4.completeness_cert',
           G,
           'Completeness Certification signed by the QA/QC Manager.',
-          'Form FDS-JB-F07 is not yet implemented in the application. §10.4: "No job book leaves Fortress without this signature."',
+          'No Completeness Certification (form FDS-JB-F07) is on file for this book, or the certification history was not loaded. §10.4: "No job book leaves Fortress without this signature."',
         ),
   )
 
@@ -1039,7 +1040,7 @@ function selfAuditCriterion(gate: GateId, ctx: GateContext): CriterionResult {
       `${gate.toLowerCase()}.self_audit`,
       gate,
       text,
-      'The Tier 1 self-audit schedule of §10 is not yet implemented in the application.',
+      'The §10 audit history was not loaded for this book, so the self-audit schedule cannot be checked.',
     )
   }
   const done = ctx.selfAuditsPerformed ?? 0
@@ -1065,7 +1066,7 @@ function peerAuditCriterion(
       id,
       gate,
       text,
-      'No Tier 2 peer audit is recorded for this book. The three-tier audit model of §10 is not yet implemented in the application.',
+      'No completed Tier 2 peer audit is recorded for this book, or the §10 audit history was not loaded.',
     )
   }
   const criticals = ctx.latestPeerAuditCriticals ?? 0
@@ -1212,13 +1213,68 @@ export const GATE_META: Record<GateId, { title: string; when: string }> = {
 
 export const GATE_ORDER: GateId[] = ['G0', 'G1', 'G2', 'G3', 'G4', 'G5']
 
+/**
+ * Fill the §10 audit facts from the bundle's own audit history.
+ *
+ * Derived rather than required from the caller, for the same reason
+ * `entryTimelinessRate` is: the answer is in the book, and making every
+ * call site assemble it by hand is how a criterion ends up evaluated
+ * against nothing on one page and against the truth on another. An
+ * explicit value in `ctx` still wins, because a gate is sometimes read
+ * against a period rather than against the whole history.
+ *
+ * A bundle with no `audits` key at all leaves every field undefined, and
+ * the criteria report indeterminate — "the history was not loaded" is
+ * not "no audits were performed".
+ */
+function withAuditFacts(
+  bundle: JobBookBundle,
+  ctx: GateContext,
+  asOf: IsoDate,
+): GateContext {
+  let out = ctx
+
+  if (bundle.audits) {
+    const summary = summarizeAudits(bundle.audits, bundle.auditFindings ?? [])
+    out = {
+      ...out,
+      selfAuditsDue: out.selfAuditsDue ?? selfAuditsDue(bundle, asOf) ?? undefined,
+      selfAuditsPerformed: out.selfAuditsPerformed ?? summary.selfAuditsPerformed,
+      peerAuditsPerformed: out.peerAuditsPerformed ?? summary.peerAuditsPerformed,
+      latestPeerAuditScore: out.latestPeerAuditScore ?? summary.latestPeerAuditScore,
+      latestPeerAuditCriticals:
+        out.latestPeerAuditCriticals ?? summary.latestPeerAuditCriticals,
+      tier3VerifiedAt: out.tier3VerifiedAt ?? summary.tier3VerifiedAt,
+    }
+  }
+
+  // The certification is loaded independently of the audit history, so a
+  // book can carry one without the other. `undefined` still means "not
+  // loaded"; `null` means "loaded, and this book has none".
+  if (bundle.completenessCertification !== undefined) {
+    const cert = bundle.completenessCertification
+    out = {
+      ...out,
+      completenessCertifiedAt:
+        out.completenessCertifiedAt ??
+        // A withdrawn certification is not a certification. §10.4 is a
+        // signature that can be taken back, and reading a revoked one as
+        // current would let a book leave on a signature somebody retracted.
+        (cert && !cert.revokedAt ? cert.certifiedAt : null),
+    }
+  }
+
+  return out
+}
+
 export function evaluateGate(
   gate: GateId,
   bundle: JobBookBundle,
-  ctx: GateContext = {},
+  rawCtx: GateContext = {},
 ): GateEvaluation {
-  const asOf = ctx.asOf ?? today()
+  const asOf = rawCtx.asOf ?? today()
   const completionPct = scoreBook(bundle).overallPct
+  const ctx = withAuditFacts(bundle, rawCtx, asOf)
 
   const criteria =
     gate === 'G0'

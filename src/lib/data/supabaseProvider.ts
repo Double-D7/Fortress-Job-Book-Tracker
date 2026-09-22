@@ -70,6 +70,10 @@ const BOOK_TABLES = [
   // "zero open NCRs past due date", and a criterion that cannot see the
   // register reports indeterminate rather than compliant.
   { table: 'compliance_flag',   key: 'complianceFlags',       live: false },
+  // The §10 audit history. Loaded with the book for the same reason the
+  // NCR register is: five gate criteria ask about audits, and one that
+  // cannot see the history reports indeterminate rather than compliant.
+  { table: 'job_book_audit',    key: 'audits',                live: false },
 ] as const
 
 /** Tables shared across books rather than owned by one. */
@@ -200,6 +204,20 @@ export class SupabaseProvider implements DataProvider {
       }),
     )
 
+    // Findings hang off the audit, not the book, so they cannot ride in
+    // BOOK_TABLES. Fetched by audit id rather than by a join so an empty
+    // audit history costs no query at all.
+    const auditIds = (
+      (Object.fromEntries(scoped).audits as { id: string }[] | undefined) ?? []
+    ).map((a) => a.id)
+    const [findings, certification] = await Promise.all([
+      auditIds.length
+        ? supabase.from('audit_finding').select('*').in('audit_id', auditIds)
+        : Promise.resolve({ data: [] as unknown[] }),
+      supabase.from('completeness_certification').select('*')
+        .eq('job_book_id', jobBookId).maybeSingle(),
+    ])
+
     const bundle = {
       book: rowToDomain<JobBookBundle['book']>(book),
       project: project ? rowToDomain<JobBookBundle['project']>(project)
@@ -208,6 +226,14 @@ export class SupabaseProvider implements DataProvider {
         : { id: '', name: 'Unknown operator' },
       sectionDefinitions: rowsToDomain<JobBookBundle['sectionDefinitions'][number]>(defs),
       ...Object.fromEntries([...scoped, ...global]),
+      auditFindings: rowsToDomain(findings.data as Record<string, unknown>[] | null),
+      // `null` rather than `undefined`: the query ran, and this book has
+      // no certification. The gate engine reads the two differently.
+      completenessCertification: certification.data
+        ? rowToDomain<NonNullable<JobBookBundle['completenessCertification']>>(
+            certification.data as Record<string, unknown>,
+          )
+        : null,
     } as JobBookBundle
 
     // Stamped before redaction, never after: the cached percentage a client

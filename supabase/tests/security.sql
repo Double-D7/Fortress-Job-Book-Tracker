@@ -442,6 +442,150 @@ do $$ begin
 end $$;
 
 \echo ''
+\echo 'A peer audit is independent, or it is not a peer audit'
+do $$
+declare v_audit uuid;
+begin
+  -- 55555555 is the manager; bbbbbbbb-…-0003 is the Custodian of book 1,
+  -- named by the Custodian block above. §10.2 puts a SECOND pair of eyes
+  -- on the work, and an audit signed by the book's own Custodian is the
+  -- first pair again. Checked before competency, so a Custodian who IS
+  -- senior enough is still refused for the right reason.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (record_peer_audit(
+           'dddddddd-0000-0000-0000-000000000001',
+           'bbbbbbbb-0000-0000-0000-000000000003',
+           95, 100, 20)).id::text$q$)
+      like 'ERROR%own Custodian%',
+    'a Custodian cannot peer-audit their own book');
+
+  -- Competency is checked against the AUDITOR, not the caller, and a null
+  -- level is "not assessed" rather than "qualified" — the same call 0015
+  -- made for the Custodian. bbbbbbbb-…-0004 is the admin, who is
+  -- independent of this book and starts with no assessed level.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (record_peer_audit(
+           'dddddddd-0000-0000-0000-000000000001',
+           'bbbbbbbb-0000-0000-0000-000000000004',
+           95, 100, 20)).id::text$q$)
+      like 'ERROR%JB-3 or above%',
+    'an auditor below JB-3, or unassessed, is refused');
+
+  update app_user set competency_level = 'JB-2'
+   where id = 'bbbbbbbb-0000-0000-0000-000000000004';
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (record_peer_audit(
+           'dddddddd-0000-0000-0000-000000000001',
+           'bbbbbbbb-0000-0000-0000-000000000004',
+           95, 100, 20)).id::text$q$)
+      like 'ERROR%JB-3 or above%',
+    'JB-2 is enough to hold a book, and not enough to audit one');
+
+  -- Raise the same person to JB-3 and the identical call succeeds.
+  update app_user set competency_level = 'JB-3'
+   where id = 'bbbbbbbb-0000-0000-0000-000000000004';
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (record_peer_audit(
+           'dddddddd-0000-0000-0000-000000000001',
+           'bbbbbbbb-0000-0000-0000-000000000004',
+           95, 100, 20, 'ANSI/ASQ Z1.4 Level II normal, code letter F')).id::text$q$)
+      not like 'ERROR%',
+    'an independent JB-3 auditor may record one');
+
+  select id into v_audit from job_book_audit
+   where job_book_id = 'dddddddd-0000-0000-0000-000000000001'
+     and tier = 'tier_2_peer' order by attempt desc limit 1;
+
+  -- Only Tier 2 is scored. A score on Tier 1 or 3 is a category error the
+  -- gate engine would then read as a peer-audit result.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into job_book_audit
+           (job_book_id, tier, auditor_id, outcome, completed_at, score)
+         values ('dddddddd-0000-0000-0000-000000000001','tier_1_self',
+                 'bbbbbbbb-0000-0000-0000-000000000003','pass',now(),88)$q$),
+    'a Tier 1 self audit cannot carry a score');
+
+  -- A finished peer audit with no score reads to the gate engine as "no
+  -- audit recorded", which is far more forgiving than the truth.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$insert into job_book_audit
+           (job_book_id, tier, attempt, auditor_id, outcome, completed_at)
+         values ('dddddddd-0000-0000-0000-000000000001','tier_2_peer',99,
+                 'bbbbbbbb-0000-0000-0000-000000000004','pass',now())$q$),
+    'a completed peer audit must carry a score');
+
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      format($q$insert into job_book_audit
+                 (job_book_id, tier, attempt, auditor_id, outcome,
+                  completed_at, score, lot_size, sample_size)
+               values ('dddddddd-0000-0000-0000-000000000001','tier_2_peer',98,
+                       'bbbbbbbb-0000-0000-0000-000000000004','pass',now(),95,10,50)$q$)),
+    'a sample cannot be larger than the lot it came from');
+
+  -- A resolved finding says how. Otherwise "resolved" is a checkbox.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      format($q$insert into audit_finding
+                 (audit_id, classification, summary, resolved_at)
+               values (%L,'major','Heat register unreconciled',now())$q$, v_audit)),
+    'a finding cannot be resolved without saying how');
+
+  -- A client reads the book, not the minutes of us checking ourselves.
+  perform assert(
+    as_user('11111111-1111-1111-1111-111111111111',
+      'select count(*)::text from job_book_audit') = '0',
+    'a client user reads no audit, even on their own book');
+end $$;
+
+\echo ''
+\echo 'The Completeness Certification is a signature, not a checkbox'
+do $$ begin
+  -- §10.4 names the QA/QC Manager. A tech cannot sign a book out.
+  perform assert(
+    as_user('33333333-3333-3333-3333-333333333333',
+      $q$select (certify_completeness(
+           'dddddddd-0000-0000-0000-000000000001',100,22,22,0,0)).job_book_id::text$q$)
+      like 'ERROR%manager%',
+    'a tech cannot sign the Completeness Certification');
+
+  -- §7 Gate 4: zero open Critical, zero open Major.
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (certify_completeness(
+           'dddddddd-0000-0000-0000-000000000001',100,22,22,1,0)).job_book_id::text$q$)
+      like 'ERROR%Critical%',
+    'a book with an open Critical finding cannot be certified');
+
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      $q$select (certify_completeness(
+           'dddddddd-0000-0000-0000-000000000001',100,22,22,0,0)).job_book_id::text$q$)
+      = 'dddddddd-0000-0000-0000-000000000001',
+    'a manager signing a clean book is recorded');
+
+  -- Withdrawing is allowed. Withdrawing silently is not: the reason is
+  -- what tells the next reader why the book came back.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      $q$update completeness_certification set revoked_at = now()
+          where job_book_id = 'dddddddd-0000-0000-0000-000000000001'$q$),
+    'a certification cannot be withdrawn without a reason');
+
+  -- Addressed TO the client, unlike the audits behind it.
+  perform assert(
+    as_user('11111111-1111-1111-1111-111111111111',
+      'select count(*)::text from completeness_certification') = '1',
+    'while the client may read the certification on their own book');
+end $$;
+
+\echo ''
 \echo 'A section cannot claim to be both checked-and-empty and full'
 do $$
 declare v_id uuid;
