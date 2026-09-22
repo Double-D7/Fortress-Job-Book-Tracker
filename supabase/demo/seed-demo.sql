@@ -34,35 +34,37 @@ insert into job_assignment (job_book_id, user_id, assigned_role) values
 on conflict do nothing;
 insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,
   computed_pct, collected_pct, computed_at, expected_count, expected_by,
-  ready_for_review_by, ready_for_review_at, approved_by, approved_at)
+  ready_for_review_by, ready_for_review_at, approved_by, approved_at,
+  ingestion_status)
 select v.id::uuid, 'd0d0d0d0-e488-17c7-c197-6ed6e2c656b2', sd.id, v.status::section_status, v.na_reason,
        v.pct::numeric, v.collected::numeric, now(), v.expected::int,
        v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,
-       v.approved_by::uuid, v.approved_at::timestamptz
+       v.approved_by::uuid, v.approved_at::timestamptz,
+       v.ingestion::ingestion_status
   from (values
-    ('d0d0d0d0-20f6-8662-9367-e47919f037e6', '1', 'in_progress', null, 0, 0, 1, '2027-02-24', null, null, null, null),
-    ('d0d0d0d0-e6a7-ee80-b0a2-74b075358a45', '2', 'in_progress', null, 100, 100, 2, '2027-02-03', null, null, null, null),
-    ('d0d0d0d0-4be1-d5ec-80ed-4dfa054d8459', '3', 'in_progress', null, 100, 100, 1, '2027-02-02', null, null, null, null),
-    ('d0d0d0d0-02e1-ec1b-7691-d1ba27c39add', '4', 'in_progress', null, 100, 100, 1, '2027-01-02', null, null, null, null),
-    ('d0d0d0d0-4648-84d2-e9fd-bd5ce807a845', '5', 'in_progress', null, 100, 100, 1, '2027-02-06', null, null, null, null),
-    ('d0d0d0d0-3af4-d141-2e6f-67c2d461e03f', '6', 'in_progress', null, 100, 100, null, '2027-02-25', null, null, null, null),
-    ('d0d0d0d0-db83-2a72-7794-994bf787af67', '7', 'in_progress', null, 100, 100, null, '2027-01-27', null, null, null, null),
-    ('d0d0d0d0-bc42-e9eb-1899-7484262cbcbe', '8', 'in_progress', null, 100, 100, null, '2026-12-30', null, null, null, null),
-    ('d0d0d0d0-dd05-bcd4-11be-285b4552bd48', '9', 'in_progress', null, 100, 100, 4, '2026-12-31', null, null, null, null),
-    ('d0d0d0d0-e4ec-6c75-85d0-0279154e9fdb', '10', 'in_progress', null, 100, 100, 1, '2027-01-30', null, null, null, null),
-    ('d0d0d0d0-6e5f-dd28-0b9e-24b55dc583a8', '11', 'in_progress', null, 0, 0, 8, '2027-02-05', null, null, null, null),
-    ('d0d0d0d0-33ae-2c3d-e5b2-e61c49cc7a10', '12', 'in_progress', null, 12.5, 12.5, 8, '2027-01-23', null, null, null, null),
-    ('d0d0d0d0-e3d0-47a6-ecaa-281fde22fe15', '13', 'in_progress', null, 0, 0, null, '2027-01-04', null, null, null, null),
-    ('d0d0d0d0-b229-5423-6334-8439726e90cc', '14', 'in_progress', null, 0, 0, 6, '2027-01-05', null, null, null, null),
-    ('d0d0d0d0-785f-190c-d6e2-9b9802ee671d', '15', 'in_progress', null, 20, 20, 5, '2027-02-26', null, null, null, null),
-    ('d0d0d0d0-96d5-2681-8d3d-6d731f4469ae', '16', 'in_progress', null, 100, 100, 1, '2027-02-06', null, null, null, null),
-    ('d0d0d0d0-e1d2-deec-ce41-3bf69aabf7e8', '17', 'in_progress', null, 0, 0, 3, '2027-01-16', null, null, null, null),
-    ('d0d0d0d0-f6d2-66a7-5e36-9b40841e3836', '18', 'in_progress', null, 0, 0, 4, '2027-01-19', null, null, null, null),
-    ('d0d0d0d0-3b0e-858c-4a04-02116367c796', '19-22', 'in_progress', null, 0, 0, 1, '2027-01-25', null, null, null, null),
-    ('d0d0d0d0-2e5f-bb31-3fe2-d6b6bd9db8e7', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2027-01-17', null, null, null, null),
-    ('d0d0d0d0-3a8f-daa8-7b4c-35b32e096206', 'S1', 'in_progress', null, 0, 0, null, '2027-01-04', null, null, null, null)
+    ('d0d0d0d0-20f6-8662-9367-e47919f037e6', '1', 'in_progress', null, 0, 0, 1, '2027-02-24', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e6a7-ee80-b0a2-74b075358a45', '2', 'in_progress', null, 100, 100, 2, '2027-02-03', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4be1-d5ec-80ed-4dfa054d8459', '3', 'in_progress', null, 100, 100, 1, '2027-02-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-02e1-ec1b-7691-d1ba27c39add', '4', 'in_progress', null, 100, 100, 1, '2027-01-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4648-84d2-e9fd-bd5ce807a845', '5', 'in_progress', null, 100, 100, 1, '2027-02-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3af4-d141-2e6f-67c2d461e03f', '6', 'in_progress', null, 100, 100, null, '2027-02-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-db83-2a72-7794-994bf787af67', '7', 'in_progress', null, 100, 100, null, '2027-01-27', null, null, null, null, 'imported'),
+    ('d0d0d0d0-bc42-e9eb-1899-7484262cbcbe', '8', 'in_progress', null, 100, 100, null, '2026-12-30', null, null, null, null, 'imported'),
+    ('d0d0d0d0-dd05-bcd4-11be-285b4552bd48', '9', 'in_progress', null, 100, 100, 4, '2026-12-31', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e4ec-6c75-85d0-0279154e9fdb', '10', 'in_progress', null, 100, 100, 1, '2027-01-30', null, null, null, null, 'imported'),
+    ('d0d0d0d0-6e5f-dd28-0b9e-24b55dc583a8', '11', 'in_progress', null, 0, 0, 8, '2027-02-05', null, null, null, null, 'imported'),
+    ('d0d0d0d0-33ae-2c3d-e5b2-e61c49cc7a10', '12', 'in_progress', null, 12.5, 12.5, 8, '2027-01-23', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e3d0-47a6-ecaa-281fde22fe15', '13', 'in_progress', null, 0, 0, null, '2027-01-04', null, null, null, null, 'imported'),
+    ('d0d0d0d0-b229-5423-6334-8439726e90cc', '14', 'in_progress', null, 0, 0, 6, '2027-01-05', null, null, null, null, 'imported'),
+    ('d0d0d0d0-785f-190c-d6e2-9b9802ee671d', '15', 'in_progress', null, 20, 20, 5, '2027-02-26', null, null, null, null, 'imported'),
+    ('d0d0d0d0-96d5-2681-8d3d-6d731f4469ae', '16', 'in_progress', null, 100, 100, 1, '2027-02-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e1d2-deec-ce41-3bf69aabf7e8', '17', 'in_progress', null, 0, 0, 3, '2027-01-16', null, null, null, null, 'imported'),
+    ('d0d0d0d0-f6d2-66a7-5e36-9b40841e3836', '18', 'in_progress', null, 0, 0, 4, '2027-01-19', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3b0e-858c-4a04-02116367c796', '19-22', 'in_progress', null, 0, 0, 1, '2027-01-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-2e5f-bb31-3fe2-d6b6bd9db8e7', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2027-01-17', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3a8f-daa8-7b4c-35b32e096206', 'S1', 'in_progress', null, 0, 0, null, '2027-01-04', null, null, null, null, 'imported')
   ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,
-        ready_by, ready_at, approved_by, approved_at)
+        ready_by, ready_at, approved_by, approved_at, ingestion)
   join section_definition sd on sd.section_number = v.section_number
   join book_template bt on bt.id = sd.book_template_id and bt.book_type = 'flowline'
 on conflict (id) do nothing;
@@ -156,35 +158,37 @@ insert into job_assignment (job_book_id, user_id, assigned_role) values
 on conflict do nothing;
 insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,
   computed_pct, collected_pct, computed_at, expected_count, expected_by,
-  ready_for_review_by, ready_for_review_at, approved_by, approved_at)
+  ready_for_review_by, ready_for_review_at, approved_by, approved_at,
+  ingestion_status)
 select v.id::uuid, 'd0d0d0d0-11c4-9d67-0910-4f8296208107', sd.id, v.status::section_status, v.na_reason,
        v.pct::numeric, v.collected::numeric, now(), v.expected::int,
        v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,
-       v.approved_by::uuid, v.approved_at::timestamptz
+       v.approved_by::uuid, v.approved_at::timestamptz,
+       v.ingestion::ingestion_status
   from (values
-    ('d0d0d0d0-543d-e39d-fe01-3cfc0a69a28e', '1', 'in_progress', null, 0, 0, 1, '2027-01-04', null, null, null, null),
-    ('d0d0d0d0-3bc0-7d3a-d0ce-807e4ed342d5', '2', 'in_progress', null, 100, 100, 2, '2026-11-30', null, null, null, null),
-    ('d0d0d0d0-642b-f5b0-d7cd-e70c338e81e6', '3', 'in_progress', null, 100, 100, 1, '2026-12-04', null, null, null, null),
-    ('d0d0d0d0-2ecb-5c0b-73dc-fc65226f83d5', '4', 'in_progress', null, 100, 100, 1, '2026-12-14', null, null, null, null),
-    ('d0d0d0d0-d191-a293-d4e2-e86a3d7ffd87', '5', 'in_progress', null, 100, 100, 1, '2026-12-07', null, null, null, null),
-    ('d0d0d0d0-f4fc-4552-8a2c-f8e7ba7d3e7f', '6', 'in_progress', null, 100, 100, null, '2027-01-01', null, null, null, null),
-    ('d0d0d0d0-aedf-5c9f-c81c-3370641bd0f6', '7', 'in_progress', null, 100, 100, null, '2026-12-17', null, null, null, null),
-    ('d0d0d0d0-4fd8-756a-31ca-362467158b49', '8', 'in_progress', null, 100, 100, null, '2027-01-05', null, null, null, null),
-    ('d0d0d0d0-7584-ced2-b391-d0a0d2068ed5', '9', 'in_progress', null, 100, 100, 4, '2026-12-08', null, null, null, null),
-    ('d0d0d0d0-c9fd-e2eb-d63c-caa5957d5f8b', '10', 'in_progress', null, 100, 100, 1, '2027-01-27', null, null, null, null),
-    ('d0d0d0d0-be6d-eb22-462d-ccac5b770439', '11', 'in_progress', null, 0, 0, 10, '2027-01-16', null, null, null, null),
-    ('d0d0d0d0-21f6-19be-bd71-2ebd870949c8', '12', 'in_progress', null, 30, 30, 10, '2026-12-25', null, null, null, null),
-    ('d0d0d0d0-e4ca-60a5-7ff9-56d271359007', '13', 'in_progress', null, 100, 100, null, '2026-12-02', null, null, null, null),
-    ('d0d0d0d0-ee65-2d41-6c5b-9702a7a0fb12', '14', 'in_progress', null, 28.57142857142857, 28.57142857142857, 7, '2027-01-25', null, null, null, null),
-    ('d0d0d0d0-c119-76a8-ae00-8cf31df707bb', '15', 'in_progress', null, 40, 40, 5, '2026-12-17', null, null, null, null),
-    ('d0d0d0d0-33fe-b555-94a3-7f7e936c3b5f', '16', 'in_progress', null, 100, 100, 1, '2027-01-01', null, null, null, null),
-    ('d0d0d0d0-4ce6-7ad0-2490-9bb8afa2c7bf', '17', 'in_progress', null, 33.33333333333333, 33.33333333333333, 3, '2026-12-29', null, null, null, null),
-    ('d0d0d0d0-3abe-9a3f-4e17-515721261076', '18', 'in_progress', null, 25, 25, 4, '2026-12-20', null, null, null, null),
-    ('d0d0d0d0-d4be-9c40-3d81-71c4164032a4', '19-22', 'in_progress', null, 0, 0, 1, '2027-01-10', null, null, null, null),
-    ('d0d0d0d0-1b93-cd8f-f613-fbf93d8010eb', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2027-01-26', null, null, null, null),
-    ('d0d0d0d0-4d05-3003-ec8b-e216eeb1748c', 'S1', 'in_progress', null, 0, 0, null, '2026-12-25', null, null, null, null)
+    ('d0d0d0d0-543d-e39d-fe01-3cfc0a69a28e', '1', 'in_progress', null, 0, 0, 1, '2027-01-04', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3bc0-7d3a-d0ce-807e4ed342d5', '2', 'in_progress', null, 100, 100, 2, '2026-11-30', null, null, null, null, 'imported'),
+    ('d0d0d0d0-642b-f5b0-d7cd-e70c338e81e6', '3', 'in_progress', null, 100, 100, 1, '2026-12-04', null, null, null, null, 'imported'),
+    ('d0d0d0d0-2ecb-5c0b-73dc-fc65226f83d5', '4', 'in_progress', null, 100, 100, 1, '2026-12-14', null, null, null, null, 'imported'),
+    ('d0d0d0d0-d191-a293-d4e2-e86a3d7ffd87', '5', 'in_progress', null, 100, 100, 1, '2026-12-07', null, null, null, null, 'imported'),
+    ('d0d0d0d0-f4fc-4552-8a2c-f8e7ba7d3e7f', '6', 'in_progress', null, 100, 100, null, '2027-01-01', null, null, null, null, 'imported'),
+    ('d0d0d0d0-aedf-5c9f-c81c-3370641bd0f6', '7', 'in_progress', null, 100, 100, null, '2026-12-17', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4fd8-756a-31ca-362467158b49', '8', 'in_progress', null, 100, 100, null, '2027-01-05', null, null, null, null, 'imported'),
+    ('d0d0d0d0-7584-ced2-b391-d0a0d2068ed5', '9', 'in_progress', null, 100, 100, 4, '2026-12-08', null, null, null, null, 'imported'),
+    ('d0d0d0d0-c9fd-e2eb-d63c-caa5957d5f8b', '10', 'in_progress', null, 100, 100, 1, '2027-01-27', null, null, null, null, 'imported'),
+    ('d0d0d0d0-be6d-eb22-462d-ccac5b770439', '11', 'in_progress', null, 0, 0, 10, '2027-01-16', null, null, null, null, 'imported'),
+    ('d0d0d0d0-21f6-19be-bd71-2ebd870949c8', '12', 'in_progress', null, 30, 30, 10, '2026-12-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e4ca-60a5-7ff9-56d271359007', '13', 'in_progress', null, 100, 100, null, '2026-12-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-ee65-2d41-6c5b-9702a7a0fb12', '14', 'in_progress', null, 28.57142857142857, 28.57142857142857, 7, '2027-01-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-c119-76a8-ae00-8cf31df707bb', '15', 'in_progress', null, 40, 40, 5, '2026-12-17', null, null, null, null, 'imported'),
+    ('d0d0d0d0-33fe-b555-94a3-7f7e936c3b5f', '16', 'in_progress', null, 100, 100, 1, '2027-01-01', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4ce6-7ad0-2490-9bb8afa2c7bf', '17', 'in_progress', null, 33.33333333333333, 33.33333333333333, 3, '2026-12-29', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3abe-9a3f-4e17-515721261076', '18', 'in_progress', null, 25, 25, 4, '2026-12-20', null, null, null, null, 'imported'),
+    ('d0d0d0d0-d4be-9c40-3d81-71c4164032a4', '19-22', 'in_progress', null, 0, 0, 1, '2027-01-10', null, null, null, null, 'imported'),
+    ('d0d0d0d0-1b93-cd8f-f613-fbf93d8010eb', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2027-01-26', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4d05-3003-ec8b-e216eeb1748c', 'S1', 'in_progress', null, 0, 0, null, '2026-12-25', null, null, null, null, 'imported')
   ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,
-        ready_by, ready_at, approved_by, approved_at)
+        ready_by, ready_at, approved_by, approved_at, ingestion)
   join section_definition sd on sd.section_number = v.section_number
   join book_template bt on bt.id = sd.book_template_id and bt.book_type = 'flowline'
 on conflict (id) do nothing;
@@ -299,38 +303,40 @@ insert into job_assignment (job_book_id, user_id, assigned_role) values
 on conflict do nothing;
 insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,
   computed_pct, collected_pct, computed_at, expected_count, expected_by,
-  ready_for_review_by, ready_for_review_at, approved_by, approved_at)
+  ready_for_review_by, ready_for_review_at, approved_by, approved_at,
+  ingestion_status)
 select v.id::uuid, 'd0d0d0d0-622e-a024-8832-27f6ce2622eb', sd.id, v.status::section_status, v.na_reason,
        v.pct::numeric, v.collected::numeric, now(), v.expected::int,
        v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,
-       v.approved_by::uuid, v.approved_at::timestamptz
+       v.approved_by::uuid, v.approved_at::timestamptz,
+       v.ingestion::ingestion_status
   from (values
-    ('d0d0d0d0-9ff6-bc5a-2c9f-9a97d0f187eb', '1', 'in_progress', null, 100, 100, 1, '2026-10-26', null, null, null, null),
-    ('d0d0d0d0-7e90-6d0d-6e7c-b3a68397fa4c', '2', 'in_progress', null, 100, 100, 2, '2026-11-11', null, null, null, null),
-    ('d0d0d0d0-14f1-114a-5f14-4218517dd547', '3', 'in_progress', null, 100, 100, 1, '2026-11-08', null, null, null, null),
-    ('d0d0d0d0-b6d6-4708-fb74-9a6ba1a828ee', '4', 'in_progress', null, 100, 100, 1, '2026-10-03', null, null, null, null),
-    ('d0d0d0d0-80cc-6943-a7df-515a58a4407f', '5', 'in_progress', null, 100, 100, 1, '2026-10-15', null, null, null, null),
-    ('d0d0d0d0-f07b-c8cd-efd5-44024064030e', '6', 'in_progress', null, 100, 100, null, '2026-10-07', null, null, null, null),
-    ('d0d0d0d0-ce4e-7226-54ea-d9305c87cc92', '7', 'in_progress', null, 100, 100, null, '2026-11-07', null, null, null, null),
-    ('d0d0d0d0-9d99-0e53-1797-220912fb9a7b', '8', 'in_progress', null, 100, 100, null, '2026-10-25', null, null, null, null),
-    ('d0d0d0d0-3aca-e61a-c704-160558c614fd', '9', 'in_progress', null, 100, 100, 4, '2026-10-22', null, null, null, null),
-    ('d0d0d0d0-ef22-f2d0-f1e3-f78399656293', '10', 'in_progress', null, 100, 100, 1, '2026-11-23', null, null, null, null),
-    ('d0d0d0d0-4082-0344-4335-8762a671b1b3', '11', 'in_progress', null, 0, 0, 12, '2026-11-01', null, null, null, null),
-    ('d0d0d0d0-ed7c-4274-81e9-3eb3f0922694', '12', 'in_progress', null, 58.333333333333336, 58.333333333333336, 12, '2026-11-02', null, null, null, null),
-    ('d0d0d0d0-fcf8-b948-abe7-b07dc39ac4cf', '13', 'in_progress', null, 100, 100, null, '2026-11-06', null, null, null, null),
-    ('d0d0d0d0-6895-263f-932f-3c397b3374e2', '14', 'in_progress', null, 55.55555555555556, 55.55555555555556, 9, '2026-11-02', null, null, null, null),
-    ('d0d0d0d0-740d-076f-0526-bc16032bc801', '15', 'in_progress', null, 60, 60, 5, '2026-09-28', null, null, null, null),
-    ('d0d0d0d0-e269-d70d-5b47-a1d9806cad3d', '16', 'in_progress', null, 100, 100, 1, '2026-10-10', null, null, null, null),
-    ('d0d0d0d0-fb0a-9d6c-c0ac-788eed722870', '17', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-23', null, null, null, null),
-    ('d0d0d0d0-d63a-c4be-2d7b-57773788cab6', '18', 'in_progress', null, 50, 50, 4, '2026-11-02', null, null, null, null),
-    ('d0d0d0d0-ee6b-91c7-dfed-006003c1ecb2', '19', 'in_progress', null, 50, 50, 4, '2026-10-09', null, null, null, null),
-    ('d0d0d0d0-c2bc-3e71-032b-6ef7b56d159f', '20', 'in_progress', null, 100, 100, 1, '2026-10-06', null, null, null, null),
-    ('d0d0d0d0-b494-fc62-182e-2ac084fc0d0b', '21', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-10-08', null, null, null, null),
-    ('d0d0d0d0-6c99-5b76-de1b-95a3d31c7814', '22', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-27', null, null, null, null),
-    ('d0d0d0d0-2fef-a011-81f9-9b9f4b203dd7', '23', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-06', null, null, null, null),
-    ('d0d0d0d0-b9b4-cda8-8ff9-588225a687da', 'S1', 'in_progress', null, 0, 0, null, '2026-11-03', null, null, null, null)
+    ('d0d0d0d0-9ff6-bc5a-2c9f-9a97d0f187eb', '1', 'in_progress', null, 100, 100, 1, '2026-10-26', null, null, null, null, 'imported'),
+    ('d0d0d0d0-7e90-6d0d-6e7c-b3a68397fa4c', '2', 'in_progress', null, 100, 100, 2, '2026-11-11', null, null, null, null, 'imported'),
+    ('d0d0d0d0-14f1-114a-5f14-4218517dd547', '3', 'in_progress', null, 100, 100, 1, '2026-11-08', null, null, null, null, 'imported'),
+    ('d0d0d0d0-b6d6-4708-fb74-9a6ba1a828ee', '4', 'in_progress', null, 100, 100, 1, '2026-10-03', null, null, null, null, 'imported'),
+    ('d0d0d0d0-80cc-6943-a7df-515a58a4407f', '5', 'in_progress', null, 100, 100, 1, '2026-10-15', null, null, null, null, 'imported'),
+    ('d0d0d0d0-f07b-c8cd-efd5-44024064030e', '6', 'in_progress', null, 100, 100, null, '2026-10-07', null, null, null, null, 'imported'),
+    ('d0d0d0d0-ce4e-7226-54ea-d9305c87cc92', '7', 'in_progress', null, 100, 100, null, '2026-11-07', null, null, null, null, 'imported'),
+    ('d0d0d0d0-9d99-0e53-1797-220912fb9a7b', '8', 'in_progress', null, 100, 100, null, '2026-10-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-3aca-e61a-c704-160558c614fd', '9', 'in_progress', null, 100, 100, 4, '2026-10-22', null, null, null, null, 'imported'),
+    ('d0d0d0d0-ef22-f2d0-f1e3-f78399656293', '10', 'in_progress', null, 100, 100, 1, '2026-11-23', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4082-0344-4335-8762a671b1b3', '11', 'in_progress', null, 0, 0, 12, '2026-11-01', null, null, null, null, 'imported'),
+    ('d0d0d0d0-ed7c-4274-81e9-3eb3f0922694', '12', 'in_progress', null, 58.333333333333336, 58.333333333333336, 12, '2026-11-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-fcf8-b948-abe7-b07dc39ac4cf', '13', 'in_progress', null, 100, 100, null, '2026-11-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-6895-263f-932f-3c397b3374e2', '14', 'in_progress', null, 55.55555555555556, 55.55555555555556, 9, '2026-11-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-740d-076f-0526-bc16032bc801', '15', 'in_progress', null, 60, 60, 5, '2026-09-28', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e269-d70d-5b47-a1d9806cad3d', '16', 'in_progress', null, 100, 100, 1, '2026-10-10', null, null, null, null, 'imported'),
+    ('d0d0d0d0-fb0a-9d6c-c0ac-788eed722870', '17', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-23', null, null, null, null, 'imported'),
+    ('d0d0d0d0-d63a-c4be-2d7b-57773788cab6', '18', 'in_progress', null, 50, 50, 4, '2026-11-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-ee6b-91c7-dfed-006003c1ecb2', '19', 'in_progress', null, 50, 50, 4, '2026-10-09', null, null, null, null, 'imported'),
+    ('d0d0d0d0-c2bc-3e71-032b-6ef7b56d159f', '20', 'in_progress', null, 100, 100, 1, '2026-10-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-b494-fc62-182e-2ac084fc0d0b', '21', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-10-08', null, null, null, null, 'imported'),
+    ('d0d0d0d0-6c99-5b76-de1b-95a3d31c7814', '22', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-27', null, null, null, null, 'imported'),
+    ('d0d0d0d0-2fef-a011-81f9-9b9f4b203dd7', '23', 'in_progress', null, 66.66666666666666, 66.66666666666666, 3, '2026-11-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-b9b4-cda8-8ff9-588225a687da', 'S1', 'in_progress', null, 0, 0, null, '2026-11-03', null, null, null, null, 'imported')
   ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,
-        ready_by, ready_at, approved_by, approved_at)
+        ready_by, ready_at, approved_by, approved_at, ingestion)
   join section_definition sd on sd.section_number = v.section_number
   join book_template bt on bt.id = sd.book_template_id and bt.book_type = 'facility'
 on conflict (id) do nothing;
@@ -483,38 +489,40 @@ insert into job_assignment (job_book_id, user_id, assigned_role) values
 on conflict do nothing;
 insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,
   computed_pct, collected_pct, computed_at, expected_count, expected_by,
-  ready_for_review_by, ready_for_review_at, approved_by, approved_at)
+  ready_for_review_by, ready_for_review_at, approved_by, approved_at,
+  ingestion_status)
 select v.id::uuid, 'd0d0d0d0-2648-2e52-3c34-3503849e89c1', sd.id, v.status::section_status, v.na_reason,
        v.pct::numeric, v.collected::numeric, now(), v.expected::int,
        v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,
-       v.approved_by::uuid, v.approved_at::timestamptz
+       v.approved_by::uuid, v.approved_at::timestamptz,
+       v.ingestion::ingestion_status
   from (values
-    ('d0d0d0d0-8104-92f6-e60a-53be33d5a9b3', '1', 'in_progress', null, 100, 100, 1, '2026-07-17', null, null, null, null),
-    ('d0d0d0d0-cfd5-a243-d60b-5aa176a4666e', '2', 'in_progress', null, 100, 100, 2, '2026-08-21', null, null, null, null),
-    ('d0d0d0d0-7b8f-df96-e873-3cc7cb1194b2', '3', 'in_progress', null, 100, 100, 1, '2026-08-26', null, null, null, null),
-    ('d0d0d0d0-1105-2c28-94b7-691684cee91c', '4', 'in_progress', null, 100, 100, 1, '2026-08-04', null, null, null, null),
-    ('d0d0d0d0-36a2-522c-78fe-f116c151c51d', '5', 'in_progress', null, 100, 100, 1, '2026-07-22', null, null, null, null),
-    ('d0d0d0d0-0655-dfb1-5f77-f44b6d7e691f', '6', 'in_progress', null, 100, 100, null, '2026-08-25', null, null, null, null),
-    ('d0d0d0d0-4008-30f6-cb01-34350f5d1f24', '7', 'in_progress', null, 100, 100, null, '2026-08-07', null, null, null, null),
-    ('d0d0d0d0-826a-336f-ee67-66df47d9e1fe', '8', 'in_progress', null, 100, 100, null, '2026-07-15', null, null, null, null),
-    ('d0d0d0d0-2665-2e5c-e1cf-92c43f8e8d3c', '9', 'in_progress', null, 100, 100, 4, '2026-08-11', null, null, null, null),
-    ('d0d0d0d0-4b91-d407-bce2-19c5b88457cf', '10', 'in_progress', null, 100, 100, 1, '2026-08-27', null, null, null, null),
-    ('d0d0d0d0-d789-6406-22a2-28d6c2e5c33f', '11', 'in_progress', null, 0, 0, 11, '2026-07-14', null, null, null, null),
-    ('d0d0d0d0-1abe-adb4-1149-315d72c95eb4', '12', 'in_progress', null, 58.333333333333336, 58.333333333333336, 11, '2026-08-14', null, null, null, null),
-    ('d0d0d0d0-e4fd-6a43-0441-6a7c96120a26', '13', 'in_progress', null, 100, 100, null, '2026-07-07', null, null, null, null),
-    ('d0d0d0d0-9d6e-cc1a-a7c6-2a7dd4e15155', '14', 'in_progress', null, 87.5, 87.5, 8, '2026-07-16', null, null, null, null),
-    ('d0d0d0d0-67e0-c906-74b0-1cb3f1655623', '15', 'in_progress', null, 80, 80, 5, '2026-08-11', null, null, null, null),
-    ('d0d0d0d0-9131-55bf-68eb-cc7d28737770', '16', 'in_progress', null, 100, 100, 1, '2026-07-21', null, null, null, null),
-    ('d0d0d0d0-7c96-f101-2b6b-7de2c7015b87', '17', 'in_progress', null, 100, 100, 3, '2026-08-27', null, null, null, null),
-    ('d0d0d0d0-8554-094e-de05-23fc6c6abea9', '18', 'in_progress', null, 100, 100, 4, '2026-07-09', null, null, null, null),
-    ('d0d0d0d0-6f0d-298e-5515-b1ca944fa7a5', '19', 'in_progress', null, 100, 100, 4, '2026-08-23', null, null, null, null),
-    ('d0d0d0d0-f3e9-d6bc-43bf-ec5ba3f5ca90', '20', 'in_progress', null, 100, 100, 1, '2026-07-02', null, null, null, null),
-    ('d0d0d0d0-cdb5-05ca-c594-cac14d3d0cc4', '21', 'in_progress', null, 100, 100, 3, '2026-08-06', null, null, null, null),
-    ('d0d0d0d0-6b6a-8d6e-3165-72ffbcf6f992', '22', 'in_progress', null, 100, 100, 3, '2026-07-03', null, null, null, null),
-    ('d0d0d0d0-d110-203a-e3a2-1358c5087171', '23', 'in_progress', null, 100, 100, 3, '2026-07-30', null, null, null, null),
-    ('d0d0d0d0-c5f3-bcf4-3a97-3fe96492d1dd', 'S1', 'in_progress', null, 0, 0, null, '2026-07-06', null, null, null, null)
+    ('d0d0d0d0-8104-92f6-e60a-53be33d5a9b3', '1', 'in_progress', null, 100, 100, 1, '2026-07-17', null, null, null, null, 'imported'),
+    ('d0d0d0d0-cfd5-a243-d60b-5aa176a4666e', '2', 'in_progress', null, 100, 100, 2, '2026-08-21', null, null, null, null, 'imported'),
+    ('d0d0d0d0-7b8f-df96-e873-3cc7cb1194b2', '3', 'in_progress', null, 100, 100, 1, '2026-08-26', null, null, null, null, 'imported'),
+    ('d0d0d0d0-1105-2c28-94b7-691684cee91c', '4', 'in_progress', null, 100, 100, 1, '2026-08-04', null, null, null, null, 'imported'),
+    ('d0d0d0d0-36a2-522c-78fe-f116c151c51d', '5', 'in_progress', null, 100, 100, 1, '2026-07-22', null, null, null, null, 'imported'),
+    ('d0d0d0d0-0655-dfb1-5f77-f44b6d7e691f', '6', 'in_progress', null, 100, 100, null, '2026-08-25', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4008-30f6-cb01-34350f5d1f24', '7', 'in_progress', null, 100, 100, null, '2026-08-07', null, null, null, null, 'imported'),
+    ('d0d0d0d0-826a-336f-ee67-66df47d9e1fe', '8', 'in_progress', null, 100, 100, null, '2026-07-15', null, null, null, null, 'imported'),
+    ('d0d0d0d0-2665-2e5c-e1cf-92c43f8e8d3c', '9', 'in_progress', null, 100, 100, 4, '2026-08-11', null, null, null, null, 'imported'),
+    ('d0d0d0d0-4b91-d407-bce2-19c5b88457cf', '10', 'in_progress', null, 100, 100, 1, '2026-08-27', null, null, null, null, 'imported'),
+    ('d0d0d0d0-d789-6406-22a2-28d6c2e5c33f', '11', 'in_progress', null, 0, 0, 11, '2026-07-14', null, null, null, null, 'imported'),
+    ('d0d0d0d0-1abe-adb4-1149-315d72c95eb4', '12', 'in_progress', null, 58.333333333333336, 58.333333333333336, 11, '2026-08-14', null, null, null, null, 'imported'),
+    ('d0d0d0d0-e4fd-6a43-0441-6a7c96120a26', '13', 'in_progress', null, 100, 100, null, '2026-07-07', null, null, null, null, 'imported'),
+    ('d0d0d0d0-9d6e-cc1a-a7c6-2a7dd4e15155', '14', 'in_progress', null, 87.5, 87.5, 8, '2026-07-16', null, null, null, null, 'imported'),
+    ('d0d0d0d0-67e0-c906-74b0-1cb3f1655623', '15', 'in_progress', null, 80, 80, 5, '2026-08-11', null, null, null, null, 'imported'),
+    ('d0d0d0d0-9131-55bf-68eb-cc7d28737770', '16', 'in_progress', null, 100, 100, 1, '2026-07-21', null, null, null, null, 'imported'),
+    ('d0d0d0d0-7c96-f101-2b6b-7de2c7015b87', '17', 'in_progress', null, 100, 100, 3, '2026-08-27', null, null, null, null, 'imported'),
+    ('d0d0d0d0-8554-094e-de05-23fc6c6abea9', '18', 'in_progress', null, 100, 100, 4, '2026-07-09', null, null, null, null, 'imported'),
+    ('d0d0d0d0-6f0d-298e-5515-b1ca944fa7a5', '19', 'in_progress', null, 100, 100, 4, '2026-08-23', null, null, null, null, 'imported'),
+    ('d0d0d0d0-f3e9-d6bc-43bf-ec5ba3f5ca90', '20', 'in_progress', null, 100, 100, 1, '2026-07-02', null, null, null, null, 'imported'),
+    ('d0d0d0d0-cdb5-05ca-c594-cac14d3d0cc4', '21', 'in_progress', null, 100, 100, 3, '2026-08-06', null, null, null, null, 'imported'),
+    ('d0d0d0d0-6b6a-8d6e-3165-72ffbcf6f992', '22', 'in_progress', null, 100, 100, 3, '2026-07-03', null, null, null, null, 'imported'),
+    ('d0d0d0d0-d110-203a-e3a2-1358c5087171', '23', 'in_progress', null, 100, 100, 3, '2026-07-30', null, null, null, null, 'imported'),
+    ('d0d0d0d0-c5f3-bcf4-3a97-3fe96492d1dd', 'S1', 'in_progress', null, 0, 0, null, '2026-07-06', null, null, null, null, 'imported')
   ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,
-        ready_by, ready_at, approved_by, approved_at)
+        ready_by, ready_at, approved_by, approved_at, ingestion)
   join section_definition sd on sd.section_number = v.section_number
   join book_template bt on bt.id = sd.book_template_id and bt.book_type = 'facility'
 on conflict (id) do nothing;
@@ -682,35 +690,37 @@ insert into job_assignment (job_book_id, user_id, assigned_role) values
 on conflict do nothing;
 insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,
   computed_pct, collected_pct, computed_at, expected_count, expected_by,
-  ready_for_review_by, ready_for_review_at, approved_by, approved_at)
+  ready_for_review_by, ready_for_review_at, approved_by, approved_at,
+  ingestion_status)
 select v.id::uuid, 'd0d0d0d0-5372-5840-7746-6bcbfe1a7058', sd.id, v.status::section_status, v.na_reason,
        v.pct::numeric, v.collected::numeric, now(), v.expected::int,
        v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,
-       v.approved_by::uuid, v.approved_at::timestamptz
+       v.approved_by::uuid, v.approved_at::timestamptz,
+       v.ingestion::ingestion_status
   from (values
-    ('d0d0d0d0-a754-d1a9-2602-661804a1f94f', '1', 'approved', null, 100, 100, 1, '2026-05-06', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-6f1f-037f-8088-24e97080fd45', '2', 'approved', null, 100, 100, 2, '2026-05-28', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-8bd2-6e60-a0b7-f04df5a0f021', '3', 'approved', null, 100, 100, 1, '2026-05-10', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-9117-c1d4-54bd-5ac092b4e36c', '4', 'approved', null, 100, 100, 1, '2026-04-09', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-7cd8-8857-b24b-c25e7e402a5c', '5', 'approved', null, 100, 100, 1, '2026-05-13', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-a8f4-1cb9-65dc-67086582331a', '6', 'approved', null, 100, 100, null, '2026-05-01', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-4284-ed29-3d04-fa8d7dcbb06a', '7', 'approved', null, 100, 100, null, '2026-04-17', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-abcb-76b9-038e-6f9864bfe7e0', '8', 'approved', null, 100, 100, null, '2026-04-24', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-5e86-e001-ffc6-e8fbd2a939d1', '9', 'approved', null, 100, 100, 4, '2026-04-22', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-d599-80f7-107f-bef3a49dd77c', '10', 'approved', null, 100, 100, 1, '2026-05-26', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-8a4b-cdf5-edf5-63a78e3b95a7', '11', 'approved', null, 0, 0, 8, '2026-05-01', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-e40b-7d72-e523-4127da626e41', '12', 'approved', null, 100, 100, 8, '2026-04-14', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-991d-2e26-3845-b06a13de5673', '13', 'approved', null, 100, 100, null, '2026-04-23', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-bb7d-23f7-2a9a-d683aca0eafc', '14', 'approved', null, 100, 100, 5, '2026-05-17', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-ff7e-bb0b-5ed6-22bf13dacf40', '15', 'approved', null, 100, 100, 5, '2026-04-15', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-cfd8-80ce-0806-19ede65f4971', '16', 'approved', null, 100, 100, 1, '2026-04-26', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-f6f4-abf1-f51b-e05ed9cbd336', '17', 'approved', null, 100, 100, 3, '2026-05-03', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-ecdf-0e3b-73f8-ea342ccdcc25', '18', 'approved', null, 100, 100, 4, '2026-05-20', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-ebd7-c520-7393-032b801aaed8', '19-22', 'approved', null, 100, 100, 1, '2026-03-31', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z'),
-    ('d0d0d0d0-b333-07a5-bac1-0ba39504b18b', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2026-04-08', null, null, null, null),
-    ('d0d0d0d0-c40d-def3-4492-25e4fa7b4c41', 'S1', 'approved', null, 0, 0, null, '2026-05-05', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z')
+    ('d0d0d0d0-a754-d1a9-2602-661804a1f94f', '1', 'approved', null, 100, 100, 1, '2026-05-06', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-6f1f-037f-8088-24e97080fd45', '2', 'approved', null, 100, 100, 2, '2026-05-28', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-8bd2-6e60-a0b7-f04df5a0f021', '3', 'approved', null, 100, 100, 1, '2026-05-10', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-9117-c1d4-54bd-5ac092b4e36c', '4', 'approved', null, 100, 100, 1, '2026-04-09', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-7cd8-8857-b24b-c25e7e402a5c', '5', 'approved', null, 100, 100, 1, '2026-05-13', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-a8f4-1cb9-65dc-67086582331a', '6', 'approved', null, 100, 100, null, '2026-05-01', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-4284-ed29-3d04-fa8d7dcbb06a', '7', 'approved', null, 100, 100, null, '2026-04-17', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-abcb-76b9-038e-6f9864bfe7e0', '8', 'approved', null, 100, 100, null, '2026-04-24', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-5e86-e001-ffc6-e8fbd2a939d1', '9', 'approved', null, 100, 100, 4, '2026-04-22', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-d599-80f7-107f-bef3a49dd77c', '10', 'approved', null, 100, 100, 1, '2026-05-26', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-8a4b-cdf5-edf5-63a78e3b95a7', '11', 'approved', null, 0, 0, 8, '2026-05-01', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-e40b-7d72-e523-4127da626e41', '12', 'approved', null, 100, 100, 8, '2026-04-14', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-991d-2e26-3845-b06a13de5673', '13', 'approved', null, 100, 100, null, '2026-04-23', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-bb7d-23f7-2a9a-d683aca0eafc', '14', 'approved', null, 100, 100, 5, '2026-05-17', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-ff7e-bb0b-5ed6-22bf13dacf40', '15', 'approved', null, 100, 100, 5, '2026-04-15', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-cfd8-80ce-0806-19ede65f4971', '16', 'approved', null, 100, 100, 1, '2026-04-26', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-f6f4-abf1-f51b-e05ed9cbd336', '17', 'approved', null, 100, 100, 3, '2026-05-03', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-ecdf-0e3b-73f8-ea342ccdcc25', '18', 'approved', null, 100, 100, 4, '2026-05-20', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-ebd7-c520-7393-032b801aaed8', '19-22', 'approved', null, 100, 100, 1, '2026-03-31', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported'),
+    ('d0d0d0d0-b333-07a5-bac1-0ba39504b18b', '23', 'na', 'No coating scope on this flowline; buried carbon steel with field-applied wrap only.', 0, 0, 1, '2026-04-08', null, null, null, null, 'imported'),
+    ('d0d0d0d0-c40d-def3-4492-25e4fa7b4c41', 'S1', 'approved', null, 0, 0, null, '2026-05-05', 'd0d0d0d0-3c78-d035-c5f5-a6ba1b49cce7', '2026-06-12T09:00:00Z', 'd0d0d0d0-3d06-5afb-2e08-226c18716b69', '2026-06-12T15:00:00Z', 'imported')
   ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,
-        ready_by, ready_at, approved_by, approved_at)
+        ready_by, ready_at, approved_by, approved_at, ingestion)
   join section_definition sd on sd.section_number = v.section_number
   join book_template bt on bt.id = sd.book_template_id and bt.book_type = 'flowline'
 on conflict (id) do nothing;

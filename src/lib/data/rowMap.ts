@@ -96,6 +96,8 @@ export const COLUMNS = {
     'ready_for_review_by', 'ready_for_review_at', 'approved_by', 'approved_at',
     'computed_pct', 'internal_notes', 'expected_count', 'computed_at', 'collected_pct',
     'expected_by',
+    // 0019 — whether the contents were read, and how much was seen.
+    'ingestion_status', 'source_file_count', 'source_bytes',
   ],
   weld: [
     'id', 'weld_line_id', 'job_book_id', 'weld_number', 'sort_order', 'weld_date',

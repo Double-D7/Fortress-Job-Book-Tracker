@@ -27,7 +27,7 @@ import { rowsForPlan } from '@/lib/import/overviewIngest'
 import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
 import { randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
-import { applyComputedScores, scoreBook } from '@/lib/domain/scoring'
+import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import { createClient } from '@/lib/supabase/server'
@@ -449,6 +449,7 @@ export class SupabaseProvider implements DataProvider {
     if (added.length) {
       await supabase.from('job_book_section').update({
         status: section.status === 'not_started' ? 'in_progress' : section.status,
+        ingestion_status: afterUpload(section.ingestionStatus),
       }).eq('id', section.id)
       await this.refreshScores(jobBookId, viewer)
     }

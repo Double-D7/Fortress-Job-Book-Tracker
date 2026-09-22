@@ -442,6 +442,46 @@ do $$ begin
 end $$;
 
 \echo ''
+\echo 'A section cannot claim to be both checked-and-empty and full'
+do $$
+declare v_id uuid;
+begin
+  select id into v_id from job_book_section
+   where job_book_id = 'dddddddd-0000-0000-0000-000000000001' limit 1;
+
+  -- The safe default, checked before anything below mutates it. A row
+  -- nobody has established anything about must not claim its contents
+  -- were read, because the scoring engine reads that claim and drops the
+  -- "this figure is a floor" caveat on the strength of it.
+  perform assert(
+    (select ingestion_status::text from job_book_section where id = v_id) = 'unknown',
+    'a section asserts nothing about its ingestion until something says so');
+
+  -- The whole point of `verified_empty` is that somebody looked. A row
+  -- saying "I looked and found nothing" while also reporting nine files
+  -- in the folder is two statements, one of which is false, and the
+  -- database is not the place to decide which.
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      format($q$update job_book_section
+                   set ingestion_status = 'verified_empty', source_file_count = 9
+                 where id = %L$q$, v_id)),
+    'a verified-empty section cannot also hold files');
+
+  perform assert(
+    as_user('55555555-5555-5555-5555-555555555555',
+      format($q$update job_book_section
+                   set ingestion_status = 'verified_empty', source_file_count = 0
+                 where id = %L returning 'ok'$q$, v_id)) = 'ok',
+    'while a listing that came back empty is exactly what it records');
+
+  perform assert(
+    refused('55555555-5555-5555-5555-555555555555',
+      format($q$update job_book_section set source_file_count = -1 where id = %L$q$, v_id)),
+    'a negative file count is refused');
+end $$;
+
+\echo ''
 \echo 'A client sees the book, not the minutes'
 do $$ begin
   perform assert(

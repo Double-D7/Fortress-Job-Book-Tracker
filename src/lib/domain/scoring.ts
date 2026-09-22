@@ -30,6 +30,28 @@ export interface ScoreInput {
   detail?: string
 }
 
+/**
+ * What a section's ingestion status becomes when a document is uploaded
+ * into it.
+ *
+ * Uploading one file does not read a folder. A section carrying 41
+ * unimported pressure test packs still carries 41 of them after somebody
+ * files a forty-second document by hand, and flipping it to `imported`
+ * there would clear the "this score is a floor" warning while the
+ * backlog that made it a floor is still sitting on disk — the precise
+ * false reassurance the field exists to prevent. Only an importer that
+ * actually walks the folder may clear `not_imported`.
+ *
+ * Every other state does move. `unknown` and `verified_empty` describe a
+ * section with no known backlog, so evidence arriving makes the score a
+ * real verdict again.
+ */
+export function afterUpload(
+  current: JobBookSection['ingestionStatus'],
+): NonNullable<JobBookSection['ingestionStatus']> {
+  return current === 'not_imported' ? 'not_imported' : 'imported'
+}
+
 export interface SectionScore {
   sectionNumber: string
   title: string

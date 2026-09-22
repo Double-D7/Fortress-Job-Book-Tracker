@@ -12,8 +12,9 @@ import {
 } from '@/lib/domain/upload'
 import { checkFilename } from '@/lib/domain/naming'
 import { getDataProvider, type Viewer } from '@/lib/data/provider'
-import { collectedOf, scoreBook, scoreSection } from '@/lib/domain/scoring'
+import { afterUpload, collectedOf, scoreBook, scoreSection } from '@/lib/domain/scoring'
 import { buildDp452Bundle } from '@/lib/data/seed/dp452'
+import { buildGreeleyBundle } from '@/lib/data/seed/greeley'
 import type { DocumentRecord } from '@/lib/domain/types'
 
 const b = buildDp452Bundle()
@@ -234,6 +235,48 @@ describe('committing an upload', () => {
     // And both cached figures moved with it rather than going stale.
     expect(s2.computedPct).toBe(score.pct)
     expect(s2.collectedPct).toBe(collectedOf(score))
+  })
+
+  /**
+   * Filing one document by hand is not the same as reading a folder.
+   *
+   * DP-318's section 17 holds 41 MB of pressure test packs that nothing
+   * has walked. If a tech drops a forty-second file into that section and
+   * the book answers by clearing `not_imported`, the report stops saying
+   * "this score is a floor" while the backlog that made it a floor is
+   * still sitting on disk untouched — and the next person to read the
+   * page is told a complete verdict about a section nobody has opened.
+   */
+  it('does not let one upload clear an unread backlog', () => {
+    expect(afterUpload('not_imported')).toBe('not_imported')
+  })
+
+  it('does make the score a verdict again where no backlog is known', () => {
+    // Nothing is outstanding in any of these, so evidence arriving means
+    // what the book holds is now the whole truth about the section.
+    expect(afterUpload('unknown')).toBe('imported')
+    expect(afterUpload('verified_empty')).toBe('imported')
+    expect(afterUpload('imported')).toBe('imported')
+    expect(afterUpload(undefined)).toBe('imported')
+  })
+
+  it('keeps the unread caveat on the report after such an upload', () => {
+    const bundle = buildGreeleyBundle()
+    const d = bundle.sectionDefinitions.find((x) => x.sectionNumber === '17')!
+    const s = bundle.sections.find((x) => x.sectionDefinitionId === d.id)!
+    expect(s.ingestionStatus).toBe('not_imported')
+
+    // Section 17 as it looks after a tech files one document into it.
+    const withUpload = {
+      ...bundle,
+      sections: bundle.sections.map((x) =>
+        x.id !== s.id ? x : { ...x, ingestionStatus: afterUpload(x.ingestionStatus) }),
+    }
+    const score = scoreBook(withUpload)
+    const after = score.sections.find((x) => x.sectionNumber === '17')!
+    expect(after.ingestionStatus).toBe('not_imported')
+    expect(after.explanation).toMatch(/Not yet imported/)
+    expect(score.isLowerBound).toBe(true)
   })
 
   it('never reports collected below approved', async () => {

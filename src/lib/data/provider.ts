@@ -17,7 +17,7 @@ import type {
   JobBookBundle, UserRole,
 } from '@/lib/domain/types'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
-import { applyComputedScores } from '@/lib/domain/scoring'
+import { afterUpload, applyComputedScores } from '@/lib/domain/scoring'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import {
   checkWeldLogOverview, parseWeldLogOverviewPdf, type WeldLogOverview,
@@ -506,13 +506,14 @@ class SeedProvider implements DataProvider {
       })
     }
 
-    // Uploading is evidence arriving, so the section is no longer untouched
-    // and its folder is no longer unread.
+    // Uploading is evidence arriving, so the section is no longer
+    // untouched. Whether its folder is still unread is a separate
+    // question, and `afterUpload` is where that is decided.
     const sections = b.sections.map((x) =>
       x.id !== section.id ? x : {
         ...x,
         status: x.status === 'not_started' && added.length ? 'in_progress' as const : x.status,
-        ingestionStatus: added.length ? 'imported' as const : x.ingestionStatus,
+        ingestionStatus: added.length ? afterUpload(x.ingestionStatus) : x.ingestionStatus,
       },
     )
 

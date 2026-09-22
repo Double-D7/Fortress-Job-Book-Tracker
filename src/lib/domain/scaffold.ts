@@ -220,6 +220,14 @@ export function scaffoldJobBook(
       approvedAt: null,
       computedPct: 0,
       expectedCount: declared && declared > 0 ? declared : null,
+      // A book born here has no external source folder to be behind on.
+      // Evidence arrives by upload, so what the application holds is all
+      // there is, and a zero means absent rather than unread. Leaving this
+      // `unknown` would make a brand new book report 0% evidence coverage
+      // on contents that provably do not exist yet.
+      ingestionStatus: 'imported',
+      sourceFileCount: null,
+      sourceBytes: null,
       internalNotes: null,
     }
   })

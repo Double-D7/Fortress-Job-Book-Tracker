@@ -705,24 +705,29 @@ for (const b of bundles) {
       `${approved ? q(id('user', 'custodian')) : 'null'}, ` +
       `${approved ? q(`${bookSpec.asOf}T09:00:00Z`) : 'null'}, ` +
       `${approved ? q(id('user', 'manager')) : 'null'}, ` +
-      `${approved ? q(`${bookSpec.asOf}T15:00:00Z`) : 'null'})`
+      `${approved ? q(`${bookSpec.asOf}T15:00:00Z`) : 'null'}, ` +
+      `${q(sec.ingestionStatus ?? 'imported')})`
   })
   sql.push(
-    // No ingestion_status column: the domain models "imported vs not yet
-    // read" but the schema has never carried it, so a section read back
-    // from the database reports `unknown`. Noted rather than invented.
+    // 0019 added ingestion_status. These books are generated whole, so
+    // every section's contents are exactly what the seed put there and
+    // nothing is sitting unread in a folder somewhere: `imported` is the
+    // true statement, and leaving the column to default `unknown` would
+    // make five demo books report 0% evidence coverage forever.
     `insert into job_book_section (id, job_book_id, section_definition_id, status, na_reason,\n` +
     `  computed_pct, collected_pct, computed_at, expected_count, expected_by,\n` +
-    `  ready_for_review_by, ready_for_review_at, approved_by, approved_at)\n` +
+    `  ready_for_review_by, ready_for_review_at, approved_by, approved_at,\n` +
+    `  ingestion_status)\n` +
     `select v.id::uuid, ${q(bk.id)}, sd.id, v.status::section_status, v.na_reason,\n` +
     // Cast in the SELECT, once, rather than on every value in the VALUES
     // list — a hundred and eleven rows do not each need to say ::uuid.
     `       v.pct::numeric, v.collected::numeric, now(), v.expected::int,\n` +
     `       v.expected_by::date, v.ready_by::uuid, v.ready_at::timestamptz,\n` +
-    `       v.approved_by::uuid, v.approved_at::timestamptz\n` +
+    `       v.approved_by::uuid, v.approved_at::timestamptz,\n` +
+    `       v.ingestion::ingestion_status\n` +
     `  from (values\n    ${sectionRows.join(',\n    ')}\n` +
     `  ) as v(id, section_number, status, na_reason, pct, collected, expected, expected_by,\n` +
-    `        ready_by, ready_at, approved_by, approved_at)\n` +
+    `        ready_by, ready_at, approved_by, approved_at, ingestion)\n` +
     `  join section_definition sd on sd.section_number = v.section_number\n` +
     `  join book_template bt on bt.id = sd.book_template_id and bt.book_type = ${q(bk.bookType)}\n` +
     `on conflict (id) do nothing;`,
