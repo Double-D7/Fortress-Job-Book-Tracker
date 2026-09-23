@@ -19,9 +19,33 @@
  * week would train everybody to filter the sender, and then the Critical
  * one is filtered too. One message a day, ordered worst-first, is a
  * message people still open.
+ *
+ * WHY THIS FILE HAS NO IMPORTS. It is loaded by two runtimes: Next.js,
+ * through the `@shared/*` alias, and the Supabase Edge Function, which
+ * is Deno and resolves a relative path with an explicit extension. The
+ * two disagree about how to write an import, and they agree perfectly
+ * about a file that has none. So the two types it needs are restated
+ * below, and `digest.test.ts` asserts they still match the originals —
+ * the alternative was a second copy of the whole module, which is the
+ * drift this codebase keeps paying for.
  */
-import type { UserRole } from './types'
-import { SEVERITY_LABELS, type NoteSeverity } from './notifications'
+
+/** Mirrors `UserRole` in src/lib/domain/types.ts. Pinned by a test. */
+type UserRole =
+  | 'fortress_admin' | 'qaqc_manager' | 'qaqc_tech'
+  | 'fortress_read_only' | 'client_user' | 'third_party_inspector'
+
+/** Mirrors `NoteSeverity` in src/lib/domain/notifications.ts. */
+type NoteSeverity = 'critical' | 'warning' | 'info'
+
+/** Mirrors `SEVERITY_LABELS`. Pinned by a test. */
+const SEVERITY_LABELS: Record<NoteSeverity, string> = {
+  critical: 'Critical',
+  warning: 'Needs attention',
+  info: 'For information',
+}
+
+export type { NoteSeverity, UserRole }
 
 /** One unread note, as the digest query hands it over. */
 export interface DigestRow {
@@ -211,4 +235,94 @@ export function digestText(d: Digest, appUrl: string): string {
     `${appUrl}/notifications`,
   )
   return lines.join('\n')
+}
+
+/**
+ * The HTML body.
+ *
+ * Tables and inline styles, because email clients are not browsers:
+ * Outlook renders through Word, Gmail strips <style> blocks, and flexbox
+ * is not available in either. This looks like 2005 markup because that
+ * is what arrives intact.
+ *
+ * Colour is never the only carrier of meaning here, the same rule §8
+ * applies on screen — every urgent note wears its word as well as its
+ * colour, because a colour-blind reader and a plain-text client have the
+ * same problem.
+ */
+export function digestHtml(d: Digest, appUrl: string): string {
+  const TONE: Record<NoteSeverity, string> = {
+    critical: '#b42318',
+    warning: '#b54708',
+    info: '#667085',
+  }
+
+  const books = d.books.map((book) => {
+    const notes = book.notes.map((n) => {
+      const label = n.severity === 'info' ? '' :
+        `<span style="display:inline-block;padding:1px 6px;margin-right:6px;border-radius:9px;` +
+        `background:${TONE[n.severity]};color:#ffffff;font-size:11px;font-weight:600;">` +
+        `${escapeHtml(SEVERITY_LABELS[n.severity])}</span>`
+      const where = n.sectionNumber
+        ? `<span style="color:#667085;"> &middot; section ${escapeHtml(n.sectionNumber)}</span>`
+        : ''
+      return `
+      <tr><td style="padding:10px 0;border-bottom:1px solid #eaecf0;">
+        <div style="font-size:13px;line-height:1.5;">
+          ${label}<strong style="color:#101828;">${escapeHtml(n.authorName)}</strong>${where}
+        </div>
+        <div style="font-size:13px;line-height:1.6;color:#475467;margin-top:3px;">
+          ${escapeHtml(excerpt(n.body))}
+        </div>
+      </td></tr>`
+    }).join('')
+
+    return `
+    <tr><td style="padding:18px 0 4px;">
+      <div style="font-size:14px;font-weight:600;color:#101828;">
+        <a href="${appUrl}/books/${encodeURIComponent(book.jobBookId)}/notes"
+           style="color:#101828;text-decoration:none;">
+          ${escapeHtml(book.jobNumber)}</a>${
+            book.facilityName
+              ? `<span style="font-weight:400;color:#667085;"> — ${escapeHtml(book.facilityName)}</span>`
+              : ''}
+      </div>
+    </td></tr>
+    <tr><td><table width="100%" cellpadding="0" cellspacing="0" role="presentation">${notes}</table></td></tr>`
+  }).join('')
+
+  const summary = [
+    d.critical > 0 ? `${d.critical} critical` : null,
+    d.warning > 0 ? `${d.warning} needing attention` : null,
+    d.info > 0 ? `${d.info} for information` : null,
+  ].filter(Boolean).join(' &middot; ')
+
+  return `<!doctype html>
+<html><body style="margin:0;padding:0;background:#f9fafb;">
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+       style="background:#f9fafb;padding:24px 12px;">
+<tr><td align="center">
+  <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+         style="max-width:560px;background:#ffffff;border:1px solid #eaecf0;border-radius:8px;padding:24px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;">
+    <tr><td>
+      <div style="font-size:15px;font-weight:600;color:#101828;">Job book notes</div>
+      <div style="font-size:13px;color:#475467;margin-top:2px;">${summary}</div>
+    </td></tr>
+    ${books}
+    <tr><td style="padding-top:20px;">
+      <a href="${appUrl}/notifications"
+         style="display:inline-block;padding:9px 14px;border-radius:6px;background:#101828;color:#ffffff;font-size:13px;font-weight:500;text-decoration:none;">
+        Open the tracker</a>
+    </td></tr>
+    <tr><td style="padding-top:18px;">
+      <div style="font-size:11px;line-height:1.6;color:#98a2b3;border-top:1px solid #eaecf0;padding-top:12px;">
+        A note marked critical asks Fortress to look now. It does not raise a finding or
+        change a book&rsquo;s score &mdash; that stays a Fortress decision under the §11
+        classification rules. You are receiving this because you are the Custodian of these
+        books, or assigned to them.
+      </div>
+    </td></tr>
+  </table>
+</td></tr></table>
+</body></html>`
 }

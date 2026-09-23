@@ -181,3 +181,167 @@ is worth running before any migration reaches production.
 Supabase takes daily backups on paid plans. On the free plan it does not —
 and a turnover package is a legal record, so check **Settings → Database →
 Backups** and know which you are on before a real job book goes in.
+
+---
+
+## The custom domain
+
+The app is at `app.fortressqc.com`. Nothing in the code knows that —
+sign-in redirects are built from `window.location.origin`, so moving the
+app is DNS and two dashboard settings, never a deploy.
+
+**Cloudflare DNS**
+
+| Type | Name | Value | Proxy |
+|---|---|---|---|
+| CNAME | `app` | `cname.vercel-dns.com` | **DNS only (grey cloud)** |
+
+The proxy setting is the one that catches people. Leave the orange cloud
+on and you have two CDNs terminating TLS in front of each other, which
+surfaces as a certificate error or a redirect loop rather than as
+anything that says "turn the proxy off". Check the value against what
+Vercel shows for the domain — it hands out more than one CNAME target.
+
+**Supabase, or sign-in breaks.** Authentication → URL Configuration:
+
+- Site URL: `https://app.fortressqc.com`
+- Redirect URLs: add `https://app.fortressqc.com/auth/callback`
+
+Keep the `.vercel.app` entries until the new address is confirmed
+working. Supabase rejects a `redirectTo` that is not on that list, and
+the failure looks like a broken magic link rather than a missing setting.
+
+---
+
+## Email
+
+Two different things send mail, and only one of them is Supabase's.
+
+**Sign-in links** go through Supabase Auth. Out of the box that is a
+shared demo mailer capped at a handful of messages an hour — fine for
+one test, useless for a crew starting their day, since every magic-link
+sign-in is an email. Fix it at Project Settings → Authentication → SMTP
+with a real provider and a sender on `fortressqc.com`.
+
+Enabling Microsoft SSO removes this dependency altogether: an OAuth
+sign-in sends no email, so the cap stops mattering for anyone who signs
+in that way.
+
+**The daily digest** does not touch Supabase's mailer, or Vercel. See
+below.
+
+---
+
+## The daily digest
+
+An inspector's note is worth nothing as a row nobody reads. `0024` tells
+the Custodian and the assigned crew in the app; this sends the same
+thing once a day to people who are not in the app every hour.
+
+**Where it runs, and why not in Vercel.** The digest reads every
+recipient's unread notes so it can send each of them their own, which no
+signed-in session may do — it needs the service role. This file says, a
+few sections up, that the web deployment must not hold that key. So the
+digest is a Supabase Edge Function on a `pg_cron` schedule: Supabase
+injects the service role into its own functions, Vercel never sees it,
+and that rule stays true.
+
+```
+pg_cron (0 13 * * *)
+  └─ net.http_post  ──→  Edge Function `daily-digest`
+                           ├─ digest_rows()      what is unread and un-emailed
+                           ├─ buildDigests()     grouping and wording, shared
+                           │                     with the app's own screens
+                           ├─ Resend             one message per person
+                           └─ mark_digested()    per recipient, after sending
+```
+
+**Sending then marking, one person at a time**, is deliberate. A run
+that dies halfway re-sends nobody and drops nobody: whoever was sent is
+marked, whoever was not goes tomorrow. Marking the batch first and then
+sending loses somebody's mail the first time the provider has a bad
+minute, and loses it silently.
+
+### Setting it up
+
+**1. Resend.** Add `fortressqc.com` and use their Cloudflare integration,
+which writes the SPF/DKIM/DMARC records rather than you copying three
+long strings by hand. Create an API key.
+
+**2. The trigger secret.** The function's URL is public and `verify_jwt`
+is off, because `pg_cron` has no user session to present a JWT for. A
+shared secret is what stops anyone who learns the URL sending everyone's
+digest at 3am. Create it once, in the SQL editor:
+
+```sql
+select vault.create_secret(
+  encode(gen_random_bytes(32), 'hex'), 'digest_secret',
+  'Shared secret pg_cron presents to the daily-digest Edge Function.');
+```
+
+Then read it back to paste into the dashboard:
+
+```sql
+select decrypted_secret from vault.decrypted_secrets
+ where name = 'digest_secret';
+```
+
+Generating it in the database means the value never passes through a
+terminal history or a chat window.
+
+**3. Edge Function secrets.** Supabase Dashboard → Edge Functions →
+Secrets:
+
+| Name | Value |
+|---|---|
+| `RESEND_API_KEY` | from step 1 |
+| `DIGEST_SECRET` | the value from step 2 |
+| `APP_URL` | `https://app.fortressqc.com` |
+| `DIGEST_FROM` | `Fortress Job Book Tracker <noreply@fortressqc.com>` |
+
+The function refuses to run at all while `DIGEST_SECRET` is unset — it
+returns 503 rather than treating "unconfigured" as "open to anyone".
+
+**4. The schedule** is created by `0026`. It reads the secret from Vault
+when it fires rather than storing it in `cron.job`, where anyone with
+database access could read the schedule and learn it.
+
+### Checking it
+
+```sql
+-- Did the job fire?
+select status, start_time, return_message from cron.job_run_details
+ where jobid = (select jobid from cron.job where jobname='daily-digest')
+ order by start_time desc limit 5;
+
+-- What did the run do?
+select * from digest_run order by ran_at desc limit 5;
+```
+
+`digest_run` records every run including the failures, so "did anybody
+get Tuesday's digest" has an answer that is not "ask people".
+
+To send one now rather than waiting for the morning, run the job by hand:
+
+```sql
+select cron.schedule('digest-now', '* * * * *', (
+  select command from cron.job where jobname='daily-digest'));
+-- wait a minute, then:
+select cron.unschedule('digest-now');
+```
+
+### Changing the timing
+
+`0 13 * * *` is 07:00 Mountain Daylight and 06:00 Mountain Standard —
+cron is UTC and does not follow daylight saving.
+
+```sql
+select cron.alter_job(
+  (select jobid from cron.job where jobname='daily-digest'),
+  schedule => '0 14 * * *');
+```
+
+`DIGEST_MIN_AGE_MINUTES` (default 60) is how old a note must be before
+it is emailed, so somebody reading a note in the app right now does not
+also get a message about it. A note already read in the app is never
+emailed at all.

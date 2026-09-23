@@ -5,12 +5,16 @@
  * building with somebody's internal note in it cannot be recalled. In
  * the app a mistake shows a row on a screen; in an email it is gone.
  */
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   buildDigests, digestSubject, digestText, escapeHtml, excerpt,
   type DigestRow,
-} from '@/lib/domain/digest'
-import type { NoteSeverity } from '@/lib/domain/notifications'
+} from '@shared/digest'
+import {
+  NOTE_SEVERITIES, SEVERITY_LABELS, type NoteSeverity,
+} from '@/lib/domain/notifications'
+import { ROLES } from '@/lib/domain/roles'
 
 const APP = 'https://app.fortressqc.com'
 
@@ -207,5 +211,35 @@ describe('excerpt', () => {
     // to returning the whole thing.
     const wall = 'x'.repeat(500)
     expect(excerpt(wall, 40).length).toBe(41)
+  })
+})
+
+describe('the shared module has not drifted from the app', () => {
+  // digest.ts is loaded by two runtimes and so carries no imports, which
+  // means it restates two things the app defines elsewhere. These are
+  // what stop the restatement becoming a second opinion.
+  const sharedSource = readFileSync(
+    'supabase/functions/_shared/digest.ts', 'utf8')
+
+  it('restates UserRole exactly as the app declares it', () => {
+    const appRoles = new Set(ROLES.map((r) => r.role))
+    const block = sharedSource.slice(
+      sharedSource.indexOf('type UserRole ='),
+      sharedSource.indexOf('/** Mirrors `NoteSeverity`'))
+    const restated = new Set(
+      [...block.matchAll(/'(\w+)'/g)].map((m) => m[1]!))
+    expect([...restated].sort()).toEqual([...appRoles].sort())
+  })
+
+  it('restates the severity labels exactly as the app shows them', () => {
+    // A label that differs between the screen and the email is the kind
+    // of thing nobody notices until a client quotes one back.
+    for (const s of NOTE_SEVERITIES) {
+      expect(sharedSource).toContain(`${s}: '${SEVERITY_LABELS[s]}'`)
+    }
+  })
+
+  it('carries no imports at all, which is what lets Deno load it', () => {
+    expect(sharedSource).not.toMatch(/^\s*import\s/m)
   })
 })

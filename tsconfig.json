@@ -15,8 +15,12 @@
     "incremental": true,
     "noUncheckedIndexedAccess": true,
     "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": ["./src/*"],
+      "@shared/*": ["./supabase/functions/_shared/*"]
+    }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "//": "The Edge Function is Deno, not Node: it has Deno globals, jsr: imports and explicit .ts extensions, none of which this config permits. Its one shared dependency, supabase/functions/_shared, is plain TypeScript with no imports at all and stays included — that is the whole point of the split, and digest.test.ts asserts it keeps no imports.",
+  "exclude": ["node_modules", "supabase/functions/daily-digest"]
 }
