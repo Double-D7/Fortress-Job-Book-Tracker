@@ -345,3 +345,41 @@ select cron.alter_job(
 it is emailed, so somebody reading a note in the app right now does not
 also get a message about it. A note already read in the app is never
 emailed at all.
+
+### If the digest lands in junk
+
+The first one did. Resend accepted it, delivered it, and Microsoft filed
+it as spam — which is the ordinary fate of a first message from a domain
+that has never sent one.
+
+Check the authentication result in the message headers before assuming
+anything is misconfigured. In Outlook: File → Properties, and look for
+`Authentication-Results`. `spf=pass dkim=pass dmarc=pass` means nothing
+is broken and the rest is reputation.
+
+**Publish a DMARC record.** Resend requires only DKIM and SPF, so a
+domain set up purely by following their checklist has no DMARC policy at
+all — and Microsoft 365 treats a domain that publishes no policy as
+weaker than one that publishes a permissive one. In Cloudflare:
+
+| Type | Name | Content | Proxy |
+|---|---|---|---|
+| TXT | `_dmarc` | `v=DMARC1; p=none;` | n/a |
+
+`p=none` asks receivers to enforce nothing; it only states that the
+domain participates. That is the right first posture — it improves
+placement without risking legitimate mail being rejected while you find
+out what else sends as this domain. Tighten to `p=quarantine` and then
+`p=reject` later, once you are sure everything that sends as
+`fortressqc.com` aligns.
+
+Adding `rua=mailto:...` turns on aggregate reports, which are worth
+having eventually. Note that reporting to an address on a *different*
+domain needs an authorisation record on that other domain, so it is not
+a one-liner — leave it off until somebody wants the reports.
+
+**Then tell the tenant, not each person.** Marking one message "not
+junk" trains one mailbox. A mail flow rule in the Exchange admin centre
+allowlisting the sender, or adding the domain to the tenant safe-sender
+list, means the next person hired does not rediscover the junk folder on
+their first morning.
