@@ -44,7 +44,22 @@ const DIGEST_SECRET = Deno.env.get('DIGEST_SECRET')
  */
 const MIN_AGE_MINUTES = Number(Deno.env.get('DIGEST_MIN_AGE_MINUTES') ?? '60')
 
-interface SendResult { ok: boolean; error?: string }
+/**
+ * What the provider said.
+ *
+ * `id` is Resend's message id, which is the only handle that lets
+ * somebody look a message up afterwards and ask why it did not arrive.
+ * The first version of this discarded it and recorded a count of
+ * failures — enough to know something was wrong, useless for knowing
+ * what, and it cost a round of blind guessing the first time a digest
+ * was accepted and never delivered.
+ *
+ * ACCEPTANCE IS NOT DELIVERY. A 200 from Resend means the message was
+ * queued, not that it reached a mailbox; it can still bounce, or be
+ * filed as spam. The run log now carries the id so the difference is
+ * checkable rather than assumed.
+ */
+interface SendResult { ok: boolean; id?: string; error?: string }
 
 /**
  * Constant-time string comparison.
@@ -74,8 +89,15 @@ async function sendEmail(
     },
     body: JSON.stringify({ from: FROM, to: [to], subject, html, text }),
   })
-  if (res.ok) return { ok: true }
-  return { ok: false, error: `${res.status} ${await res.text()}` }
+  const body = await res.text()
+  if (!res.ok) return { ok: false, error: `${res.status} ${body}` }
+  try {
+    return { ok: true, id: (JSON.parse(body) as { id?: string }).id }
+  } catch {
+    // Accepted, but the body was not what we expected. Worth recording
+    // rather than throwing: the mail is away either way.
+    return { ok: true, id: undefined }
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -102,6 +124,7 @@ Deno.serve(async (req: Request) => {
   let notes = 0
   let failed = 0
   let runError: string | null = null
+  const detail: Record<string, unknown>[] = []
 
   try {
     if (!RESEND_KEY) throw new Error('RESEND_API_KEY is not set')
@@ -144,9 +167,21 @@ Deno.serve(async (req: Request) => {
         // Left unmarked on purpose: it goes out on the next run rather
         // than being lost because the provider had a bad minute.
         failed++
+        detail.push({
+          to: d.recipientEmail, notes: d.total, accepted: false,
+          error: sent.error,
+        })
         console.error(`digest to ${d.recipientEmail} failed: ${sent.error}`)
         continue
       }
+
+      detail.push({
+        to: d.recipientEmail, notes: d.total, accepted: true,
+        // Look this up in the provider's dashboard to see whether it was
+        // actually delivered. Acceptance is not delivery.
+        message_id: sent.id ?? null,
+        from: FROM,
+      })
 
       const noteIds = d.books.flatMap((b) => b.notes.map((n) => n.noteId))
       const { error: markError } = await supabase.rpc('mark_digested', {
@@ -165,11 +200,11 @@ Deno.serve(async (req: Request) => {
     }
 
     await supabase.from('digest_run').insert({
-      recipients, notes, skipped, failed, error: null,
+      recipients, notes, skipped, failed, error: null, detail,
     })
 
     return Response.json({
-      ok: true, recipients, notes, skipped, failed,
+      ok: true, recipients, notes, skipped, failed, detail,
       ms: Date.now() - started,
     })
   } catch (e) {
@@ -178,7 +213,7 @@ Deno.serve(async (req: Request) => {
     // Recorded rather than swallowed: "did the digest go out" should
     // have an answer that is not "ask people whether they got one".
     await supabase.from('digest_run').insert({
-      recipients, notes, skipped: 0, failed, error: runError,
+      recipients, notes, skipped: 0, failed, error: runError, detail,
     })
     return Response.json({ ok: false, error: runError }, { status: 500 })
   }
