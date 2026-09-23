@@ -216,9 +216,16 @@ export function Tr({ className, ...props }: React.HTMLAttributes<HTMLTableRowEle
   return <tr className={cn('transition-colors hover:bg-brand-bright/[0.06]', className)} {...props} />
 }
 
-export function EmptyState({ title, detail }: { title: string; detail?: string }) {
+export function EmptyState({
+  title, detail, mark,
+}: { title: string; detail?: string; mark?: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-card border border-dashed border-hairline px-6 py-12 text-center">
+      {/* Optional, and off by default. Most empty states in this app sit
+          inside a card that is already labelled, where a mark would be
+          decoration. It earns its place only on a whole page that would
+          otherwise be blank. */}
+      {mark && <div className="mb-4 opacity-90">{mark}</div>}
       <p className="text-sm font-medium text-ink-secondary">{title}</p>
       {detail && <p className="mt-1 max-w-md text-xs text-ink-muted">{detail}</p>}
     </div>

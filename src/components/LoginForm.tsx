@@ -16,7 +16,8 @@
  */
 import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { AlertTriangle, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, Mail } from 'lucide-react'
+import { BrandMark } from '@/components/BrandMark'
 import { Button, Card, CardBody } from '@/components/ui/primitives'
 import { createClient } from '@/lib/supabase/client'
 import { codeEntryErrorMessage, signInErrorMessage } from '@/lib/domain/authErrors'
@@ -258,9 +259,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <Card className="w-full max-w-sm">
         <CardBody className="space-y-5 p-7">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand">
-              <ShieldCheck size={19} className="text-brand-bright" />
-            </span>
+            <BrandMark size={40} />
             <div>
               <div className="text-sm font-semibold tracking-tight">Fortress</div>
               <div className="text-2xs text-ink-muted">Job Book Tracker</div>

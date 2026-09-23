@@ -16,6 +16,7 @@ import {
 import {
   Button, Card, Chip, EmptyState, ProgressBar, Ring, SectionHeading, bandTone,
 } from '@/components/ui/primitives'
+import { BrandMark } from '@/components/BrandMark'
 import { num } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -51,6 +52,7 @@ export default async function PortfolioPage() {
 
       {books.length === 0 ? (
         <EmptyState
+          mark={<BrandMark size={64} />}
           title="No job books"
           detail="Create one from the checklist template, or ask a QA/QC manager to assign you to an existing book."
         />

@@ -1,6 +1,6 @@
 import Link from 'next/link'
-import { ShieldCheck } from 'lucide-react'
 import { currentViewer } from '@/lib/data/provider'
+import { BrandMark } from '@/components/BrandMark'
 import { roleLabel } from '@/lib/domain/roles'
 import { NotificationBell } from '@/components/NotificationBell'
 import { MainNav } from '@/components/MainNav'
@@ -14,9 +14,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-30 border-b border-hairline bg-canvas/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-4 px-4 sm:px-6">
           <Link href="/" className="flex items-center gap-2.5">
-            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand">
-              <ShieldCheck size={16} className="text-brand-bright" />
-            </span>
+            <BrandMark size={32} />
             <span className="text-sm font-semibold tracking-tight">
               Fortress <span className="text-ink-secondary font-normal">Job Book Tracker</span>
             </span>

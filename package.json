@@ -17,7 +17,8 @@
     "build:setup": "tsx scripts/build-setup-sql.ts",
     "verify:live": "tsx scripts/verify-live.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "verify:demo": "bash scripts/verify-demo.sh"
+    "verify:demo": "bash scripts/verify-demo.sh",
+    "build:icons": "tsx scripts/build-icons.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",
