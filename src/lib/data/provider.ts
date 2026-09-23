@@ -1968,10 +1968,27 @@ class SeedProvider implements DataProvider {
   // watch a heat on a book go from "missing" to "on file".
 
   async listMtrLibrary(viewer: Viewer, search?: string): Promise<MtrLibraryEntry[]> {
-    if (!can(viewer.role, 'view_internal')) return []
     const q = (search ?? '').trim().toUpperCase()
+    // Mirrors `mtr_document_read`: Fortress staff see the whole library,
+    // because the point is to find a certificate before knowing which job
+    // wants it. Anyone else sees only what a book they can read
+    // references — the list of every heat Fortress has ever bought is not
+    // one operator's to browse.
+    //
+    // An earlier version of this gated the whole method on view_internal
+    // while the Supabase one let RLS decide, which meant the demo and
+    // production disagreed about what a client could see. That is the
+    // same shape of divergence that had the dashboard reporting zero
+    // criticals, so it is written here as the policy reads.
+    const internal = can(viewer.role, 'view_internal')
+    const visibleHeats = internal ? null : new Set(
+      this.all()
+        .filter((b) => this.canSee(viewer, b))
+        .flatMap((b) => b.materialHeats.map((h) => heatKey(h.heatNumber))),
+    )
     return [...this.mtrs.values()]
       .filter((m) => !m.deletedAt)
+      .filter((m) => visibleHeats === null || visibleHeats.has(heatKey(m.heatNumber)))
       .filter((m) => !q
         || heatKey(m.heatNumber).includes(heatKey(q))
         || (m.materialDescription ?? '').toUpperCase().includes(q)

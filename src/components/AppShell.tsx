@@ -3,6 +3,7 @@ import { ShieldCheck } from 'lucide-react'
 import { currentViewer } from '@/lib/data/provider'
 import { roleLabel } from '@/lib/domain/roles'
 import { NotificationBell } from '@/components/NotificationBell'
+import { MainNav } from '@/components/MainNav'
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
   // Null only on a page that is itself public; the middleware redirects
@@ -20,6 +21,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               Fortress <span className="text-ink-secondary font-normal">Job Book Tracker</span>
             </span>
           </Link>
+          {viewer && <MainNav role={viewer.role} />}
           <div className="ml-auto flex items-center gap-3">
             {viewer && <>
               <NotificationBell />

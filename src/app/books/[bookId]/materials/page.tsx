@@ -1,4 +1,6 @@
+import Link from 'next/link'
 import { notFound, redirect} from 'next/navigation'
+import { FileText } from 'lucide-react'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { reconcileHeats } from '@/lib/domain/reconcile'
 import {
@@ -145,6 +147,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ book
                 <tr>
                   <Th>Heat</Th><Th>Component</Th><Th>Size</Th><Th>Sch/Class</Th>
                   <Th>Grade</Th><Th className="text-right">Welds</Th><Th>MTR</Th>
+                  <Th className="text-right">Certificate</Th>
                 </tr>
               </thead>
               <tbody>
@@ -165,6 +168,24 @@ export default async function MaterialsPage({ params }: { params: Promise<{ book
                           : h.mtrStatus === 'unidentified' ? <Chip tone="progress">Unidentified</Chip>
                           : h.mtrStatus === 'illegible' ? <Chip tone="progress">Illegible</Chip>
                           : <Chip tone="critical">Missing</Chip>}
+                      </Td>
+                      {/* The library link. Present whenever the heat
+                          resolved to a certificate, whatever the status
+                          says — a tech who marked a heat 'illegible' most
+                          wants to open the file and look again. */}
+                      <Td className="text-right">
+                        {h.mtrLibraryId ? (
+                          <a href={`/api/mtr/${h.mtrLibraryId}/file`}
+                             target="_blank" rel="noreferrer"
+                             className="inline-flex items-center gap-1 text-2xs text-brand-bright hover:underline">
+                            <FileText size={12} /> Open
+                          </a>
+                        ) : (
+                          <Link href={`/mtr?q=${encodeURIComponent(h.heatNumber)}`}
+                                className="text-2xs text-ink-muted hover:text-ink hover:underline">
+                            Find it
+                          </Link>
+                        )}
                       </Td>
                     </Tr>
                   )
