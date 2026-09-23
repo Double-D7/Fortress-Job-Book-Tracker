@@ -152,3 +152,37 @@ export function collidingHeats(heats: string[]): string[][] {
     .filter((s) => s.size > 1)
     .map((s) => [...s].sort())
 }
+
+/**
+ * The heats one certificate covers.
+ *
+ * A mill certificate is not one heat's paperwork. A single Weldbend sheet
+ * in this project's own files certifies KZ9, 3DL90 and KL5 — three
+ * products, three heats, one PDF, and it is page 2 of 4. Filing that
+ * document against one heat leaves the other two reading "missing" on
+ * every book that uses them, with the evidence already in the library
+ * and unreachable.
+ *
+ * So the heat field takes a list. Separators are whatever somebody
+ * typing off a document actually produces: spaces, commas, semicolons,
+ * newlines from a paste, and any run of them.
+ *
+ * Duplicates collapse on the matching key rather than the text, so
+ * "KZ9, kz-9" is one heat and not a collision with itself. Order is
+ * kept, because it is the order they appear on the certificate and that
+ * is how somebody checks their work against the page.
+ */
+export function parseHeatList(raw: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const piece of raw.split(/[\s,;]+/)) {
+    const heat = normalizeHeat(piece)
+    const key = heatKey(heat)
+    // Punctuation that reduces to nothing is not a heat number. Keeping
+    // it would file a certificate against something nothing can match.
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(heat)
+  }
+  return out
+}

@@ -33,7 +33,7 @@ describe('a clean batch', () => {
     const rows = fromFilenames(REAL)
     expect(classifyBatch(rows)).toEqual([null, null, null, null, null])
     expect(batchCounts(rows)).toEqual({
-      total: 5, ready: 5, missingHeat: 0, duplicate: 0,
+      total: 5, ready: 5, missingHeat: 0, duplicate: 0, heats: 5,
     })
   })
 
@@ -186,5 +186,62 @@ describe('what the screen tells the person', () => {
       if (issue === null) continue
       expect(ISSUE_LABELS[issue], issue).toBeTruthy()
     }
+  })
+})
+
+describe('one certificate covering several heats', () => {
+  /** The real Weldbend sheet: three products, three heats, one PDF. */
+  const WELDBEND: BatchRow = { filename: '2 CL300 FLG KL5.pdf', heat: 'KZ9 3DL90 KL5' }
+
+  it('is ready, not blocked, when one row lists several heats', () => {
+    // The flaw this replaces: the row took one heat and the other two
+    // stayed missing on every book that used them.
+    expect(classifyBatch([WELDBEND])).toEqual([null])
+  })
+
+  it('counts the heats, not just the files', () => {
+    const counts = batchCounts([WELDBEND, { filename: 'a.pdf', heat: 'D07821' }])
+    expect(counts.total).toBe(2)
+    expect(counts.ready).toBe(2)
+    expect(counts.heats).toBe(4)
+  })
+
+  it('says how many heats when that differs from the file count', () => {
+    // "File 1 certificate" for a sheet closing three heats hides whether
+    // the other two were understood.
+    expect(fileButtonLabel(batchCounts([WELDBEND])))
+      .toBe('File 1 certificate (3 heats)')
+  })
+
+  it('does not add a heat count when every file covers one heat', () => {
+    expect(fileButtonLabel(batchCounts(fromFilenames(REAL))))
+      .toBe('File 5 certificates')
+  })
+
+  it('catches a heat on this sheet clashing with another file', () => {
+    // KL5 appears on the Weldbend sheet and again on its own. Both rows
+    // are blocked, because the application cannot tell which document is
+    // the certificate for KL5.
+    const rows: BatchRow[] = [WELDBEND, { filename: 'other.pdf', heat: 'KL5' }]
+    expect(classifyBatch(rows))
+      .toEqual(['duplicate_in_batch', 'duplicate_in_batch'])
+  })
+
+  it('does not treat a heat listed twice on one sheet as a clash', () => {
+    // Somebody typing off the page repeats one. That is one heat entered
+    // twice, not a collision, and blocking it would be nonsense.
+    expect(classifyBatch([{ filename: 'a.pdf', heat: 'KZ9 KL5 kz-9' }]))
+      .toEqual([null])
+    expect(batchCounts([{ filename: 'a.pdf', heat: 'KZ9 KL5 kz-9' }]).heats).toBe(2)
+  })
+
+  it('counts no heats from rows that are blocked', () => {
+    // A blocked row is not about to file anything, so its heats must not
+    // appear in a number that says what the batch will close.
+    const rows: BatchRow[] = [
+      { filename: 'a.pdf', heat: '' },
+      { filename: 'b.pdf', heat: 'KZ9 KL5' },
+    ]
+    expect(batchCounts(rows).heats).toBe(2)
   })
 })

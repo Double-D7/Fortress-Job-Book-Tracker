@@ -20,7 +20,7 @@ import type {
 import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
   GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
-  MtrLibraryEntry, MtrUploadInput, MtrUploadResult,
+  MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NoteInput, NotificationItem,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
@@ -1422,8 +1422,8 @@ export class SupabaseProvider implements DataProvider {
     if (!WRITERS.has(viewer.role)) {
       return { ok: false, error: 'Not permitted to file a mill certificate.' }
     }
-    const heat = normalizeHeat(input.heatNumber ?? '')
-    if (!heat) {
+    const heats = (input.heatNumbers ?? []).map(normalizeHeat).filter(Boolean)
+    if (heats.length === 0) {
       return { ok: false, error: 'A certificate has to be filed against a heat number.' }
     }
     if (!input.bytes || !input.sha256) {
@@ -1435,29 +1435,41 @@ export class SupabaseProvider implements DataProvider {
     // Checked before the upload so the caller reads a sentence rather
     // than a unique-index violation. The index is still what guarantees
     // it — two people filing the same heat at once race past this.
-    const { data: existing } = await supabase
-      .from('mtr_document').select('id, heat_number')
-      .eq('heat_key', heatKey(heat)).is('deleted_at', null).maybeSingle()
-    if (existing) {
-      return {
-        ok: false,
-        error: `Heat ${existing.heat_number} already has a certificate on file. ` +
+    const { data: taken } = await supabase
+      .from('mtr_document').select('heat_number, heat_key')
+      .in('heat_key', heats.map(heatKey)).is('deleted_at', null)
+
+    const takenKeys = new Map(
+      (taken ?? []).map((t) => [t.heat_key as string, t.heat_number as string]),
+    )
+    const rejected: { heat: string; error: string }[] = heats
+      .filter((h) => takenKeys.has(heatKey(h)))
+      .map((h) => ({
+        heat: h,
+        error: `Heat ${takenKeys.get(heatKey(h))} already has a certificate on file. ` +
           'Withdraw that one first if this supersedes it.',
+      }))
+
+    const toFile = heats.filter((h) => !takenKeys.has(heatKey(h)))
+    if (toFile.length === 0) {
+      return {
+        ok: false, rejected,
+        error: 'Every heat on this certificate is already on file.',
       }
     }
 
     // Content-addressed, like job book documents: the same bytes land on
-    // the same path, so a retry overwrites rather than orphaning.
+    // the same path. That is also what lets one certificate serve several
+    // heats — the rows differ, the stored object is written once.
     const storagePath = `mtr-library/${input.sha256}`
     const up = await supabase.storage.from(DOCUMENT_BUCKET)
       .upload(storagePath, input.bytes, {
         contentType: input.mimeType ?? 'application/pdf',
         upsert: true,
       })
-    if (up.error) return { ok: false, error: `Storage: ${up.error.message}` }
+    if (up.error) return { ok: false, rejected, error: `Storage: ${up.error.message}` }
 
-    const { data: row, error } = await supabase.from('mtr_document').insert({
-      heat_number: heat,
+    const shared = {
       material_description: input.materialDescription ?? null,
       nominal_size: input.nominalSize ?? null,
       schedule_or_class: input.scheduleOrClass ?? null,
@@ -1470,29 +1482,51 @@ export class SupabaseProvider implements DataProvider {
       certificate_date: input.certificateDate ?? null,
       storage_path: storagePath,
       original_filename: input.originalFilename,
-      normalized_filename: `MTR_${heat.replace(/[^A-Z0-9]/g, '')}.pdf`,
       sha256: input.sha256,
       byte_size: input.byteSize ?? null,
+      page_count: input.pageCount ?? null,
       mime_type: input.mimeType ?? 'application/pdf',
       notes: input.notes ?? null,
       uploaded_by: viewer.id,
-    }).select('id').single()
-
-    if (error || !row) {
-      // The row is what makes a certificate exist. An object with no row
-      // is invisible, so clean it up rather than leave it paid for.
-      await supabase.storage.from(DOCUMENT_BUCKET).remove([storagePath])
-      return { ok: false, error: error ? describe(error) : 'Could not file the certificate.' }
     }
 
+    const { data: rows, error } = await supabase.from('mtr_document').insert(
+      toFile.map((heat) => ({
+        ...shared,
+        heat_number: heat,
+        normalized_filename: `MTR_${heat.replace(/[^A-Z0-9]/g, '')}.pdf`,
+      })),
+    ).select('id, heat_number')
+
+    if (error || !rows || rows.length === 0) {
+      // A row is what makes a certificate exist. An object with no row is
+      // invisible — but only clean it up if nothing else points at it,
+      // because another heat filed earlier from the same document is
+      // still using this exact path.
+      const { count: stillUsed } = await supabase
+        .from('mtr_document').select('id', { count: 'exact', head: true })
+        .eq('storage_path', storagePath).is('deleted_at', null)
+      if ((stillUsed ?? 0) === 0) {
+        await supabase.storage.from(DOCUMENT_BUCKET).remove([storagePath])
+      }
+      return {
+        ok: false, rejected,
+        error: error ? describe(error) : 'Could not file the certificate.',
+      }
+    }
+
+    const filed = rows.map((r) => ({
+      heat: r.heat_number as string, mtrId: r.id as string,
+    }))
+
     // 0028's trigger has already linked every matching heat. Count them
-    // so the screen can say what the upload actually closed.
+    // across all the rows so the screen can say what the upload closed.
     const { count } = await supabase
       .from('material_heat')
       .select('id', { count: 'exact', head: true })
-      .eq('mtr_library_id', row.id as string)
+      .in('mtr_library_id', filed.map((f) => f.mtrId))
 
-    return { ok: true, mtrId: row.id as string, heatsResolved: count ?? 0 }
+    return { ok: true, filed, rejected, heatsResolved: count ?? 0 }
   }
 
   async withdrawMtr(
@@ -1514,7 +1548,7 @@ export class SupabaseProvider implements DataProvider {
   }
 
   async updateMtr(
-    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
+    viewer: Viewer, mtrId: string, patch: MtrPatch,
   ): Promise<ActionResult> {
     if (!WRITERS.has(viewer.role)) {
       return { ok: false, error: 'Not permitted to edit a mill certificate.' }

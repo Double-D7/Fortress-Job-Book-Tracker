@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  collidingHeats, heatFromFilename, heatKey, looksLikeHeat, normalizeHeat,
+  collidingHeats, heatFromFilename, heatKey, looksLikeHeat, normalizeHeat, parseHeatList,
   sameHeat,
 } from '@/lib/domain/heats'
 import { getDataProvider, type Viewer } from '@/lib/data/provider'
@@ -157,7 +157,7 @@ describe('the library, end to end', () => {
     // Punctuation differs on purpose: the certificate is filed one way
     // and the book typed it another.
     const res = await p.uploadMtr(manager, {
-      heatNumber: `${heat}`.replace(/(.{2})/, '$1-'),
+      heatNumbers: [`${heat}`.replace(/(.{2})/, '$1-')],
       originalFilename: `4_CL900_FLG_${heat}.pdf`,
       sha256: `sha-${heat}`,
     })
@@ -166,29 +166,72 @@ describe('the library, end to end', () => {
 
     const after = (await p.getBundle(manager, 'book-dp452'))!
       .materialHeats.find((h) => sameHeat(h.heatNumber, heat))!
-    expect(after.mtrLibraryId).toBe(res.mtrId)
+    expect(after.mtrLibraryId).toBe(res.filed![0]!.mtrId)
     expect(after.mtrStatus).toBe('on_file')
   })
 
   it('refuses a second live certificate for the same heat', async () => {
     const p = getDataProvider()
     const first = await p.uploadMtr(manager, {
-      heatNumber: 'DUP001', originalFilename: 'a.pdf', sha256: 'sha-dup-a',
+      heatNumbers: ['DUP001'], originalFilename: 'a.pdf', sha256: 'sha-dup-a',
     })
     expect(first.ok).toBe(true)
     // Same heat, written differently. One certificate per heat, or a book
     // resolves to whichever the query happened to return.
     const second = await p.uploadMtr(manager, {
-      heatNumber: 'dup-001', originalFilename: 'b.pdf', sha256: 'sha-dup-b',
+      heatNumbers: ['dup-001'], originalFilename: 'b.pdf', sha256: 'sha-dup-b',
     })
     expect(second.ok).toBe(false)
-    expect(second.error).toMatch(/already has a certificate/i)
+    // The reason now lands per heat rather than as one sentence for the
+    // file, because a certificate covering three heats can be refused for
+    // one of them and filed for the other two.
+    expect(second.rejected?.map((r) => r.heat)).toEqual(['DUP-001'])
+    expect(second.rejected?.[0]?.error).toMatch(/already has a certificate/i)
+  })
+
+  it('files the heats it can when one of them is already taken', async () => {
+    // The real Weldbend case: three heats on one sheet. If somebody filed
+    // one of them earlier from a different scan, the other two gaps are
+    // still real and this document still closes them.
+    const p = getDataProvider()
+    const first = await p.uploadMtr(manager, {
+      heatNumbers: ['PART01'], originalFilename: 'first.pdf', sha256: 'sha-part-1',
+    })
+    expect(first.ok).toBe(true)
+
+    const sheet = await p.uploadMtr(manager, {
+      heatNumbers: ['PART01', 'PART02', 'PART03'],
+      originalFilename: 'weldbend.pdf', sha256: 'sha-part-sheet',
+    })
+    expect(sheet.ok).toBe(true)
+    expect(sheet.filed?.map((f) => f.heat)).toEqual(['PART02', 'PART03'])
+    expect(sheet.rejected?.map((r) => r.heat)).toEqual(['PART01'])
+  })
+
+  it('files one certificate against every heat it covers', async () => {
+    const p = getDataProvider()
+    const res = await p.uploadMtr(manager, {
+      heatNumbers: ['WB-KZ9', 'WB-3DL90', 'WB-KL5'],
+      originalFilename: '2 CL300 FLG KL5.pdf', sha256: 'sha-weldbend',
+    })
+    expect(res.ok).toBe(true)
+    expect(res.filed).toHaveLength(3)
+
+    // Each heat is independently findable, and all three point at the one
+    // stored document rather than three copies of it.
+    const listed = await p.listMtrLibrary(manager)
+    const rows = res.filed!.map((f) => listed.find((m) => m.id === f.mtrId)!)
+    expect(rows.every(Boolean)).toBe(true)
+    expect(new Set(rows.map((r) => r.storagePath)).size).toBe(1)
+    for (const heat of ['WB-KZ9', 'WB-3DL90', 'WB-KL5']) {
+      expect((await p.listMtrLibrary(manager, heat)).length, heat).toBeGreaterThan(0)
+    }
   })
 
   it('refuses a certificate with no heat number', async () => {
     const p = getDataProvider()
     const res = await p.uploadMtr(manager, {
-      heatNumber: '   ', originalFilename: 'scan0001.pdf', sha256: 'sha-blank',
+      heatNumbers: ['   '], originalFilename: 'scan0001.pdf', sha256: 'sha-blank',
     })
     expect(res.ok).toBe(false)
   })
@@ -196,7 +239,7 @@ describe('the library, end to end', () => {
   it('does not let View Only file or withdraw a certificate', async () => {
     const p = getDataProvider()
     expect((await p.uploadMtr(readOnly, {
-      heatNumber: 'RO001', originalFilename: 'x.pdf', sha256: 'sha-ro',
+      heatNumbers: ['RO001'], originalFilename: 'x.pdf', sha256: 'sha-ro',
     })).ok).toBe(false)
   })
 
@@ -205,22 +248,22 @@ describe('the library, end to end', () => {
     const heat = 'WDR001'
     // Put the heat on a book first, then file and withdraw.
     const filed = await p.uploadMtr(manager, {
-      heatNumber: heat, originalFilename: `${heat}.pdf`, sha256: `sha-${heat}`,
+      heatNumbers: [heat], originalFilename: `${heat}.pdf`, sha256: `sha-${heat}`,
     })
     expect(filed.ok).toBe(true)
 
-    expect((await p.withdrawMtr(manager, filed.mtrId!, '')).ok).toBe(false)
-    expect((await p.withdrawMtr(manager, filed.mtrId!, 'Superseded by re-issue')).ok)
+    expect((await p.withdrawMtr(manager, filed.filed![0]!.mtrId, '')).ok).toBe(false)
+    expect((await p.withdrawMtr(manager, filed.filed![0]!.mtrId, 'Superseded by re-issue')).ok)
       .toBe(true)
 
     const listed = await p.listMtrLibrary(manager)
-    expect(listed.some((m) => m.id === filed.mtrId)).toBe(false)
+    expect(listed.some((m) => m.id === filed.filed![0]!.mtrId)).toBe(false)
   })
 
   it('finds a certificate by heat however it is punctuated', async () => {
     const p = getDataProvider()
     await p.uploadMtr(manager, {
-      heatNumber: 'SRCH-42', originalFilename: 'x.pdf', sha256: 'sha-srch',
+      heatNumbers: ['SRCH-42'], originalFilename: 'x.pdf', sha256: 'sha-srch',
       materialDescription: '4in CL600 flange',
     })
     expect((await p.listMtrLibrary(manager, 'srch42')).length).toBeGreaterThan(0)
@@ -239,12 +282,12 @@ describe('the library, end to end', () => {
 
     const theirHeat = (await p.getBundle(client, 'book-dp452'))!.materialHeats[0]!
     await p.uploadMtr(manager, {
-      heatNumber: theirHeat.heatNumber, originalFilename: 'theirs.pdf',
+      heatNumbers: [theirHeat.heatNumber], originalFilename: 'theirs.pdf',
       sha256: 'sha-theirs',
     })
     // A heat on no book of theirs.
     await p.uploadMtr(manager, {
-      heatNumber: 'NOTTHEIRS9', originalFilename: 'other.pdf', sha256: 'sha-other',
+      heatNumbers: ['NOTTHEIRS9'], originalFilename: 'other.pdf', sha256: 'sha-other',
     })
 
     const seen = await p.listMtrLibrary(client)
@@ -264,5 +307,53 @@ describe('the library, end to end', () => {
       fullName: 'P. Nakamura', role: 'third_party_inspector', clientOrgId: null,
     }
     expect(await p.listMtrLibrary(inspector)).toEqual([])
+  })
+})
+
+describe('the heats one certificate covers', () => {
+  /** The real Weldbend sheet from this project's files: three products,
+   *  three heats, one PDF, and it is page 2 of 4. */
+  const WELDBEND = ['KZ9', '3DL90', 'KL5']
+
+  it('reads the three heats off the real multi-heat certificate', () => {
+    expect(parseHeatList('KZ9 3DL90 KL5')).toEqual(WELDBEND)
+  })
+
+  it('takes whatever separator somebody actually types', () => {
+    for (const raw of [
+      'KZ9 3DL90 KL5',
+      'KZ9, 3DL90, KL5',
+      'KZ9,3DL90,KL5',
+      'KZ9; 3DL90; KL5',
+      'KZ9\n3DL90\nKL5',
+      '  KZ9   3DL90 \t KL5  ',
+    ]) {
+      expect(parseHeatList(raw), JSON.stringify(raw)).toEqual(WELDBEND)
+    }
+  })
+
+  it('keeps the order they appear on the certificate', () => {
+    // How somebody checks their typing against the page.
+    expect(parseHeatList('KL5 KZ9 3DL90')).toEqual(['KL5', 'KZ9', '3DL90'])
+  })
+
+  it('still handles the ordinary single heat', () => {
+    expect(parseHeatList('D07821')).toEqual(['D07821'])
+    expect(parseHeatList('  d07821 ')).toEqual(['D07821'])
+  })
+
+  it('collapses a heat typed twice, on the matching key', () => {
+    // "KZ9, kz-9" is one heat entered twice, not two heats and not a
+    // collision with itself.
+    expect(parseHeatList('KZ9 kz-9')).toEqual(['KZ9'])
+    expect(parseHeatList('D-07821 D07821 A80683')).toEqual(['D-07821', 'A80683'])
+  })
+
+  it('drops anything that is not a heat number', () => {
+    expect(parseHeatList('')).toEqual([])
+    expect(parseHeatList('   ')).toEqual([])
+    expect(parseHeatList('--- ///')).toEqual([])
+    // And does not let junk between real heats lose them.
+    expect(parseHeatList('KZ9 -- KL5')).toEqual(['KZ9', 'KL5'])
   })
 })

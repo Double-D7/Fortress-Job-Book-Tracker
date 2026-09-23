@@ -32,7 +32,7 @@ import {
   Check, Download, FileUp, Loader2, Search, TriangleAlert, Upload, X,
 } from 'lucide-react'
 import type { MtrLibraryEntry } from '@/lib/data/provider'
-import { collidingHeats, heatFromFilename } from '@/lib/domain/heats'
+import { collidingHeats, heatFromFilename, parseHeatList } from '@/lib/domain/heats'
 import {
   ISSUE_LABELS, batchCounts, classifyBatch, fileButtonLabel, heldBackSummary,
 } from '@/lib/domain/mtrBatch'
@@ -131,23 +131,39 @@ export function MtrLibrary({
       try {
         const body = new FormData()
         body.append('file', row.file)
-        body.append('heatNumber', row.heat.trim())
+        body.append('heatNumbers', row.heat)
         if (row.material.trim()) body.append('materialDescription', row.material.trim())
         if (mill.trim()) body.append('millName', mill.trim())
 
         const res = await fetch('/api/mtr', { method: 'POST', body })
         const json = await res.json()
 
+        const filedHeats: string[] = (json.filed ?? []).map(
+          (f: { heat: string }) => f.heat,
+        )
+        const rejected: { heat: string; error: string }[] = json.rejected ?? []
+
         if (json.ok) {
           const n = json.heatsResolved ?? 0
-          edit(row.id, {
-            state: 'filed',
-            message: n > 0
-              ? `Filed — ${n} heat${n === 1 ? '' : 's'} now reads “on file”`
-              : 'Filed — no job book references it yet',
-          })
+          const covered = filedHeats.length > 1
+            ? `Filed for ${filedHeats.length} heats (${filedHeats.join(', ')})`
+            : `Filed for ${filedHeats[0] ?? row.heat.trim()}`
+          const closed = n > 0
+            ? ` — ${n} heat${n === 1 ? '' : 's'} now reads “on file”`
+            : ' — no job book references it yet'
+          // A partly-rejected certificate must say so on success, or the
+          // heat that did not file disappears behind a green tick.
+          const held = rejected.length > 0
+            ? ` · ${rejected.length} not filed: ${rejected.map((r) => r.heat).join(', ')}`
+            : ''
+          edit(row.id, { state: 'filed', message: covered + closed + held })
         } else {
-          edit(row.id, { state: 'failed', message: json.error ?? 'That did not go through.' })
+          edit(row.id, {
+            state: 'failed',
+            message: rejected.length > 0
+              ? rejected.map((r) => r.error).join(' ')
+              : json.error ?? 'That did not go through.',
+          })
         }
       } catch {
         // One failure does not stop the queue. The rest of the folder is
@@ -171,10 +187,11 @@ export function MtrLibrary({
           <CardHeader><CardTitle>File mill certificates</CardTitle></CardHeader>
           <CardBody className="space-y-3">
             <p className="text-xs leading-relaxed text-ink-secondary">
-              One certificate per heat number, shared by every job book. Choose a whole folder
-              at once — each heat number is suggested from its filename for you to check.
-              Upload a certificate once and every book that references that heat resolves to
-              it, including books that referenced it before it arrived.
+              Choose a whole folder at once. Each heat number is suggested from its filename
+              for you to check — and a certificate that covers several heats takes all of
+              them, separated by spaces or commas. Upload it once and every book referencing
+              any of those heats resolves to it, including books that referenced them before
+              it arrived.
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -196,18 +213,20 @@ export function MtrLibrary({
             {queue.length > 0 && (
               <div className="space-y-3 rounded-md border border-hairline p-3">
                 <p className="text-2xs leading-relaxed text-ink-secondary">
-                  <strong className="text-ink">Check each heat number against its certificate.</strong>{' '}
-                  They are suggested from filenames, not read from the documents — most mill
-                  certificates are scans with no text in them. A wrong heat number files that
-                  certificate against the wrong steel, and the book would report the material
-                  as traceable.
+                  <strong className="text-ink">Check each certificate for every heat it covers.</strong>{' '}
+                  Heats are suggested from filenames, not read from the documents — most mill
+                  certificates are scans with no text in them, and one sheet often certifies
+                  several products at once. A missed heat leaves that steel reading “no MTR”
+                  with the certificate already here; a wrong one files this certificate
+                  against the wrong steel, and the book would report the material as
+                  traceable.
                 </p>
 
                 <div className="overflow-x-auto">
                   <Table>
                     <thead>
                       <Tr>
-                        <Th>File</Th><Th>Heat number</Th><Th>Material (optional)</Th>
+                        <Th>File</Th><Th>Heat numbers</Th><Th>Material (optional)</Th>
                         <Th>Status</Th><Th />
                       </Tr>
                     </thead>
@@ -222,7 +241,7 @@ export function MtrLibrary({
                             </Td>
                             <Td>
                               <input
-                                className={`${FIELD} w-32 font-mono ${
+                                className={`${FIELD} w-48 font-mono ${
                                   issue ? 'border-status-critical/60' : ''
                                 }`}
                                 value={q.heat}
@@ -232,8 +251,17 @@ export function MtrLibrary({
                                 // that was entered and refused, since the
                                 // placeholder is only ever visible on a
                                 // row that is blocked for being empty.
-                                placeholder="Read it off"
+                                placeholder="Read them off"
                               />
+                              {/* What was actually understood from what
+                                  was typed. A person adding a second heat
+                                  should see it register, not find out
+                                  after filing. */}
+                              {parseHeatList(q.heat).length > 1 && (
+                                <div className="mt-0.5 text-2xs text-ink-muted">
+                                  {parseHeatList(q.heat).length} heats on this certificate
+                                </div>
+                              )}
                             </Td>
                             <Td>
                               <input

@@ -400,9 +400,14 @@ export interface DataProvider {
    *  book they can read — which RLS enforces, not this. */
   listMtrLibrary(viewer: Viewer, search?: string): Promise<MtrLibraryEntry[]>
 
-  /** File a certificate against a heat number. The heat is confirmed by a
-   *  person, not read from the PDF — four of five real certificates are
-   *  scans with no text in them at all. */
+  /** File a certificate against the heats it covers. The heats are
+   *  confirmed by a person, not read from the PDF — four of five real
+   *  certificates are scans with no text in them at all.
+   *
+   *  Plural because a mill certificate routinely covers several heats:
+   *  one real Weldbend sheet here certifies three products on one page.
+   *  Filing it against one heat would leave the others reading "missing"
+   *  with the evidence already in the library. */
   uploadMtr(viewer: Viewer, input: MtrUploadInput): Promise<MtrUploadResult>
 
   /** Withdraw a certificate. Books referencing that heat fall back to
@@ -410,9 +415,7 @@ export interface DataProvider {
   withdrawMtr(viewer: Viewer, mtrId: string, reason: string): Promise<ActionResult>
 
   /** Update the descriptive fields, or correct the heat number. */
-  updateMtr(
-    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
-  ): Promise<ActionResult>
+  updateMtr(viewer: Viewer, mtrId: string, patch: MtrPatch): Promise<ActionResult>
 
   /** A short-lived signed URL for the certificate file, logged before it
    *  is handed out. Null when the viewer may not see it. */
@@ -428,11 +431,18 @@ export interface MtrLibraryEntry extends MtrDocument {
 }
 
 export interface MtrUploadInput {
-  heatNumber: string
+  /** Every heat this certificate covers, in the order they appear on it.
+   *  One file, one stored object, one row per heat — so each heat
+   *  resolves independently while the PDF is held once. */
+  heatNumbers: string[]
   originalFilename: string
   bytes?: Uint8Array
   sha256?: string
   byteSize?: number
+  /** Pages in the PDF. Structural, never content — it is shown beside the
+   *  heat count so a four-page certificate recorded against one heat
+   *  looks like what it probably is. */
+  pageCount?: number | null
   mimeType?: string
   materialDescription?: string | null
   nominalSize?: string | null
@@ -447,14 +457,35 @@ export interface MtrUploadInput {
   notes?: string | null
 }
 
+/**
+ * Correcting one filed row.
+ *
+ * Singular where the upload is plural, and that is the real difference:
+ * filing is "here is a document and the heats it covers", while this is
+ * "this one row is wrong". Correcting a row must not silently refile the
+ * others that came from the same certificate.
+ */
+export type MtrPatch =
+  Omit<Partial<MtrUploadInput>, 'heatNumbers'> & { heatNumber?: string }
+
 export interface MtrUploadResult {
+  /** True when at least one heat was filed. A certificate covering three
+   *  heats where one was already on file is a partial success, and
+   *  refusing the other two over it would be the wrong call — the two
+   *  gaps are real and this document closes them. */
   ok: boolean
-  mtrId?: string
-  /** Heats that resolved to this certificate the moment it landed. The
+  /** One per heat that was filed, in the order given. */
+  filed?: { heat: string; mtrId: string }[]
+  /** Heats this file could not be filed against, each with the reason.
+   *  Kept separate from `error` so a caller can show them per heat
+   *  rather than collapsing three outcomes into one sentence. */
+  rejected?: { heat: string; error: string }[]
+  /** Heats across all books that resolved the moment it landed. The
    *  number worth showing: uploading one file can close a gap on several
    *  books at once, and saying so is what makes the library feel useful
    *  rather than like another filing chore. */
   heatsResolved?: number
+  /** Set only when nothing could be filed at all. */
   error?: string
 }
 
@@ -2009,60 +2040,84 @@ class SeedProvider implements DataProvider {
     if (!can(viewer.role, 'edit_records')) {
       return { ok: false, error: 'Not permitted to file a mill certificate.' }
     }
-    const heat = normalizeHeat(input.heatNumber ?? '')
-    if (!heat) {
+    const heats = (input.heatNumbers ?? []).map(normalizeHeat).filter(Boolean)
+    if (heats.length === 0) {
       return { ok: false, error: 'A certificate has to be filed against a heat number.' }
     }
+
     // One live certificate per heat, matching the database's unique index.
-    const clash = [...this.mtrs.values()]
-      .find((m) => !m.deletedAt && sameHeat(m.heatNumber, heat))
-    if (clash) {
+    // Heats already taken are reported individually rather than failing
+    // the whole certificate: the gaps the other heats close are real.
+    const rejected: { heat: string; error: string }[] = []
+    const toFile: string[] = []
+    for (const heat of heats) {
+      const clash = [...this.mtrs.values()]
+        .find((m) => !m.deletedAt && sameHeat(m.heatNumber, heat))
+      if (clash) {
+        rejected.push({
+          heat,
+          error: `Heat ${clash.heatNumber} already has a certificate on file. ` +
+            'Withdraw that one first if this supersedes it.',
+        })
+      } else {
+        toFile.push(heat)
+      }
+    }
+    if (toFile.length === 0) {
       return {
-        ok: false,
-        error: `Heat ${clash.heatNumber} already has a certificate on file. ` +
-          'Withdraw that one first if this supersedes it.',
+        ok: false, rejected,
+        error: 'Every heat on this certificate is already on file.',
       }
     }
 
-    const id = `seed-mtr-${this.mtrs.size + 1}`
-    this.mtrs.set(id, {
-      id,
-      heatNumber: heat,
-      materialDescription: input.materialDescription ?? null,
-      nominalSize: input.nominalSize ?? null,
-      scheduleOrClass: input.scheduleOrClass ?? null,
-      grade: input.grade ?? null,
-      componentType: input.componentType ?? null,
-      heatTreatment: input.heatTreatment ?? null,
-      millName: input.millName ?? null,
-      supplierName: input.supplierName ?? null,
-      certificateNumber: input.certificateNumber ?? null,
-      certificateDate: input.certificateDate ?? null,
-      storagePath: `mtr-library/${input.sha256 ?? id}`,
-      originalFilename: input.originalFilename,
-      normalizedFilename: `MTR_${heat}.pdf`,
-      sha256: input.sha256 ?? id,
-      byteSize: input.byteSize ?? null,
-      pageCount: null,
-      mimeType: input.mimeType ?? 'application/pdf',
-      notes: input.notes ?? null,
-      uploadedBy: viewer.id,
-      uploadedAt: new Date().toISOString(),
-      deletedAt: null,
-    })
-
-    // The mirror of 0028's backfill trigger: a certificate arriving for a
-    // heat somebody typed last month closes the gap immediately.
+    // One stored object, one row per heat — the same shape the Supabase
+    // provider produces, because the path is content-addressed.
+    const sha = input.sha256 ?? `seed-sha-${this.mtrs.size + 1}`
+    const filed: { heat: string; mtrId: string }[] = []
     let heatsResolved = 0
-    for (const b of this.all()) {
-      for (const h of b.materialHeats) {
-        if (!sameHeat(h.heatNumber, heat)) continue
-        h.mtrLibraryId = id
-        if (h.mtrStatus === 'missing') h.mtrStatus = 'on_file'
-        heatsResolved++
+
+    for (const heat of toFile) {
+      const id = `seed-mtr-${this.mtrs.size + 1}`
+      this.mtrs.set(id, {
+        id,
+        heatNumber: heat,
+        materialDescription: input.materialDescription ?? null,
+        nominalSize: input.nominalSize ?? null,
+        scheduleOrClass: input.scheduleOrClass ?? null,
+        grade: input.grade ?? null,
+        componentType: input.componentType ?? null,
+        heatTreatment: input.heatTreatment ?? null,
+        millName: input.millName ?? null,
+        supplierName: input.supplierName ?? null,
+        certificateNumber: input.certificateNumber ?? null,
+        certificateDate: input.certificateDate ?? null,
+        storagePath: `mtr-library/${sha}`,
+        originalFilename: input.originalFilename,
+        normalizedFilename: `MTR_${heat.replace(/[^A-Z0-9]/g, '')}.pdf`,
+        sha256: sha,
+        byteSize: input.byteSize ?? null,
+        pageCount: input.pageCount ?? null,
+        mimeType: input.mimeType ?? 'application/pdf',
+        notes: input.notes ?? null,
+        uploadedBy: viewer.id,
+        uploadedAt: new Date().toISOString(),
+        deletedAt: null,
+      })
+      filed.push({ heat, mtrId: id })
+
+      // The mirror of 0028's backfill trigger: a certificate arriving for
+      // a heat somebody typed last month closes the gap immediately.
+      for (const b of this.all()) {
+        for (const h of b.materialHeats) {
+          if (!sameHeat(h.heatNumber, heat)) continue
+          h.mtrLibraryId = id
+          if (h.mtrStatus === 'missing') h.mtrStatus = 'on_file'
+          heatsResolved++
+        }
       }
     }
-    return { ok: true, mtrId: id, heatsResolved }
+
+    return { ok: true, filed, rejected, heatsResolved }
   }
 
   async withdrawMtr(
@@ -2091,7 +2146,7 @@ class SeedProvider implements DataProvider {
   }
 
   async updateMtr(
-    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
+    viewer: Viewer, mtrId: string, patch: MtrPatch,
   ): Promise<ActionResult> {
     if (!can(viewer.role, 'edit_records')) {
       return { ok: false, error: 'Not permitted to edit a mill certificate.' }

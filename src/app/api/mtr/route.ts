@@ -1,13 +1,21 @@
 import { NextResponse } from 'next/server'
 import { createHash } from 'node:crypto'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
+import { parseHeatList } from '@/lib/domain/heats'
+import { pdfPageCount } from '@/lib/import/pdfPageCount'
 
 /**
- * File a mill certificate against a heat number.
+ * File a mill certificate against the heats it covers.
  *
- * The heat number arrives from the form, not from the file. The
- * application suggests one from the filename and a person confirms it —
- * see `heats.ts` for why reading it out of the PDF is not on offer.
+ * Plural. A mill certificate routinely certifies several products on one
+ * sheet — a real Weldbend page in this project's files covers three —
+ * and filing it against one heat leaves the rest reading "missing" with
+ * the evidence already in the library.
+ *
+ * The heats arrive from the form, not from the file. The application
+ * suggests one from the filename and a person confirms and completes the
+ * list — see `heats.ts` for why reading them out of the PDF is not on
+ * offer.
  */
 export const dynamic = 'force-dynamic'
 
@@ -37,8 +45,11 @@ export async function POST(request: Request) {
     )
   }
 
-  const heatNumber = String(form.get('heatNumber') ?? '').trim()
-  if (!heatNumber) {
+  // Parsed here rather than in the browser, with the same function the
+  // browser shows its preview from, so what was displayed and what is
+  // filed cannot disagree.
+  const heatNumbers = parseHeatList(String(form.get('heatNumbers') ?? ''))
+  if (heatNumbers.length === 0) {
     return NextResponse.json(
       { ok: false, error: 'A certificate has to be filed against a heat number.' },
       { status: 400 },
@@ -54,8 +65,9 @@ export async function POST(request: Request) {
   }
 
   const result = await getDataProvider().uploadMtr(viewer, {
-    heatNumber,
+    heatNumbers,
     originalFilename: file.name,
+    pageCount: pdfPageCount(bytes),
     bytes,
     sha256,
     byteSize: file.size,

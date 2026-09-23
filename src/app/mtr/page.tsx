@@ -20,7 +20,7 @@ export default async function MtrPage({
     <>
       <SectionHeading
         title="Mill certificates"
-        subtitle="One certificate per heat number, shared by every job book (§15)"
+        subtitle="Every heat's certificate, shared by every job book — and one sheet can cover several heats (§15)"
       />
       <MtrLibrary
         entries={entries}

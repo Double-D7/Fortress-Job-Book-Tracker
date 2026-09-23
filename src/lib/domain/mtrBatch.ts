@@ -36,7 +36,7 @@
  * taken before the upload started, and stale the moment a colleague filed
  * something. Those rejections come back per row and are shown per row.
  */
-import { heatKey } from './heats'
+import { heatKey, parseHeatList } from './heats'
 
 /** Why a row cannot be filed, or `null` when it can. */
 export type RowIssue = 'missing_heat' | 'duplicate_in_batch'
@@ -44,7 +44,12 @@ export type RowIssue = 'missing_heat' | 'duplicate_in_batch'
 export type BatchRow = {
   /** As chosen, for display and for matching a result back to its row. */
   filename: string
-  /** Suggested from the filename, then whatever the person edited it to. */
+  /**
+   * The heats this certificate covers, as typed — one field holding a
+   * list, because a mill certificate routinely certifies several
+   * products on one sheet. Suggested from the filename, then completed
+   * by the person reading the document.
+   */
   heat: string
 }
 
@@ -55,20 +60,24 @@ export type BatchRow = {
  * cannot lose track of which row an issue belongs to.
  */
 export function classifyBatch(rows: readonly BatchRow[]): (RowIssue | null)[] {
+  // Counted per heat, not per row, because one row can now carry several.
+  // A certificate covering KZ9 and KL5 clashes with another row claiming
+  // KL5, and that has to surface on both.
   const seen = new Map<string, number>()
   for (const row of rows) {
-    const key = heatKey(row.heat)
-    if (key) seen.set(key, (seen.get(key) ?? 0) + 1)
+    for (const key of parseHeatList(row.heat).map(heatKey)) {
+      seen.set(key, (seen.get(key) ?? 0) + 1)
+    }
   }
 
   return rows.map((row) => {
-    const key = heatKey(row.heat)
+    const keys = parseHeatList(row.heat).map(heatKey)
     // Blank, or punctuation that reduces to nothing. Both mean nobody has
     // said what this certificate is for.
-    if (!key) return 'missing_heat'
+    if (keys.length === 0) return 'missing_heat'
     // Every row of a collision is blocked, not all but the first. The
     // whole point is that the application cannot tell which file is which.
-    if ((seen.get(key) ?? 0) > 1) return 'duplicate_in_batch'
+    if (keys.some((k) => (seen.get(k) ?? 0) > 1)) return 'duplicate_in_batch'
     return null
   })
 }
@@ -84,6 +93,10 @@ export type BatchCounts = {
   ready: number
   missingHeat: number
   duplicate: number
+  /** Heats across every ready row. A folder of forty certificates can
+   *  cover far more than forty heats, and that is the number that says
+   *  what the batch actually closes. */
+  heats: number
 }
 
 export function batchCounts(rows: readonly BatchRow[]): BatchCounts {
@@ -93,6 +106,10 @@ export function batchCounts(rows: readonly BatchRow[]): BatchCounts {
     ready: issues.filter((i) => i === null).length,
     missingHeat: issues.filter((i) => i === 'missing_heat').length,
     duplicate: issues.filter((i) => i === 'duplicate_in_batch').length,
+    heats: rows.reduce(
+      (n, row, i) => n + (issues[i] === null ? parseHeatList(row.heat).length : 0),
+      0,
+    ),
   }
 }
 
@@ -133,7 +150,14 @@ export function fileButtonLabel(counts: BatchCounts): string {
   // In "1 of 4" the noun belongs to the four, not to the one.
   const governing = counts.ready === counts.total ? counts.ready : counts.total
   const noun = governing === 1 ? 'certificate' : 'certificates'
+  // When a certificate covers more than one heat, the heat count is the
+  // number that says what is about to happen — "File 2 certificates"
+  // under a batch closing five heats undersells it and, worse, hides
+  // whether the extra heats were understood.
+  const heats = counts.heats > counts.ready
+    ? ` (${counts.heats} heats)`
+    : ''
   return counts.ready === counts.total
-    ? `File ${counts.ready} ${noun}`
-    : `File ${counts.ready} of ${counts.total} ${noun}`
+    ? `File ${counts.ready} ${noun}${heats}`
+    : `File ${counts.ready} of ${counts.total} ${noun}${heats}`
 }
