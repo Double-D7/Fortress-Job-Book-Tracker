@@ -588,10 +588,51 @@ export interface MaterialHeat extends EnteredRecord {
   grade?: string | null
   description?: string | null
   mtrDocumentId?: string | null
+  /** The library certificate matching this heat, resolved automatically
+   *  by heat number. Distinct from `mtrDocumentId`, which is a document
+   *  attached to this book specifically. */
+  mtrLibraryId?: string | null
   mtrStatus: MtrStatus
   /** §8.2 precondition 4: the MTR is captured against the heat AT RECEIPT.
    *  Without this date the precondition cannot be shown to have been met. */
   receivedOn?: IsoDate | null
+}
+
+/**
+ * One mill certificate in the library.
+ *
+ * Not scoped to a job book: the certificate for heat D07821 is the same
+ * certificate wherever that steel was used, and filing it per-book means
+ * filing it repeatedly and losing it individually.
+ */
+export interface MtrDocument {
+  id: string
+  /** As the mill wrote it, uppercased. Matching is on letters and digits
+   *  only, so `D-07821` and `D07821` are one heat. */
+  heatNumber: string
+  materialDescription?: string | null
+  nominalSize?: string | null
+  scheduleOrClass?: string | null
+  grade?: string | null
+  componentType?: string | null
+  heatTreatment?: string | null
+  /** §15 traceability is to the mill, not the distributor, and the two
+   *  are usually different. */
+  millName?: string | null
+  supplierName?: string | null
+  certificateNumber?: string | null
+  certificateDate?: IsoDate | null
+  storagePath: string
+  originalFilename: string
+  normalizedFilename: string
+  sha256: string
+  byteSize?: number | null
+  pageCount?: number | null
+  mimeType?: string | null
+  notes?: string | null
+  uploadedBy?: string | null
+  uploadedAt: string
+  deletedAt?: string | null
 }
 
 export interface PressureTest extends EnteredRecord {

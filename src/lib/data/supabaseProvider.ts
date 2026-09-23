@@ -15,11 +15,12 @@
  * a PostgREST error code.
  */
 import type {
-  CompetencyLevel, GateReview, JobBookBundle, UserRole,
+  CompetencyLevel, GateReview, JobBookBundle, MtrDocument, UserRole,
 } from '@/lib/domain/types'
 import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
   GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
+  MtrLibraryEntry, MtrUploadInput, MtrUploadResult,
   NoteInput, NotificationItem,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
@@ -28,6 +29,7 @@ import type {
 } from './provider'
 import { can, rolesWith } from '@/lib/domain/roles'
 import type { NoteSeverity } from '@/lib/domain/notifications'
+import { heatKey, normalizeHeat } from '@/lib/domain/heats'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
   buildWeldLogPreview, redactForViewer, summarizeBook,
@@ -44,7 +46,7 @@ import { latestOfTier, scoreAudit } from '@/lib/domain/audits'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import { createClient } from '@/lib/supabase/server'
 import { COLUMNS, domainToRow, rowToDomain, rowsToDomain } from './rowMap'
-import { DOCUMENT_BUCKET } from '@/lib/supabase/storage'
+import { DOCUMENT_BUCKET, signMtrUrl } from '@/lib/supabase/storage'
 
 /** Statuses at or past hand-over. Countdowns stop here. */
 const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
@@ -1362,6 +1364,190 @@ export class SupabaseProvider implements DataProvider {
       p_job_book_id: jobBookId ?? null,
     })
     return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  // -- The MTR library, §15 ----------------------------------------------
+
+  async listMtrLibrary(viewer: Viewer, search?: string): Promise<MtrLibraryEntry[]> {
+    const supabase = await createClient()
+    // No role filter here. `mtr_document_read` gives Fortress staff the
+    // whole library and everyone else only what a book they can read
+    // references — restating that would be a second copy of the rule.
+    let q = supabase.from('mtr_document').select('*')
+      .is('deleted_at', null)
+      .order('uploaded_at', { ascending: false })
+      .limit(500)
+
+    const term = (search ?? '').trim()
+    if (term) {
+      // Heat first, because that is what somebody types. The key form so
+      // that searching D-07821 finds a certificate filed as D07821.
+      const key = heatKey(term)
+      q = q.or(
+        [`heat_key.ilike.%${key}%`,
+         `material_description.ilike.%${term}%`,
+         `mill_name.ilike.%${term}%`,
+         `certificate_number.ilike.%${term}%`].join(','))
+    }
+
+    const { data } = await q
+    const mtrs = rowsToDomain<MtrDocument>(data)
+    if (mtrs.length === 0) return []
+
+    // How many heats lean on each certificate, so somebody about to
+    // withdraw one can see what it would un-file.
+    const { data: refs } = await supabase
+      .from('material_heat')
+      .select('mtr_library_id, job_book_id')
+      .in('mtr_library_id', mtrs.map((m) => m.id))
+      .is('deleted_at', null)
+
+    const byMtr = new Map<string, { heats: number; books: Set<string> }>()
+    for (const r of refs ?? []) {
+      const id = r.mtr_library_id as string
+      const e = byMtr.get(id) ?? { heats: 0, books: new Set<string>() }
+      e.heats++
+      e.books.add(r.job_book_id as string)
+      byMtr.set(id, e)
+    }
+
+    return mtrs.map((m) => ({
+      ...m,
+      referencedByHeats: byMtr.get(m.id)?.heats ?? 0,
+      referencedByBooks: byMtr.get(m.id)?.books.size ?? 0,
+    }))
+  }
+
+  async uploadMtr(viewer: Viewer, input: MtrUploadInput): Promise<MtrUploadResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to file a mill certificate.' }
+    }
+    const heat = normalizeHeat(input.heatNumber ?? '')
+    if (!heat) {
+      return { ok: false, error: 'A certificate has to be filed against a heat number.' }
+    }
+    if (!input.bytes || !input.sha256) {
+      return { ok: false, error: 'File content was not received.' }
+    }
+
+    const supabase = await createClient()
+
+    // Checked before the upload so the caller reads a sentence rather
+    // than a unique-index violation. The index is still what guarantees
+    // it — two people filing the same heat at once race past this.
+    const { data: existing } = await supabase
+      .from('mtr_document').select('id, heat_number')
+      .eq('heat_key', heatKey(heat)).is('deleted_at', null).maybeSingle()
+    if (existing) {
+      return {
+        ok: false,
+        error: `Heat ${existing.heat_number} already has a certificate on file. ` +
+          'Withdraw that one first if this supersedes it.',
+      }
+    }
+
+    // Content-addressed, like job book documents: the same bytes land on
+    // the same path, so a retry overwrites rather than orphaning.
+    const storagePath = `mtr-library/${input.sha256}`
+    const up = await supabase.storage.from(DOCUMENT_BUCKET)
+      .upload(storagePath, input.bytes, {
+        contentType: input.mimeType ?? 'application/pdf',
+        upsert: true,
+      })
+    if (up.error) return { ok: false, error: `Storage: ${up.error.message}` }
+
+    const { data: row, error } = await supabase.from('mtr_document').insert({
+      heat_number: heat,
+      material_description: input.materialDescription ?? null,
+      nominal_size: input.nominalSize ?? null,
+      schedule_or_class: input.scheduleOrClass ?? null,
+      grade: input.grade ?? null,
+      component_type: input.componentType ?? null,
+      heat_treatment: input.heatTreatment ?? null,
+      mill_name: input.millName ?? null,
+      supplier_name: input.supplierName ?? null,
+      certificate_number: input.certificateNumber ?? null,
+      certificate_date: input.certificateDate ?? null,
+      storage_path: storagePath,
+      original_filename: input.originalFilename,
+      normalized_filename: `MTR_${heat.replace(/[^A-Z0-9]/g, '')}.pdf`,
+      sha256: input.sha256,
+      byte_size: input.byteSize ?? null,
+      mime_type: input.mimeType ?? 'application/pdf',
+      notes: input.notes ?? null,
+      uploaded_by: viewer.id,
+    }).select('id').single()
+
+    if (error || !row) {
+      // The row is what makes a certificate exist. An object with no row
+      // is invisible, so clean it up rather than leave it paid for.
+      await supabase.storage.from(DOCUMENT_BUCKET).remove([storagePath])
+      return { ok: false, error: error ? describe(error) : 'Could not file the certificate.' }
+    }
+
+    // 0028's trigger has already linked every matching heat. Count them
+    // so the screen can say what the upload actually closed.
+    const { count } = await supabase
+      .from('material_heat')
+      .select('id', { count: 'exact', head: true })
+      .eq('mtr_library_id', row.id as string)
+
+    return { ok: true, mtrId: row.id as string, heatsResolved: count ?? 0 }
+  }
+
+  async withdrawMtr(
+    viewer: Viewer, mtrId: string, reason: string,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to withdraw a mill certificate.' }
+    }
+    if (!reason.trim()) {
+      return { ok: false, error: 'Withdrawing a certificate needs a reason.' }
+    }
+    const supabase = await createClient()
+    // Soft delete: §15 retention outlives the correction, and the trigger
+    // on deleted_at is what un-files it from every book.
+    const { error } = await supabase.from('mtr_document')
+      .update({ deleted_at: new Date().toISOString(), notes: reason.trim() })
+      .eq('id', mtrId).is('deleted_at', null)
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async updateMtr(
+    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to edit a mill certificate.' }
+    }
+    const row: Record<string, unknown> = {}
+    if (patch.heatNumber !== undefined) {
+      const heat = normalizeHeat(patch.heatNumber)
+      if (!heat) return { ok: false, error: 'A certificate needs a heat number.' }
+      row.heat_number = heat
+    }
+    const MAP: Record<string, string> = {
+      materialDescription: 'material_description', nominalSize: 'nominal_size',
+      scheduleOrClass: 'schedule_or_class', grade: 'grade',
+      componentType: 'component_type', heatTreatment: 'heat_treatment',
+      millName: 'mill_name', supplierName: 'supplier_name',
+      certificateNumber: 'certificate_number', certificateDate: 'certificate_date',
+      notes: 'notes',
+    }
+    for (const [k, col] of Object.entries(MAP)) {
+      const v = (patch as Record<string, unknown>)[k]
+      if (v !== undefined) row[col] = v ?? null
+    }
+    if (Object.keys(row).length === 0) return { ok: true }
+
+    const supabase = await createClient()
+    const { error } = await supabase.from('mtr_document')
+      .update(row).eq('id', mtrId).is('deleted_at', null)
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async mtrDownloadUrl(viewer: Viewer, mtrId: string): Promise<string | null> {
+    void viewer
+    return signMtrUrl(mtrId)
   }
 }
 

@@ -20,6 +20,8 @@ import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
 import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
 import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
 import type { Division } from '@/lib/domain/divisions'
+import type { MtrDocument } from '@/lib/domain/types'
+import { heatKey, normalizeHeat, sameHeat } from '@/lib/domain/heats'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -390,6 +392,70 @@ export interface DataProvider {
   /** Mark this viewer's unread notifications read, on one book or all.
    *  Returns how many were still unread. */
   markNotificationsRead(viewer: Viewer, jobBookId?: string): Promise<ActionResult>
+
+  // -- The MTR library, §15 ----------------------------------------------
+
+  /** Every mill certificate on file, newest first. Fortress staff see the
+   *  whole library; anyone else sees only certificates referenced by a
+   *  book they can read — which RLS enforces, not this. */
+  listMtrLibrary(viewer: Viewer, search?: string): Promise<MtrLibraryEntry[]>
+
+  /** File a certificate against a heat number. The heat is confirmed by a
+   *  person, not read from the PDF — four of five real certificates are
+   *  scans with no text in them at all. */
+  uploadMtr(viewer: Viewer, input: MtrUploadInput): Promise<MtrUploadResult>
+
+  /** Withdraw a certificate. Books referencing that heat fall back to
+   *  "missing" rather than keeping a claim the file no longer supports. */
+  withdrawMtr(viewer: Viewer, mtrId: string, reason: string): Promise<ActionResult>
+
+  /** Update the descriptive fields, or correct the heat number. */
+  updateMtr(
+    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
+  ): Promise<ActionResult>
+
+  /** A short-lived signed URL for the certificate file, logged before it
+   *  is handed out. Null when the viewer may not see it. */
+  mtrDownloadUrl(viewer: Viewer, mtrId: string): Promise<string | null>
+}
+
+/** One library row, with how many books lean on it. */
+export interface MtrLibraryEntry extends MtrDocument {
+  /** Heats across all books that resolve to this certificate. Shown so
+   *  somebody about to withdraw one can see what it would un-file. */
+  referencedByHeats: number
+  referencedByBooks: number
+}
+
+export interface MtrUploadInput {
+  heatNumber: string
+  originalFilename: string
+  bytes?: Uint8Array
+  sha256?: string
+  byteSize?: number
+  mimeType?: string
+  materialDescription?: string | null
+  nominalSize?: string | null
+  scheduleOrClass?: string | null
+  grade?: string | null
+  componentType?: string | null
+  heatTreatment?: string | null
+  millName?: string | null
+  supplierName?: string | null
+  certificateNumber?: string | null
+  certificateDate?: string | null
+  notes?: string | null
+}
+
+export interface MtrUploadResult {
+  ok: boolean
+  mtrId?: string
+  /** Heats that resolved to this certificate the moment it landed. The
+   *  number worth showing: uploading one file can close a gap on several
+   *  books at once, and saying so is what makes the library feel useful
+   *  rather than like another filing chore. */
+  heatsResolved?: number
+  error?: string
 }
 
 /** One audit, as a person records it. */
@@ -865,6 +931,8 @@ class SeedProvider implements DataProvider {
   private grants = new Map<string, InspectorGrant>()
   /** Notes, by book. */
   private notes = new Map<string, BookNote[]>()
+  /** The MTR library, per process. Cross-book by design. */
+  private mtrs = new Map<string, MtrDocument>()
   /** Unread markers. Flat, with the recipient on each row, mirroring the
    *  `notification` table rather than a per-user map. */
   private notifications: (NotificationItem & { userId: string })[] = []
@@ -1891,6 +1959,150 @@ class SeedProvider implements DataProvider {
       n.readAt = at
     }
     return { ok: true }
+  }
+
+  // -- The MTR library ---------------------------------------------------
+  //
+  // In-memory like the rest of the seed provider's writes. The demo's
+  // point is that the screens are the real screens: upload a certificate,
+  // watch a heat on a book go from "missing" to "on file".
+
+  async listMtrLibrary(viewer: Viewer, search?: string): Promise<MtrLibraryEntry[]> {
+    if (!can(viewer.role, 'view_internal')) return []
+    const q = (search ?? '').trim().toUpperCase()
+    return [...this.mtrs.values()]
+      .filter((m) => !m.deletedAt)
+      .filter((m) => !q
+        || heatKey(m.heatNumber).includes(heatKey(q))
+        || (m.materialDescription ?? '').toUpperCase().includes(q)
+        || (m.millName ?? '').toUpperCase().includes(q))
+      .map((m) => {
+        const heats = this.all().flatMap((b) =>
+          b.materialHeats.filter((h) => sameHeat(h.heatNumber, m.heatNumber)))
+        return {
+          ...m,
+          referencedByHeats: heats.length,
+          referencedByBooks: new Set(heats.map((h) => h.jobBookId)).size,
+        }
+      })
+      .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+  }
+
+  async uploadMtr(viewer: Viewer, input: MtrUploadInput): Promise<MtrUploadResult> {
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, error: 'Not permitted to file a mill certificate.' }
+    }
+    const heat = normalizeHeat(input.heatNumber ?? '')
+    if (!heat) {
+      return { ok: false, error: 'A certificate has to be filed against a heat number.' }
+    }
+    // One live certificate per heat, matching the database's unique index.
+    const clash = [...this.mtrs.values()]
+      .find((m) => !m.deletedAt && sameHeat(m.heatNumber, heat))
+    if (clash) {
+      return {
+        ok: false,
+        error: `Heat ${clash.heatNumber} already has a certificate on file. ` +
+          'Withdraw that one first if this supersedes it.',
+      }
+    }
+
+    const id = `seed-mtr-${this.mtrs.size + 1}`
+    this.mtrs.set(id, {
+      id,
+      heatNumber: heat,
+      materialDescription: input.materialDescription ?? null,
+      nominalSize: input.nominalSize ?? null,
+      scheduleOrClass: input.scheduleOrClass ?? null,
+      grade: input.grade ?? null,
+      componentType: input.componentType ?? null,
+      heatTreatment: input.heatTreatment ?? null,
+      millName: input.millName ?? null,
+      supplierName: input.supplierName ?? null,
+      certificateNumber: input.certificateNumber ?? null,
+      certificateDate: input.certificateDate ?? null,
+      storagePath: `mtr-library/${input.sha256 ?? id}`,
+      originalFilename: input.originalFilename,
+      normalizedFilename: `MTR_${heat}.pdf`,
+      sha256: input.sha256 ?? id,
+      byteSize: input.byteSize ?? null,
+      pageCount: null,
+      mimeType: input.mimeType ?? 'application/pdf',
+      notes: input.notes ?? null,
+      uploadedBy: viewer.id,
+      uploadedAt: new Date().toISOString(),
+      deletedAt: null,
+    })
+
+    // The mirror of 0028's backfill trigger: a certificate arriving for a
+    // heat somebody typed last month closes the gap immediately.
+    let heatsResolved = 0
+    for (const b of this.all()) {
+      for (const h of b.materialHeats) {
+        if (!sameHeat(h.heatNumber, heat)) continue
+        h.mtrLibraryId = id
+        if (h.mtrStatus === 'missing') h.mtrStatus = 'on_file'
+        heatsResolved++
+      }
+    }
+    return { ok: true, mtrId: id, heatsResolved }
+  }
+
+  async withdrawMtr(
+    viewer: Viewer, mtrId: string, reason: string,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, error: 'Not permitted to withdraw a mill certificate.' }
+    }
+    if (!reason.trim()) {
+      return { ok: false, error: 'Withdrawing a certificate needs a reason.' }
+    }
+    const m = this.mtrs.get(mtrId)
+    if (!m || m.deletedAt) return { ok: false, error: 'No such certificate.' }
+    m.deletedAt = new Date().toISOString()
+    m.notes = [m.notes, `Withdrawn: ${reason.trim()}`].filter(Boolean).join(' — ')
+
+    // A withdrawn certificate must not leave books claiming it is on file.
+    for (const b of this.all()) {
+      for (const h of b.materialHeats) {
+        if (h.mtrLibraryId !== mtrId) continue
+        h.mtrLibraryId = null
+        if (h.mtrStatus === 'on_file') h.mtrStatus = 'missing'
+      }
+    }
+    return { ok: true }
+  }
+
+  async updateMtr(
+    viewer: Viewer, mtrId: string, patch: Partial<MtrUploadInput>,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, error: 'Not permitted to edit a mill certificate.' }
+    }
+    const m = this.mtrs.get(mtrId)
+    if (!m || m.deletedAt) return { ok: false, error: 'No such certificate.' }
+    if (patch.heatNumber !== undefined) {
+      const heat = normalizeHeat(patch.heatNumber)
+      if (!heat) return { ok: false, error: 'A certificate needs a heat number.' }
+      m.heatNumber = heat
+    }
+    for (const k of ['materialDescription', 'nominalSize', 'scheduleOrClass',
+      'grade', 'componentType', 'heatTreatment', 'millName', 'supplierName',
+      'certificateNumber', 'certificateDate', 'notes'] as const) {
+      if (patch[k] !== undefined) {
+        (m as unknown as Record<string, unknown>)[k] = patch[k] ?? null
+      }
+    }
+    return { ok: true }
+  }
+
+  async mtrDownloadUrl(viewer: Viewer, mtrId: string): Promise<string | null> {
+    // No object storage in the demo. A path is returned so the screen can
+    // show that a file would be served, rather than pretending to one.
+    const m = this.mtrs.get(mtrId)
+    if (!m || m.deletedAt) return null
+    if (!can(viewer.role, 'view_book')) return null
+    return `/demo-file/${m.storagePath}`
   }
 
   private otherActiveAdmins(excluding: string): number {

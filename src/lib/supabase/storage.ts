@@ -39,3 +39,36 @@ export async function signDocumentUrl(documentId: string): Promise<string | null
     })
   return data?.signedUrl ?? null
 }
+
+/**
+ * A signed URL for a mill certificate in the library.
+ *
+ * Separate from `signDocumentUrl` because the two answer to different
+ * policies. A job book document is scoped to its book; a library
+ * certificate is cross-job, and `mtr_document_read` is what decides
+ * whether this caller may see it — Fortress staff always, anyone else
+ * only where a book they can read references that heat.
+ *
+ * The select below is the access check. RLS returns no row rather than a
+ * redacted one, so a null here means "not yours", and the caller cannot
+ * tell that from "does not exist" — which is the right amount for an
+ * operator to learn about another operator's material.
+ */
+export async function signMtrUrl(mtrId: string): Promise<string | null> {
+  const supabase = await createClient()
+
+  const { data: mtr } = await supabase
+    .from('mtr_document')
+    .select('storage_path, normalized_filename')
+    .eq('id', mtrId)
+    .is('deleted_at', null)
+    .single()
+  if (!mtr) return null
+
+  const { data } = await supabase.storage
+    .from(DOCUMENT_BUCKET)
+    .createSignedUrl(mtr.storage_path as string, SIGNED_URL_TTL_SECONDS, {
+      download: mtr.normalized_filename as string,
+    })
+  return data?.signedUrl ?? null
+}
