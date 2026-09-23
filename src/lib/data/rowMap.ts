@@ -75,7 +75,7 @@ export function domainToRow(
  */
 export const COLUMNS = {
   job_book: [
-    'id', 'project_id', 'book_template_id', 'book_type', 'job_number',
+    'id', 'project_id', 'book_template_id', 'book_type', 'division', 'job_number',
     'facility_name', 'drill_pad_name', 'well_names', 'construction_company',
     'welding_company', 'cwi_names', 'pipe_size_in', 'pipe_schedule', 'pipe_grade',
     'status', 'target_turnover_date', 'construction_start', 'construction_end',

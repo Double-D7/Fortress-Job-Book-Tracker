@@ -108,7 +108,7 @@ export class SupabaseProvider implements DataProvider {
     // from the policy the policy is what still holds.
     const { data: books, error } = await supabase
       .from('job_book')
-      .select('id, job_number, facility_name, book_type, status, target_turnover_date, project_id')
+      .select('id, job_number, facility_name, book_type, division, status, target_turnover_date, project_id')
       .is('deleted_at', null)
       .order('job_number')
     if (error || !books?.length) return []
@@ -164,6 +164,7 @@ export class SupabaseProvider implements DataProvider {
         facilityName: (b.facility_name as string | null) ?? null,
         clientOrgName: orgByProject.get(b.project_id as string) ?? 'Unknown operator',
         bookType: b.book_type as 'flowline' | 'facility',
+        division: (b.division as JobBookSummary['division']) ?? null,
         status: b.status as string,
         overallPct,
         criticalFlags: new Set(criticals.map((f) => f.fingerprint)).size,

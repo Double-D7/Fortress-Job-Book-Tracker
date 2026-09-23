@@ -21,9 +21,9 @@
  * can exist, which is backwards — the division is an organisational
  * fact, and the checklist is a compliance one.
  */
-import type { BookType } from './types'
+import type { BookType, Division } from './types'
 
-export type Division = 'flowline' | 'facility' | 'maintenance'
+export type { Division }
 
 export const DIVISIONS: readonly Division[] = ['flowline', 'facility', 'maintenance']
 

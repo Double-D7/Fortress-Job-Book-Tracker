@@ -19,6 +19,7 @@ import type {
 import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
 import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
 import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
+import type { Division } from '@/lib/domain/divisions'
 import { aggregateFindings, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -49,7 +50,11 @@ export interface JobBookSummary {
   jobNumber: string
   facilityName: string | null
   clientOrgName: string
+  /** The checklist this book is scored against. */
   bookType: 'flowline' | 'facility'
+  /** Which part of the business runs it. Null on a book recorded before
+   *  divisions existed; `divisionOf()` falls back to bookType. */
+  division?: Division | null
   status: string
   overallPct: number
   /** Distinct findings, not the records behind them. */
@@ -872,6 +877,7 @@ class SeedProvider implements DataProvider {
         facilityName: b.book.facilityName ?? null,
         clientOrgName: b.clientOrg.name,
         bookType: b.book.bookType,
+        division: b.book.division ?? null,
         status: b.book.status,
         overallPct: score.overallPct,
         criticalFlags: counts.critical,

@@ -2,6 +2,7 @@ import { notFound, redirect} from 'next/navigation'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { BookNav } from '@/components/BookNav'
 import { Chip } from '@/components/ui/primitives'
+import { DIVISION_LABELS, divisionOf } from '@/lib/domain/divisions'
 
 export default async function BookLayout({
   children, params,
@@ -23,6 +24,10 @@ export default async function BookLayout({
           <h1 className="text-xl font-semibold tracking-tight">{book.jobNumber}</h1>
           <span className="text-sm text-ink-secondary">{book.facilityName}</span>
           <Chip tone="brand">{clientOrg.name}</Chip>
+          {/* Which part of the business runs this. Shown because a
+              maintenance book scaffolds from the facility checklist, so
+              without it the only clue on the page would say "Facility". */}
+          <Chip tone="idle">{DIVISION_LABELS[divisionOf(book)]}</Chip>
         </div>
         <p className="mt-1 text-xs text-ink-muted">
           {[

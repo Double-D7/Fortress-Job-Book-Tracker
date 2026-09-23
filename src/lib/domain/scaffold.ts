@@ -20,9 +20,10 @@
  * the section climb past 100%.
  */
 import type {
-  BookType, JobBook, JobBookSection, SectionDefinition, WeldLine,
+  BookType, Division, JobBook, JobBookSection, SectionDefinition, WeldLine,
 } from './types'
 import { appliesToBook, buildTemplateSections } from './checklist'
+import { DIVISIONS } from './divisions'
 
 /** A quantity a job can declare at setup, keyed by section number. */
 export interface ScopeDeclaration {
@@ -44,7 +45,11 @@ export interface WeldLineDeclaration {
 
 export interface NewJobBookInput {
   jobNumber: string
+  /** Which checklist to scaffold and score against. */
   bookType: BookType
+  /** Which part of the business runs it. Defaults to `bookType` — a
+   *  maintenance job is a facility book run by Maintenance. */
+  division?: Division
   projectId: string
   clientOrgId: string
   bookTemplateId: string
@@ -161,6 +166,9 @@ export function scaffoldJobBook(
     projectId: input.projectId,
     bookTemplateId: input.bookTemplateId,
     bookType: input.bookType,
+    // Defaults to the book type, which is what division meant before the
+    // column existed. Only a maintenance job needs to say otherwise.
+    division: input.division ?? input.bookType,
     jobNumber: input.jobNumber.trim(),
     facilityName: input.facilityName?.trim() || null,
     drillPadName: input.drillPadName?.trim() || null,
@@ -271,6 +279,17 @@ export function validateNewJobBook(input: NewJobBookInput): {
   }
   if (!input.clientOrgId) {
     errors.push({ field: 'clientOrgId', message: 'Select the operator this book belongs to.' })
+  }
+  // The route hands the request body straight through as this input, so
+  // a division arriving from outside the wizard could be anything. The
+  // Postgres enum would refuse it, but as a constraint-violation code
+  // rather than a sentence — and after the section scaffolding has
+  // already run in the seed provider.
+  if (input.division && !DIVISIONS.includes(input.division)) {
+    errors.push({
+      field: 'division',
+      message: `Unknown division. Expected one of: ${DIVISIONS.join(', ')}.`,
+    })
   }
   if (input.constructionStart && input.constructionEnd &&
       input.constructionStart > input.constructionEnd) {

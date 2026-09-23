@@ -19,6 +19,8 @@ import { useRouter } from 'next/navigation'
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Plus, Trash2,
 } from 'lucide-react'
+import type { BookType, Division } from '@/lib/domain/types'
+import { DIVISIONS, DIVISION_LABELS } from '@/lib/domain/divisions'
 import type { ScopePrompt } from '@/lib/domain/scaffold'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, SectionHeading,
@@ -61,7 +63,14 @@ export function NewJobBookWizard({
   const [submitting, setSubmitting] = useState(false)
   const [serverErrors, setServerErrors] = useState<{ field: string; message: string }[]>([])
 
-  const [bookType, setBookType] = useState<'flowline' | 'facility'>('flowline')
+  /**
+   * Division is the question a manager can answer; the checklist follows
+   * from it. Asking both would be asking the same thing twice for two of
+   * the three answers, and inviting the fourth combination nobody wants —
+   * a maintenance job scored against the flowline checklist.
+   */
+  const [division, setDivision] = useState<Division>('flowline')
+  const bookType: BookType = division === 'maintenance' ? 'facility' : division
   const [jobNumber, setJobNumber] = useState('')
   const [clientOrgId, setClientOrgId] = useState(orgs[0]?.id ?? '')
   const [facilityName, setFacilityName] = useState('')
@@ -119,7 +128,7 @@ export function NewJobBookWizard({
     setSubmitting(true)
     setServerErrors([])
     const payload = {
-      jobNumber, bookType, clientOrgId,
+      jobNumber, bookType, division, clientOrgId,
       projectId: `proj-${jobNumber.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
       bookTemplateId: `tpl-${bookType}-v1`,
       facilityName, drillPadName,
@@ -215,11 +224,18 @@ export function NewJobBookWizard({
           <CardHeader><CardTitle>Job identity</CardTitle></CardHeader>
           <CardBody className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <Field label="Book type">
-                <select value={bookType} onChange={(e) => setBookType(e.target.value as typeof bookType)}
+              <Field
+                label="Division"
+                hint={division === 'maintenance'
+                  ? 'Scored against the facility checklist.'
+                  : `Scored against the ${DIVISION_LABELS[bookType].toLowerCase()} checklist.`}
+              >
+                <select value={division}
+                        onChange={(e) => setDivision(e.target.value as Division)}
                         className={FIELD}>
-                  <option value="flowline">Flowline</option>
-                  <option value="facility">Facility</option>
+                  {DIVISIONS.map((d) => (
+                    <option key={d} value={d}>{DIVISION_LABELS[d]}</option>
+                  ))}
                 </select>
               </Field>
               <Field label="Job number" hint="Identifies the book everywhere, e.g. DP452.">
@@ -480,7 +496,8 @@ export function NewJobBookWizard({
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {[
                   ['Job number', jobNumber || '—'],
-                  ['Book type', bookType === 'flowline' ? 'Flowline' : 'Facility'],
+                  ['Division', DIVISION_LABELS[division]],
+                  ['Checklist', DIVISION_LABELS[bookType]],
                   ['Operator', orgs.find((o) => o.id === clientOrgId)?.name ?? '—'],
                   ['Facility', facilityName || '—'],
                   ['Drill pad', drillPadName || '—'],

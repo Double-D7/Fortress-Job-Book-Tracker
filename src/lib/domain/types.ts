@@ -9,6 +9,8 @@
  */
 
 export type BookType = 'flowline' | 'facility'
+/** Re-exported from ./divisions, which owns the grouping logic. */
+export type Division = 'flowline' | 'facility' | 'maintenance'
 export type AppliesTo = BookType | 'both'
 
 export type JobBookStatus =
@@ -55,7 +57,16 @@ export interface JobBook {
   id: string
   projectId: string
   bookTemplateId: string
+  /** Which checklist this book is scored against. */
   bookType: BookType
+  /**
+   * Which part of the business runs the job.
+   *
+   * Distinct from `bookType`: a maintenance job is scored against the
+   * facility checklist. Null on a book recorded before divisions
+   * existed, and `divisionOf()` falls back to `bookType` for those.
+   */
+  division?: Division | null
   jobNumber: string
   facilityName?: string | null
   drillPadName?: string | null

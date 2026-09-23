@@ -13,6 +13,7 @@ import {
   nonEmpty, type Division,
 } from '@/lib/domain/divisions'
 import type { BookType } from '@/lib/domain/types'
+import { scaffoldJobBook, validateNewJobBook } from '@/lib/domain/scaffold'
 
 const book = (
   id: string, bookType: BookType, division?: Division | null,
@@ -104,5 +105,58 @@ describe('nonEmpty', () => {
       book('m1', 'facility', 'maintenance'), book('f1', 'flowline'),
     ]))
     expect(groups.map((g) => g.division)).toEqual(['flowline', 'maintenance'])
+  })
+})
+
+describe('creating a maintenance book', () => {
+  const base = {
+    jobNumber: 'MNT-001',
+    projectId: 'p1',
+    clientOrgId: 'org1',
+    bookTemplateId: 'tpl-facility-v1',
+  }
+
+  it('scores a maintenance job against the facility checklist', () => {
+    // The decision this feature turns on: Maintenance is a division, not
+    // a checklist. A book scored against a checklist nobody wrote would
+    // report a percentage that means nothing.
+    const { book, sections } = scaffoldJobBook(
+      { ...base, bookType: 'facility', division: 'maintenance' },
+      (kind, key) => `${kind}-${key}`)
+    expect(book.division).toBe('maintenance')
+    expect(book.bookType).toBe('facility')
+
+    const facility = scaffoldJobBook(
+      { ...base, bookType: 'facility' }, (kind, key) => `${kind}-${key}`)
+    // Same sections, same applicability, same N/A reasons — the division
+    // must not touch scoring in any way.
+    expect(sections.map((s) => [s.sectionDefinitionId, s.status, s.naReason]))
+      .toEqual(facility.sections.map((s) => [s.sectionDefinitionId, s.status, s.naReason]))
+  })
+
+  it('defaults the division to the book type when none is given', () => {
+    // Every book created before this existed, and every one created by a
+    // caller that does not know about divisions.
+    for (const bookType of ['flowline', 'facility'] as const) {
+      const { book } = scaffoldJobBook(
+        { ...base, bookType }, (kind, key) => `${kind}-${key}`)
+      expect(book.division).toBe(bookType)
+    }
+  })
+
+  it('refuses a division that is not one of the three', () => {
+    // The API route hands the request body through unchecked, so this is
+    // the layer that turns a bad value into a sentence rather than a
+    // Postgres enum violation.
+    const { errors } = validateNewJobBook(
+      { ...base, bookType: 'facility', division: 'demolition' as never })
+    expect(errors.some((e) => e.field === 'division')).toBe(true)
+  })
+
+  it('accepts each of the three', () => {
+    for (const division of DIVISIONS) {
+      const { errors } = validateNewJobBook({ ...base, bookType: 'facility', division })
+      expect(errors.some((e) => e.field === 'division'), division).toBe(false)
+    }
   })
 })
