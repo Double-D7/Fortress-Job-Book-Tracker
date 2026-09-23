@@ -16,11 +16,27 @@
  */
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { canonicalTarget } from '@/lib/domain/canonicalHost'
 
 /** Reachable with no session. Everything else requires one. */
 const PUBLIC_PATHS = ['/login', '/auth/callback', '/auth/signout']
 
 export async function middleware(request: NextRequest) {
+  // Before anything else, including any call to Supabase: a request that
+  // is about to be sent to another hostname should not first spend a round
+  // trip revalidating a session that hostname cannot see anyway.
+  //
+  // 308 rather than 302 so a POST to an API route keeps its method and its
+  // body. A 302 would silently turn an upload into a GET.
+  const moved = canonicalTarget({
+    host: request.headers.get('host'),
+    path: request.nextUrl.pathname,
+    search: request.nextUrl.search,
+    canonicalHost: process.env.CANONICAL_HOST,
+    isProduction: process.env.VERCEL_ENV === 'production',
+  })
+  if (moved) return NextResponse.redirect(moved, 308)
+
   // Seed mode has no auth and no database. Gating it would lock everyone
   // out of the demo, and there is nothing behind the gate to protect.
   if (process.env.DATA_PROVIDER !== 'supabase') return NextResponse.next()

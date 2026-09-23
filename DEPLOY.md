@@ -112,8 +112,9 @@ Environment variables, from **Supabase → Project Settings → API**:
 | `NEXT_PUBLIC_SUPABASE_URL` | Project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `anon` / publishable key |
 | `DATA_PROVIDER` | `supabase` |
+| `CANONICAL_HOST` | `app.fortressqc.com` (production only) |
 
-Three, not four. **The service-role key is not one of them.** Nothing in
+Four, not five. **The service-role key is not one of them.** Nothing in
 the application reads it — only `npm run verify:live` does, from a local
 shell. It bypasses every RLS policy in the database, so the less it travels
 the better, and a deployment that never holds it cannot leak it.
@@ -126,6 +127,16 @@ accept uploads and lose every one of them. Set it.
 If a `SUPABASE_SERVICE_ROLE_KEY` is already set on the deployment from an
 earlier setup, clear it. An unused secret is still a secret sitting
 somewhere it is not needed.
+
+`CANONICAL_HOST` names the one hostname the app is served from. Vercel also
+answers on a `*.vercel.app` alias, and a session cookie belongs to a single
+origin — so without this, signing in on one hostname and opening the other
+means signing in again, on an app where the first session is still perfectly
+alive. Set it on **production only**; preview deployments are meant to be
+separate origins, and the redirect deliberately skips them. Give it a bare
+hostname with no scheme and no trailing slash — anything else is ignored
+rather than obeyed, because a malformed value here would break every page
+including sign-in.
 
 ---
 
