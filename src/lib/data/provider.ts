@@ -20,7 +20,7 @@ import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
 import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
 import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
 import type { Division } from '@/lib/domain/divisions'
-import { aggregateFindings, evaluateFlags } from '@/lib/domain/flags'
+import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
@@ -69,6 +69,69 @@ export interface JobBookSummary {
 
 /** Statuses at or past hand-over. Countdowns stop here. */
 const DELIVERED_STATUSES = new Set(['submitted', 'accepted', 'archived'])
+
+/**
+ * One book's row on the portfolio.
+ *
+ * SHARED BY BOTH PROVIDERS ON PURPOSE, and the reason is a bug this
+ * replaces. The seed provider computed the critical count the way the
+ * book's own pages do — `countBySeverity(aggregateFindings(
+ * evaluateFlags(b)))` — while the Supabase provider read the
+ * `compliance_flag` table and filtered it to `state = 'open'`.
+ *
+ * That table is a RESOLUTION LEDGER, not a findings table. A row appears
+ * only when somebody resolves, dismisses or acknowledges a finding —
+ * `resolveFlag` upserts it, and nothing else writes one. So on a live
+ * project the table is empty, the dashboard counted zero criticals for
+ * every book, and opening any of those books showed three. The number
+ * that is supposed to say "look at this one first" was structurally
+ * incapable of saying anything else.
+ *
+ * Worse, it could not self-correct: once a finding WAS resolved, the
+ * `state = 'open'` filter excluded it again.
+ *
+ * So the count is derived here, once, from the same engine the book
+ * pages use. A summary that disagrees with the page it links to is worse
+ * than no summary, and two implementations of one contract is how they
+ * came to disagree.
+ */
+export function summarizeBook(
+  bundle: JobBookBundle,
+  clientOrgName: string,
+  asOf: Date = new Date(),
+): JobBookSummary {
+  const score = scoreBook(bundle)
+  const counts = countBySeverity(aggregateFindings(evaluateFlags(bundle)))
+  const { book } = bundle
+
+  const delivered = DELIVERED_STATUSES.has(book.status)
+  const today = asOf.toISOString().slice(0, 10)
+  const days = book.targetTurnoverDate && !delivered
+    ? Math.round(
+        (Date.parse(`${book.targetTurnoverDate}T00:00:00Z`) -
+          Date.parse(`${today}T00:00:00Z`)) / 86_400_000,
+      )
+    : null
+
+  return {
+    id: book.id,
+    jobNumber: book.jobNumber,
+    facilityName: book.facilityName ?? null,
+    clientOrgName,
+    bookType: book.bookType,
+    division: book.division ?? null,
+    status: book.status,
+    overallPct: score.overallPct,
+    criticalFlags: counts.critical,
+    criticalRecords: counts.criticalRecords,
+    targetTurnoverDate: book.targetTurnoverDate ?? null,
+    daysToTurnover: days,
+    turnoverState: delivered ? 'delivered'
+      : !book.targetTurnoverDate ? 'no_target'
+      : (days ?? 0) < 0 ? 'overdue'
+      : 'upcoming',
+  }
+}
 
 /**
  * Mirrors the RLS write predicate and `approve_section()`'s role check.
@@ -852,40 +915,10 @@ class SeedProvider implements DataProvider {
   }
 
   async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {
-    const { scoreBook } = await import('@/lib/domain/scoring')
-    const { aggregateFindings, countBySeverity, evaluateFlags } = await import('@/lib/domain/flags')
     const out: JobBookSummary[] = []
     for (const b of this.all()) {
       if (!this.canSee(viewer, b)) continue
-      const score = scoreBook(b)
-      const counts = countBySeverity(aggregateFindings(evaluateFlags(b)))
-      const delivered = DELIVERED_STATUSES.has(b.book.status)
-      const days = b.book.targetTurnoverDate && !delivered
-        ? Math.round(
-            (Date.parse(`${b.book.targetTurnoverDate}T00:00:00Z`) -
-              Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000,
-          )
-        : null
-      const turnoverState: JobBookSummary['turnoverState'] =
-        delivered ? 'delivered'
-          : !b.book.targetTurnoverDate ? 'no_target'
-          : (days ?? 0) < 0 ? 'overdue'
-          : 'upcoming'
-      out.push({
-        id: b.book.id,
-        jobNumber: b.book.jobNumber,
-        facilityName: b.book.facilityName ?? null,
-        clientOrgName: b.clientOrg.name,
-        bookType: b.book.bookType,
-        division: b.book.division ?? null,
-        status: b.book.status,
-        overallPct: score.overallPct,
-        criticalFlags: counts.critical,
-        criticalRecords: counts.criticalRecords,
-        targetTurnoverDate: b.book.targetTurnoverDate ?? null,
-        daysToTurnover: days,
-        turnoverState,
-      })
+      out.push(summarizeBook(b, b.clientOrg.name))
     }
     return out.sort((a, c) => a.jobNumber.localeCompare(c.jobNumber))
   }

@@ -30,7 +30,7 @@ import { can, rolesWith } from '@/lib/domain/roles'
 import type { NoteSeverity } from '@/lib/domain/notifications'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
-  buildWeldLogPreview, redactForViewer,
+  buildWeldLogPreview, redactForViewer, summarizeBook,
 } from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
 import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
@@ -108,75 +108,47 @@ export class SupabaseProvider implements DataProvider {
     // from the policy the policy is what still holds.
     const { data: books, error } = await supabase
       .from('job_book')
-      .select('id, job_number, facility_name, book_type, division, status, target_turnover_date, project_id')
+      .select('id, project_id')
       .is('deleted_at', null)
       .order('job_number')
     if (error || !books?.length) return []
 
-    const ids = books.map((b) => b.id as string)
-    const [orgs, sections, flags] = await Promise.all([
-      supabase.from('project').select('id, name, client_org:client_org_id(id, name)')
-        .in('id', books.map((b) => b.project_id as string)),
-      supabase.from('job_book_section')
-        .select('job_book_id, computed_pct, collected_pct, status, section_definition_id')
-        .in('job_book_id', ids),
-      supabase.from('compliance_flag')
-        .select('job_book_id, severity, state, fingerprint')
-        .in('job_book_id', ids).eq('state', 'open'),
-    ])
-
+    const { data: projects } = await supabase
+      .from('project').select('id, name, client_org:client_org_id(id, name)')
+      .in('id', books.map((b) => b.project_id as string))
     const orgByProject = new Map(
-      (orgs.data ?? []).map((p) => {
+      (projects ?? []).map((p) => {
         const org = p.client_org as unknown as { id: string; name: string } | null
         return [p.id as string, org?.name ?? 'Unknown operator']
       }),
     )
 
-    const today = new Date().toISOString().slice(0, 10)
-    return books.map((b) => {
-      const bookId = b.id as string
-      // The score is a weighted figure over section definitions, so the
-      // honest way to compute it is the engine over a full bundle. A list
-      // of twenty books does not warrant twenty bundles, so the cached
-      // per-section percentage is used — which is exactly what that cache
-      // exists for, and why `applyComputedScores` keeps it current.
-      const mine = (sections.data ?? []).filter((s) => s.job_book_id === bookId)
-      const counted = mine.filter((s) => s.status !== 'na')
-      const overallPct = counted.length
-        ? Math.round(
-            (counted.reduce((a, s) => a + Number(s.computed_pct ?? 0), 0) / counted.length) * 100,
-          ) / 100
-        : 0
+    // A full bundle per book, and then the same engine the book's own
+    // pages run.
+    //
+    // This replaced a cheaper version that read cached per-section
+    // percentages and counted rows in `compliance_flag`. The cheap
+    // version was wrong: that table is a resolution ledger, written only
+    // when somebody resolves a finding, so the critical count on every
+    // card was structurally zero. A dashboard that disagrees with the
+    // page it links to is worse than no dashboard — see `summarizeBook`.
+    //
+    // The cost is real and worth naming: one bundle per book, each of
+    // which is roughly twenty queries. Parallel, so it is latency rather
+    // than a long serial wait, and fine at the tens of books this runs
+    // against. If the portfolio ever reaches hundreds, the answer is to
+    // persist derived findings the way section scores already are —
+    // NOT to go back to reading a table that does not hold them.
+    const summaries = await Promise.all(books.map(async (b) => {
+      const bundle = await this.getBundle(viewer, b.id as string)
+      if (!bundle) return null
+      return summarizeBook(
+        bundle, orgByProject.get(b.project_id as string) ?? 'Unknown operator')
+    }))
 
-      const open = (flags.data ?? []).filter((f) => f.job_book_id === bookId)
-      const criticals = open.filter((f) => f.severity === 'critical')
-      const target = (b.target_turnover_date as string | null) ?? null
-      const delivered = DELIVERED_STATUSES.has(b.status as string)
-      const days = target && !delivered
-        ? Math.round(
-            (Date.parse(`${target}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000,
-          )
-        : null
-
-      return {
-        id: bookId,
-        jobNumber: b.job_number as string,
-        facilityName: (b.facility_name as string | null) ?? null,
-        clientOrgName: orgByProject.get(b.project_id as string) ?? 'Unknown operator',
-        bookType: b.book_type as 'flowline' | 'facility',
-        division: (b.division as JobBookSummary['division']) ?? null,
-        status: b.status as string,
-        overallPct,
-        criticalFlags: new Set(criticals.map((f) => f.fingerprint)).size,
-        criticalRecords: criticals.length,
-        targetTurnoverDate: target,
-        daysToTurnover: days,
-        turnoverState: delivered ? 'delivered'
-          : !target ? 'no_target'
-          : (days ?? 0) < 0 ? 'overdue'
-          : 'upcoming',
-      }
-    })
+    return summaries
+      .filter((s): s is JobBookSummary => s !== null)
+      .sort((a, c) => a.jobNumber.localeCompare(c.jobNumber))
   }
 
   async getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null> {
