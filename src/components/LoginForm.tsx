@@ -19,6 +19,7 @@ import { useSearchParams } from 'next/navigation'
 import { AlertTriangle, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardBody } from '@/components/ui/primitives'
 import { createClient } from '@/lib/supabase/client'
+import { signInErrorMessage } from '@/lib/domain/authErrors'
 
 export function LoginForm(
   { configured, microsoftEnabled }: { configured: boolean; microsoftEnabled: boolean },
@@ -84,20 +85,10 @@ export function LoginForm(
     setBusy(null)
 
     if (!error) return setSent(true)
-    setError(
-      // The database trigger raises this sentence verbatim; so does this
-      // screen, so a person reads the same words whichever layer stopped
-      // them.
-      /not been invited|signups not allowed|not found/i.test(error.message)
-        ? 'That address has not been invited to this system. Ask a Fortress admin to add you.'
-        : /rate limit|too many|only request this after/i.test(error.message)
-          ? 'Too many sign-in emails have gone out recently. Wait a minute and try again.'
-          : /signups? (are )?(not allowed|disabled)/i.test(error.message)
-            ? 'Sign-ups are switched off for this project. Turn "Allow new users to sign up" ' +
-              'back on in Supabase — the invitation list is what restricts access, and it is ' +
-              'enforced in the database.'
-            : error.message,
-    )
+    // Wording lives in `authErrors`, tested there. The database trigger
+    // raises the not-invited sentence verbatim, so a person reads the same
+    // words whichever layer stopped them.
+    setError(signInErrorMessage(error.message))
   }
 
   if (sent) {
