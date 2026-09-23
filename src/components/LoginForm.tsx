@@ -19,15 +19,17 @@ import { useSearchParams } from 'next/navigation'
 import { AlertTriangle, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardBody } from '@/components/ui/primitives'
 import { createClient } from '@/lib/supabase/client'
-import { signInErrorMessage } from '@/lib/domain/authErrors'
+import { codeEntryErrorMessage, signInErrorMessage } from '@/lib/domain/authErrors'
+import { OTP_LENGTH, isCompleteOtp, normalizeOtpInput } from '@/lib/domain/otpCode'
 
 export function LoginForm(
   { configured, microsoftEnabled }: { configured: boolean; microsoftEnabled: boolean },
 ) {
   const params = useSearchParams()
   const [email, setEmail] = useState('')
-  const [busy, setBusy] = useState<'microsoft' | 'email' | null>(null)
+  const [busy, setBusy] = useState<'microsoft' | 'email' | 'code' | null>(null)
   const [sent, setSent] = useState(false)
+  const [code, setCode] = useState('')
   // Seeded from the callback route, which redirects here with a reason
   // when a link is expired or already used.
   const [error, setError] = useState<string | null>(params.get('error'))
@@ -91,23 +93,88 @@ export function LoginForm(
     setError(signInErrorMessage(error.message))
   }
 
+  /**
+   * Exchange the typed code for a session.
+   *
+   * A full page load afterwards rather than a client-side route change:
+   * the session cookie has just been written, and the gate that decides
+   * whether this person may see the page they asked for is the middleware,
+   * which only runs on a real request. Pushing client-side would render
+   * from a cache that still believes nobody is signed in.
+   */
+  async function withCode(e: React.FormEvent) {
+    e.preventDefault()
+    const supabase = createClient()
+    if (!supabase) return setError(NOT_CONFIGURED)
+    setBusy('code'); setError(null)
+
+    const { error } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: normalizeOtpInput(code),
+      type: 'email',
+    })
+
+    if (error) {
+      setBusy(null)
+      return setError(codeEntryErrorMessage(error.message))
+    }
+    window.location.assign(next)
+  }
+
   if (sent) {
     return (
       <Shell>
-        <div className="space-y-3 text-center">
-          <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-status-complete/15">
-            <Check size={20} className="text-status-complete" />
-          </span>
-          <div className="text-sm font-medium text-ink">Check your email</div>
-          <p className="text-2xs leading-relaxed text-ink-secondary">
-            A sign-in link is on its way to <span className="text-ink">{email}</span>. It works
-            once, within the hour.
-          </p>
+        <div className="space-y-4">
+          <div className="space-y-2 text-center">
+            <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-status-complete/15">
+              <Check size={20} className="text-status-complete" />
+            </span>
+            <div className="text-sm font-medium text-ink">Check your email</div>
+            <p className="text-2xs leading-relaxed text-ink-secondary">
+              A {OTP_LENGTH}-digit code is on its way to <span className="text-ink">{email}</span>.
+              Enter it here, in this tab.
+            </p>
+          </div>
+
+          {error && (
+            <p className="flex items-start gap-2 rounded-md bg-status-critical/10 p-2.5 text-2xs leading-relaxed text-status-critical">
+              <AlertTriangle size={13} className="mt-px shrink-0" />{error}
+            </p>
+          )}
+
+          <form className="space-y-2" onSubmit={(e) => void withCode(e)}>
+            <input
+              value={code}
+              onChange={(e) => setCode(normalizeOtpInput(e.target.value))}
+              // `one-time-code` is what makes iOS offer the code above the
+              // keyboard instead of making someone switch to Mail and back.
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoFocus
+              aria-label={`${OTP_LENGTH}-digit sign-in code`}
+              placeholder="123456"
+              className="w-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-center font-mono text-lg tracking-[0.4em] text-ink placeholder:tracking-normal placeholder:text-ink-muted"
+            />
+            <Button
+              type="submit" variant="primary" className="w-full py-2"
+              disabled={busy !== null || !isCompleteOtp(code)}
+            >
+              {busy === 'code'
+                ? <><Loader2 size={14} className="animate-spin" /> Signing in…</>
+                : 'Sign in'}
+            </Button>
+          </form>
+
           <p className="text-2xs leading-relaxed text-ink-muted">
-            Nothing after a minute or two? Check spam — until this project sends from a
-            fortressds.com address, mail from it often lands there.
+            Nothing after a minute or two? Check your junk folder. Asking for a new code
+            cancels the previous one, so use the most recent email.
           </p>
-          <Button variant="ghost" className="w-full" onClick={() => { setSent(false); setError(null) }}>
+
+          <Button
+            variant="ghost" className="w-full"
+            onClick={() => { setSent(false); setCode(''); setError(null) }}
+          >
             Use a different address
           </Button>
         </div>
@@ -170,7 +237,7 @@ export function LoginForm(
         >
           {busy === 'email'
             ? <><Loader2 size={14} className="animate-spin" /> Sending…</>
-            : <><Mail size={13} /> Email me a sign-in link</>}
+            : <><Mail size={13} /> Email me a sign-in code</>}
         </Button>
         <p className="text-center text-2xs leading-relaxed text-ink-muted">
           Client and inspector access is scoped to specific job books and, for inspectors,

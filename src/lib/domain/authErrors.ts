@@ -46,3 +46,23 @@ export function signInErrorMessage(raw: string): string {
 
   return raw
 }
+
+/**
+ * The same job for the code-entry step.
+ *
+ * Separate from the send step because the useful advice differs: there,
+ * nothing was sent and the person waits; here, something arrived and the
+ * question is whether to retype it or ask for another.
+ */
+export function codeEntryErrorMessage(raw: string): string {
+  if (/expired|invalid|not found|incorrect/i.test(raw)) {
+    return 'That code did not work. Check you have the most recent email — asking for ' +
+      'a new code cancels the one before it — or request another below.'
+  }
+
+  if (/rate limit|too many|only request this after/i.test(raw)) {
+    return 'Too many attempts just now. Wait a minute, then try the code again.'
+  }
+
+  return raw
+}
