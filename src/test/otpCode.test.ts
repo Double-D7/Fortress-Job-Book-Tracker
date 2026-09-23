@@ -9,8 +9,16 @@
  * which of them is lying.
  */
 import { describe, expect, it } from 'vitest'
-import { OTP_LENGTH, isCompleteOtp, normalizeOtpInput } from '@/lib/domain/otpCode'
+import {
+  OTP_MAX_LENGTH, OTP_MIN_LENGTH, isCompleteOtp, normalizeOtpInput,
+} from '@/lib/domain/otpCode'
 import { codeEntryErrorMessage } from '@/lib/domain/authErrors'
+
+/**
+ * The lengths a project can actually be configured to issue. This one
+ * issues eight, which is what broke the first version of this module.
+ */
+const ISSUABLE_LENGTHS = [6, 7, 8, 9, 10]
 
 describe('cleaning up what was typed or pasted', () => {
   it('takes a plain code unchanged', () => {
@@ -32,9 +40,17 @@ describe('cleaning up what was typed or pasted', () => {
     expect(normalizeOtpInput('000000')).toBe('000000')
   })
 
-  it('stops at the code length rather than sending a longer string', () => {
-    expect(normalizeOtpInput('1234567890')).toBe('123456')
-    expect(normalizeOtpInput('123456').length).toBe(OTP_LENGTH)
+  it('keeps a code of every length this server could issue', () => {
+    // The bug this replaces: the field truncated to six, so the eight-digit
+    // code the project had just emailed could not be entered at all.
+    for (const len of ISSUABLE_LENGTHS) {
+      const code = '1'.repeat(len)
+      expect(normalizeOtpInput(code), `${len} digits`).toBe(code)
+    }
+  })
+
+  it('stops beyond the longest code that can exist', () => {
+    expect(normalizeOtpInput('1'.repeat(20))).toBe('1'.repeat(OTP_MAX_LENGTH))
   })
 
   it('drops letters rather than passing them to the server', () => {
@@ -50,8 +66,17 @@ describe('cleaning up what was typed or pasted', () => {
 
 describe('knowing when there is a whole code to submit', () => {
   it('accepts a full code however it was pasted', () => {
-    for (const v of ['123456', '123 456', '000000']) {
+    for (const v of ['123456', '123 456', '000000', '12345678', '1234 5678']) {
       expect(isCompleteOtp(v), v).toBe(true)
+    }
+  })
+
+  it('enables the button for every length this server could issue', () => {
+    // The whole point. A form that only accepts six digits cannot sign
+    // anyone in on a project configured for eight, and the browser is
+    // never told which it is.
+    for (const len of ISSUABLE_LENGTHS) {
+      expect(isCompleteOtp('1'.repeat(len)), `${len} digits`).toBe(true)
     }
   })
 
@@ -59,14 +84,7 @@ describe('knowing when there is a whole code to submit', () => {
     for (const v of ['', '1', '12345', '12 34 5']) {
       expect(isCompleteOtp(v), v).toBe(false)
     }
-  })
-
-  it('does not accept a long string of digits as complete', () => {
-    // Trimming to length first would make a 10-digit paste look valid.
-    // It is valid — the first six are the code — and that is deliberate,
-    // so this pins the decision rather than leaving it to chance.
-    expect(isCompleteOtp('1234567890')).toBe(true)
-    expect(normalizeOtpInput('1234567890')).toBe('123456')
+    expect(isCompleteOtp('1'.repeat(OTP_MIN_LENGTH - 1))).toBe(false)
   })
 })
 

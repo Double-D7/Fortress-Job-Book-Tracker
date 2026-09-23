@@ -20,7 +20,7 @@ import { AlertTriangle, Check, Loader2, Mail, ShieldCheck } from 'lucide-react'
 import { Button, Card, CardBody } from '@/components/ui/primitives'
 import { createClient } from '@/lib/supabase/client'
 import { codeEntryErrorMessage, signInErrorMessage } from '@/lib/domain/authErrors'
-import { OTP_LENGTH, isCompleteOtp, normalizeOtpInput } from '@/lib/domain/otpCode'
+import { OTP_MAX_LENGTH, isCompleteOtp, normalizeOtpInput } from '@/lib/domain/otpCode'
 
 export function LoginForm(
   { configured, microsoftEnabled }: { configured: boolean; microsoftEnabled: boolean },
@@ -131,7 +131,7 @@ export function LoginForm(
             </span>
             <div className="text-sm font-medium text-ink">Check your email</div>
             <p className="text-2xs leading-relaxed text-ink-secondary">
-              A {OTP_LENGTH}-digit code is on its way to <span className="text-ink">{email}</span>.
+              A sign-in code is on its way to <span className="text-ink">{email}</span>.
               Enter it here, in this tab.
             </p>
           </div>
@@ -152,9 +152,10 @@ export function LoginForm(
               inputMode="numeric"
               pattern="[0-9]*"
               autoFocus
-              aria-label={`${OTP_LENGTH}-digit sign-in code`}
-              placeholder="123456"
-              className="w-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-center font-mono text-lg tracking-[0.4em] text-ink placeholder:tracking-normal placeholder:text-ink-muted"
+              maxLength={OTP_MAX_LENGTH}
+              aria-label="Sign-in code from your email"
+              placeholder="Code from the email"
+              className="w-full rounded-md border border-hairline bg-surface-raised px-3 py-2 text-center font-mono text-lg tracking-[0.3em] text-ink placeholder:font-sans placeholder:text-sm placeholder:tracking-normal placeholder:text-ink-muted"
             />
             <Button
               type="submit" variant="primary" className="w-full py-2"
