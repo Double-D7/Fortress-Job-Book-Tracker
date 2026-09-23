@@ -3,24 +3,39 @@
 /**
  * The MTR library.
  *
- * Two jobs on one screen: file a certificate, and find one. Finding is
- * the commoner of the two — somebody holding a heat number off a weld
- * log wants to know whether the certificate exists — so the search box
- * is above the upload, and the heat number is the first column.
+ * Two jobs on one screen: file certificates, and find one. Finding is the
+ * commoner of the two — somebody holding a heat number off a weld log
+ * wants to know whether the certificate exists — so the search box is
+ * above the upload, and the heat number is the first column.
  *
  * The heat number is typed, not read out of the PDF, and the form says
  * why where somebody will actually meet the question. Four of five real
  * certificates are scans with no text in them; a wrong heat number
  * silently files the wrong steel against a weld, which is worse than a
  * gap somebody can see.
+ *
+ * Filing is a batch. A facility turnover arrives as a folder of scans, and
+ * doing them one at a time is an afternoon — but "file all" with no review
+ * would throw away the confirmation the whole design rests on. So the
+ * whole batch is confirmed as a list: every suggested heat on screen,
+ * editable, next to the filename it came from. `mtrBatch` decides which
+ * rows are safe to send.
+ *
+ * Uploads run one at a time rather than in parallel. These are large scans
+ * going out over whatever signal a yard has, and a serial queue gives an
+ * honest running count and leaves the failures attributable — six
+ * simultaneous uploads that half-fail tell you much less.
  */
 import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Download, FileUp, Loader2, Search, TriangleAlert, Upload, X,
+  Check, Download, FileUp, Loader2, Search, TriangleAlert, Upload, X,
 } from 'lucide-react'
 import type { MtrLibraryEntry } from '@/lib/data/provider'
 import { collidingHeats, heatFromFilename } from '@/lib/domain/heats'
+import {
+  ISSUE_LABELS, batchCounts, classifyBatch, fileButtonLabel, heldBackSummary,
+} from '@/lib/domain/mtrBatch'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState,
   Table, Td, Th, Tr,
@@ -29,6 +44,21 @@ import {
 const FIELD =
   'rounded-md border border-hairline bg-surface px-2 py-1 text-xs text-ink ' +
   'focus:border-brand-bright focus:outline-none'
+
+type RowState = 'pending' | 'uploading' | 'filed' | 'failed'
+
+type QueuedFile = {
+  /** Stable across re-renders and edits; the array index is not. */
+  id: string
+  file: File
+  heat: string
+  material: string
+  state: RowState
+  /** The server's word on this row, success or failure. */
+  message?: string
+}
+
+let nextId = 0
 
 export function MtrLibrary({
   entries, canUpload, search,
@@ -41,123 +71,230 @@ export function MtrLibrary({
   const inputRef = useRef<HTMLInputElement>(null)
 
   const [term, setTerm] = useState(search)
-  const [file, setFile] = useState<File | null>(null)
-  const [heat, setHeat] = useState('')
-  const [description, setDescription] = useState('')
+  const [queue, setQueue] = useState<QueuedFile[]>([])
   const [mill, setMill] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [note, setNote] = useState<string | null>(null)
 
-  /** The one place the filename is allowed to speak. */
-  function chooseFile(f: File | null) {
-    setFile(f)
+  /** The one place a filename is allowed to speak. */
+  function addFiles(chosen: FileList | null) {
+    if (!chosen || chosen.length === 0) return
     setError(null)
-    setNote(null)
-    if (!f) return
-    const suggested = heatFromFilename(f.name)
-    if (suggested) setHeat(suggested)
+    setQueue((prev) => {
+      // Picking the same folder twice is an easy slip, and a file already
+      // in the list is not a second certificate.
+      const already = new Set(prev.map((q) => `${q.file.name}:${q.file.size}`))
+      const added: QueuedFile[] = []
+      for (const file of Array.from(chosen)) {
+        if (already.has(`${file.name}:${file.size}`)) continue
+        added.push({
+          id: `q${nextId++}`,
+          file,
+          heat: heatFromFilename(file.name) ?? '',
+          material: '',
+          state: 'pending',
+        })
+      }
+      return [...prev, ...added]
+    })
+    if (inputRef.current) inputRef.current.value = ''
   }
 
-  async function upload() {
-    if (!file || !heat.trim()) return
-    setBusy(true); setError(null); setNote(null)
-    try {
-      const body = new FormData()
-      body.append('file', file)
-      body.append('heatNumber', heat.trim())
-      if (description.trim()) body.append('materialDescription', description.trim())
-      if (mill.trim()) body.append('millName', mill.trim())
+  function edit(id: string, patch: Partial<QueuedFile>) {
+    setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, ...patch } : q)))
+  }
 
-      const res = await fetch('/api/mtr', { method: 'POST', body })
-      const json = await res.json()
-      if (!json.ok) { setError(json.error ?? 'That did not go through.'); return }
+  function remove(id: string) {
+    setQueue((prev) => prev.filter((q) => q.id !== id))
+  }
 
-      const n = json.heatsResolved ?? 0
-      setNote(n > 0
-        ? `Filed against heat ${heat.trim()}. ${n} heat${n === 1 ? '' : 's'} ` +
-          `${n === 1 ? 'was' : 'were'} waiting on it and now ${n === 1 ? 'reads' : 'read'} "on file".`
-        : `Filed against heat ${heat.trim()}. No job book references it yet — ` +
-          'it will resolve the moment one does.')
-      setFile(null); setHeat(''); setDescription(''); setMill('')
-      if (inputRef.current) inputRef.current.value = ''
-      router.refresh()
-    } catch {
-      setError('Could not reach the server.')
-    } finally {
-      setBusy(false)
+  /** Rows the server has accepted have nothing left to do. */
+  function clearFiled() {
+    setQueue((prev) => prev.filter((q) => q.state !== 'filed'))
+  }
+
+  // Only rows still waiting are judged. A row already filed should not
+  // start reading as a duplicate of the row that failed beside it.
+  const pending = queue.filter((q) => q.state === 'pending' || q.state === 'failed')
+  const batchRows = pending.map((q) => ({ filename: q.file.name, heat: q.heat }))
+  const issues = classifyBatch(batchRows)
+  const issueById = new Map(pending.map((q, i) => [q.id, issues[i] ?? null]))
+  const counts = batchCounts(batchRows)
+
+  async function fileBatch() {
+    const sendable = pending.filter((q) => issueById.get(q.id) === null)
+    if (sendable.length === 0) return
+    setBusy(true); setError(null)
+
+    for (const row of sendable) {
+      edit(row.id, { state: 'uploading', message: undefined })
+      try {
+        const body = new FormData()
+        body.append('file', row.file)
+        body.append('heatNumber', row.heat.trim())
+        if (row.material.trim()) body.append('materialDescription', row.material.trim())
+        if (mill.trim()) body.append('millName', mill.trim())
+
+        const res = await fetch('/api/mtr', { method: 'POST', body })
+        const json = await res.json()
+
+        if (json.ok) {
+          const n = json.heatsResolved ?? 0
+          edit(row.id, {
+            state: 'filed',
+            message: n > 0
+              ? `Filed — ${n} heat${n === 1 ? '' : 's'} now reads “on file”`
+              : 'Filed — no job book references it yet',
+          })
+        } else {
+          edit(row.id, { state: 'failed', message: json.error ?? 'That did not go through.' })
+        }
+      } catch {
+        // One failure does not stop the queue. The rest of the folder is
+        // still worth filing, and this row keeps its reason.
+        edit(row.id, { state: 'failed', message: 'Could not reach the server.' })
+      }
     }
+
+    setBusy(false)
+    router.refresh()
   }
 
+  const filed = queue.filter((q) => q.state === 'filed').length
+  const failed = queue.filter((q) => q.state === 'failed').length
   const collisions = collidingHeats(entries.map((e) => e.heatNumber))
 
   return (
     <div className="space-y-4">
       {canUpload && (
         <Card>
-          <CardHeader><CardTitle>File a mill certificate</CardTitle></CardHeader>
+          <CardHeader><CardTitle>File mill certificates</CardTitle></CardHeader>
           <CardBody className="space-y-3">
             <p className="text-xs leading-relaxed text-ink-secondary">
-              One certificate per heat number, shared by every job book. Upload it once and
-              every book that references that heat resolves to it — including books that
-              referenced it before it arrived.
+              One certificate per heat number, shared by every job book. Choose a whole folder
+              at once — each heat number is suggested from its filename for you to check.
+              Upload a certificate once and every book that references that heat resolves to
+              it, including books that referenced it before it arrived.
             </p>
 
             <div className="flex flex-wrap items-center gap-2">
-              <input ref={inputRef} type="file" accept=".pdf,application/pdf"
+              <input ref={inputRef} type="file" accept=".pdf,application/pdf" multiple
                      className="hidden"
-                     onChange={(e) => chooseFile(e.target.files?.[0] ?? null)} />
+                     onChange={(e) => addFiles(e.target.files)} />
               <Button variant="secondary" onClick={() => inputRef.current?.click()}>
-                <FileUp size={13} /> Choose a certificate
+                <FileUp size={13} /> {queue.length > 0 ? 'Add more' : 'Choose certificates'}
               </Button>
-              {file && <span className="text-xs text-ink-secondary">{file.name}</span>}
+              {queue.length > 0 && (
+                <label className="flex items-center gap-1.5 text-2xs text-ink-secondary">
+                  Mill (optional, applies to all)
+                  <input className={FIELD} value={mill} disabled={busy}
+                         onChange={(e) => setMill(e.target.value)} />
+                </label>
+              )}
             </div>
 
-            {file && (
+            {queue.length > 0 && (
               <div className="space-y-3 rounded-md border border-hairline p-3">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
-                    Heat number
-                    <input className={FIELD} value={heat} autoFocus
-                           onChange={(e) => setHeat(e.target.value)}
-                           placeholder="D07821" />
-                  </label>
-                  <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
-                    Material (optional)
-                    <input className={FIELD} value={description}
-                           onChange={(e) => setDescription(e.target.value)}
-                           placeholder="4&quot; CL900 WN flange" />
-                  </label>
-                  <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
-                    Mill (optional)
-                    <input className={FIELD} value={mill}
-                           onChange={(e) => setMill(e.target.value)} />
-                  </label>
-                </div>
-
                 <p className="text-2xs leading-relaxed text-ink-secondary">
-                  <strong className="text-ink">Check the heat number against the certificate.</strong>{' '}
-                  It is suggested from the filename, not read from the document — most mill
-                  certificates are scans with no text in them. A wrong heat number here files
-                  this certificate against the wrong steel, and the book would report the
-                  material as traceable.
+                  <strong className="text-ink">Check each heat number against its certificate.</strong>{' '}
+                  They are suggested from filenames, not read from the documents — most mill
+                  certificates are scans with no text in them. A wrong heat number files that
+                  certificate against the wrong steel, and the book would report the material
+                  as traceable.
                 </p>
 
-                <Button variant="primary" disabled={busy || !heat.trim()} onClick={upload}>
-                  {busy ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-                  File it
-                </Button>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <thead>
+                      <Tr>
+                        <Th>File</Th><Th>Heat number</Th><Th>Material (optional)</Th>
+                        <Th>Status</Th><Th />
+                      </Tr>
+                    </thead>
+                    <tbody>
+                      {queue.map((q) => {
+                        const issue = issueById.get(q.id) ?? null
+                        return (
+                          <Tr key={q.id}>
+                            <Td className="max-w-[16rem] truncate text-2xs text-ink-secondary"
+                                title={q.file.name}>
+                              {q.file.name}
+                            </Td>
+                            <Td>
+                              <input
+                                className={`${FIELD} w-32 font-mono ${
+                                  issue ? 'border-status-critical/60' : ''
+                                }`}
+                                value={q.heat}
+                                disabled={busy || q.state === 'filed'}
+                                onChange={(e) => edit(q.id, { heat: e.target.value })}
+                                // An example heat here reads as a value
+                                // that was entered and refused, since the
+                                // placeholder is only ever visible on a
+                                // row that is blocked for being empty.
+                                placeholder="Read it off"
+                              />
+                            </Td>
+                            <Td>
+                              <input
+                                className={`${FIELD} w-40`}
+                                value={q.material}
+                                disabled={busy || q.state === 'filed'}
+                                onChange={(e) => edit(q.id, { material: e.target.value })}
+                                // No example: the column heading already
+                                // says what this is, and the same hint
+                                // repeated down every row is noise in a
+                                // table somebody is scanning for problems.
+                              />
+                            </Td>
+                            <Td className="text-2xs">
+                              <RowStatus state={q.state} issue={issue} message={q.message} />
+                            </Td>
+                            <Td className="text-right">
+                              {q.state !== 'uploading' && (
+                                <button type="button" onClick={() => remove(q.id)}
+                                        disabled={busy}
+                                        aria-label={`Remove ${q.file.name}`}
+                                        className="text-ink-muted hover:text-ink">
+                                  <X size={13} />
+                                </button>
+                              )}
+                            </Td>
+                          </Tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="primary" disabled={busy || counts.ready === 0}
+                          onClick={() => void fileBatch()}>
+                    {busy ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+                    {busy ? 'Filing…' : fileButtonLabel(counts)}
+                  </Button>
+                  {filed > 0 && !busy && (
+                    <Button variant="ghost" onClick={clearFiled}>
+                      Clear {filed} filed
+                    </Button>
+                  )}
+                  {heldBackSummary(counts) && (
+                    <span className="text-2xs text-ink-secondary">{heldBackSummary(counts)}</span>
+                  )}
+                </div>
+
+                {!busy && (filed > 0 || failed > 0) && (
+                  <p className="text-2xs text-ink-secondary">
+                    {filed > 0 && `${filed} filed.`}{' '}
+                    {failed > 0 && `${failed} did not go through — the reason is on each row.`}
+                  </p>
+                )}
               </div>
             )}
 
             {error && (
               <p className="rounded-md border border-status-critical/30 bg-status-critical/10 px-3 py-2 text-xs text-status-critical">
                 {error}
-              </p>
-            )}
-            {note && !error && (
-              <p className="rounded-md border border-status-complete/30 bg-status-complete/10 px-3 py-2 text-xs text-status-complete">
-                {note}
               </p>
             )}
           </CardBody>
@@ -205,7 +342,7 @@ export function MtrLibrary({
                 title={search ? `Nothing on file for “${search}”` : 'No certificates on file yet'}
                 detail={search
                   ? 'Try the heat number on its own — punctuation is ignored when matching.'
-                  : 'Upload a mill certificate above. It only has to be filed once, however many job books use that heat.'}
+                  : 'Upload mill certificates above. Each only has to be filed once, however many job books use that heat.'}
               />
             </div>
           ) : (
@@ -261,4 +398,39 @@ export function MtrLibrary({
       </Card>
     </div>
   )
+}
+
+/** One row's state, in the fewest words that still say what to do next. */
+function RowStatus({
+  state, issue, message,
+}: {
+  state: RowState
+  issue: ReturnType<typeof classifyBatch>[number]
+  message?: string
+}) {
+  if (state === 'uploading') {
+    return (
+      <span className="inline-flex items-center gap-1 text-ink-secondary">
+        <Loader2 size={12} className="animate-spin" /> Filing…
+      </span>
+    )
+  }
+  if (state === 'filed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-status-complete">
+        <Check size={12} /> {message ?? 'Filed'}
+      </span>
+    )
+  }
+  if (state === 'failed') {
+    return <span className="text-status-critical">{message ?? 'Did not go through'}</span>
+  }
+  if (issue) {
+    return (
+      <span className="inline-flex items-center gap-1 text-status-critical">
+        <TriangleAlert size={12} /> {ISSUE_LABELS[issue]}
+      </span>
+    )
+  }
+  return <span className="text-ink-muted">Ready</span>
 }
