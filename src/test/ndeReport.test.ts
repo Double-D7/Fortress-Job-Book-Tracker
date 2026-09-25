@@ -7,7 +7,9 @@
  * now, so the cases that matter are the ones where they differ.
  */
 import { describe, expect, it } from 'vitest'
-import { isoDate, parseNdeReport, weldTokensOnLine } from '@/lib/import/ndeReport'
+import {
+  isoDate, parseNdeDocument, parseNdeReport, weldTokensOnLine,
+} from '@/lib/import/ndeReport'
 import type { PdfExtraction } from '@/lib/import/pdfText'
 
 /** Wrap lines as the extractor would hand them over. */
@@ -176,5 +178,137 @@ describe('a table that did not parse', () => {
     ))
     expect(r.lines).toHaveLength(0)
     expect(r.unreadRows).toBeGreaterThan(0)
+  })
+})
+
+describe('a PDF holding more than one report', () => {
+  // Normal: a technician sends a day's work as one file, often a
+  // magnetic particle sheet and a radiographic one together.
+  const twoReports = {
+    pages: [
+      { index: 0, y: 0, lines: [
+        'PROCEDURE # API-MT-001 REVISION # 24 REV. DATE: 1/7/2024',
+        'DATE 2/23/2026 REPORT NUMBER: 022326BL-MT',
+        '1 FW-100 0,1,2 3.5 D MH',
+      ].map((t) => ({ y: 0, runs: [], text: t })) },
+      { index: 1, y: 0, lines: [
+        'PROCEDURE # API-RT-002-ASME REVISION # 20 REV. DATE: 2/15/2025',
+        'DATE 2/23/2026 REPORT NUMBER: 022326BL-RT',
+        '1 FW-200 0,1,2 3.5 D KT',
+      ].map((t) => ({ y: 0, runs: [], text: t })) },
+    ],
+    emptyStreams: 0,
+    undecodable: 0,
+  }
+
+  it('splits them and keeps both', () => {
+    const d = parseNdeDocument(twoReports)
+    expect(d.reports).toHaveLength(2)
+    expect(d.reports.map((r) => r.reportNumber)).toEqual(['022326BL-MT', '022326BL-RT'])
+    expect(d.reports.map((r) => r.lines[0]?.candidates[0])).toEqual(['FW-100', 'FW-200'])
+  })
+
+  it('does not split a report across its own continuation sheet', () => {
+    // The bug this replaces: splitting on the presence of a report
+    // number cut one 25-exposure report in two, because the second sheet
+    // reprints the number in its header.
+    const continued = {
+      pages: [
+        { index: 0, y: 0, lines: [
+          'DATE 11/19/2025 REPORT NUMBER: 111925BL-RT',
+          'Page 1 of 2',
+          '1 FW-1080 0,1,2 4.5 D KT',
+        ].map((t) => ({ y: 0, runs: [], text: t })) },
+        { index: 1, y: 0, lines: [
+          'REPORT NUMBER: 111925BL-RT',
+          'Page 2 of 2',
+          '2 FW-1079 0,1,2 4.5 D KT',
+        ].map((t) => ({ y: 0, runs: [], text: t })) },
+      ],
+      emptyStreams: 0,
+      undecodable: 0,
+    }
+    const d = parseNdeDocument(continued)
+    expect(d.reports).toHaveLength(1)
+    expect(d.reports[0]!.lines).toHaveLength(2)
+  })
+})
+
+describe('gaps, because a job book with missing data is incomplete', () => {
+  function doc(pages: string[][]) {
+    return parseNdeDocument({
+      pages: pages.map((lines, index) => ({
+        index, y: 0, lines: lines.map((t) => ({ y: 0, runs: [], text: t })),
+      })),
+      emptyStreams: 0,
+      undecodable: 0,
+    })
+  }
+
+  it('reports a page that produced no text at all', () => {
+    const d = doc([['DATE 6/5/2026 REPORT NUMBER: X-1', '1 FW-1 D KT'], []])
+    expect(d.gaps.some((g) => g.kind === 'page_empty' && g.page === 2)).toBe(true)
+    expect(d.complete).toBe(false)
+  })
+
+  it('reports a page whose text yielded nothing usable', () => {
+    // The real case: one page of a DP-318 report decodes as
+    // "9 mm m L /- E- o -". Nothing is claimed about why — only that
+    // nothing came out of it, which is what sends a person to the page.
+    const d = doc([
+      ['DATE 6/5/2026 REPORT NUMBER: X-1', '1 FW-1 D KT'],
+      ['9   mm    m L /-   E-  o -'],
+    ])
+    const gap = d.gaps.find((g) => g.kind === 'page_not_understood')
+    expect(gap?.page).toBe(2)
+    expect(gap?.severity).toBe('critical')
+  })
+
+  it('reports a row that carried content but named no weld', () => {
+    const d = doc([[
+      'DATE 6/5/2026 REPORT NUMBER: X-1',
+      '1 FW-1 0,1,2 3.5 D KT',
+      '2 this row has plenty of content and no weld token at all on it',
+    ]])
+    expect(d.gaps.some((g) => g.kind === 'row_not_read')).toBe(true)
+  })
+
+  it('reports a report with no exposure rows rather than accepting it', () => {
+    // A report covering nothing is how a book comes to look evidenced
+    // when it is not.
+    const d = doc([['DATE 6/5/2026 REPORT NUMBER: X-1', 'PROCEDURE # API-RT-1']])
+    expect(d.gaps.some((g) => g.kind === 'row_not_read')).toBe(true)
+    expect(d.complete).toBe(false)
+  })
+
+  it('catches a page the file never gave up, from the sheet’s own count', () => {
+    // The vendor prints "Page 1 of 2". If only one page arrived, one is
+    // missing and nothing else in the file would reveal it.
+    const d = doc([[
+      'DATE 6/5/2026 REPORT NUMBER: X-1', 'Page 1 of 2', '1 FW-1 0,1,2 D KT',
+    ]])
+    expect(d.gaps.some((g) => g.kind === 'pages_missing')).toBe(true)
+  })
+
+  it('grades a missing date as critical and a missing technician as a warning', () => {
+    // The date decides whether the examination preceded the pressure
+    // test. A technician name is expected and its absence is not proof
+    // that anything is wrong with the examination.
+    const d = doc([['REPORT NUMBER: X-1', 'PROCEDURE # API-RT-1', '1 FW-1 0,1,2 D KT']])
+    const byKind = (k: string, text: RegExp) =>
+      d.gaps.find((g) => g.kind === k && text.test(g.detail))
+    expect(byKind('missing_field', /report date/)?.severity).toBe('critical')
+    expect(byKind('missing_field', /technician/)?.severity).toBe('warning')
+  })
+
+  it('calls a clean file complete', () => {
+    const d = doc([[
+      'DATE 6/5/2026 DESCRIPTION: x REPORT NUMBER: 060526JF-CR',
+      'PROCEDURE # API-RT-006 REVISION # 3 REV. DATE: 2/28/2025',
+      'Technician Name (Printed) Jose Flores Customer Printed: Antonio Brito',
+      '1 FW-850 0,1,2 6.625 D N/A B7 JP',
+    ]])
+    expect(d.gaps).toEqual([])
+    expect(d.complete).toBe(true)
   })
 })

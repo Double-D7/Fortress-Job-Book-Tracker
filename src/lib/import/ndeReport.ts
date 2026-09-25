@@ -202,8 +202,11 @@ const WELDER_STAMP = /(?:^|[\s|])([A-Z]{2,3}\d?)\s*$/
 const DISCONTINUITY =
   /\b(porosity|crack|lof|lack of fusion|incomplete penetration|ip\b|esi|isi|undercut|burn-?through|slag|linear|excessive penetration|concave root)\b[^|]*/i
 
-export function parseNdeReport(extraction: PdfExtraction): ParsedNdeReport {
-  const lines = extraction.pages.flatMap((p) => p.lines.map((l) => l.text))
+/** One report's worth of lines, already segmented. */
+export function parseNdeReport(input: PdfExtraction | string[]): ParsedNdeReport {
+  const lines = Array.isArray(input)
+    ? input
+    : input.pages.flatMap((p) => p.lines.map((l) => l.text))
 
   const lineItems: ParsedNdeLine[] = []
   let unreadRows = 0
@@ -271,4 +274,198 @@ function companyFrom(lines: string[]): string | null {
     if (m) return m[1]!.trim()
   }
   return null
+}
+
+
+// ---------------------------------------------------------------------
+// The document: several reports, and everything that could not be read.
+//
+// A job book is incomplete if data is missing, so nothing may be dropped
+// quietly. A page that yields nothing, a table row with no weld on it, a
+// report with no date — each is a fact about what this file did not give
+// up, and each is reported rather than absorbed. The parser's job is to
+// be honest about its own blind spots, because the alternative is a
+// turnover that looks complete and is not.
+// ---------------------------------------------------------------------
+
+export type NdeGapKind =
+  /** The page produced text but nothing this could interpret. */
+  | 'page_not_understood'
+  /** The page produced no text at all — a scan, or a decode failure. */
+  | 'page_empty'
+  /** A numbered table row carrying content but no weld-shaped token. */
+  | 'row_not_read'
+  /** The report states more pages than the file gave up. */
+  | 'pages_missing'
+  /** A header field a report is not complete without. */
+  | 'missing_field'
+  /** The file parsed but no report was found in it at all. */
+  | 'no_reports'
+
+export type NdeGap = {
+  kind: NdeGapKind
+  /**
+   * `critical` means data that demonstrably exists was not captured —
+   * a page nobody could read, a row that named no weld. `warning` means
+   * something expected is absent and may legitimately be.
+   */
+  severity: 'critical' | 'warning'
+  detail: string
+  /** 1-based, as a person counts pages in a viewer. */
+  page?: number
+}
+
+export type ParsedNdeDocument = {
+  reports: ParsedNdeReport[]
+  gaps: NdeGap[]
+  /** Nothing in the file went unexplained. */
+  complete: boolean
+}
+
+/** `Page 1 of 2`, which these vendors print on every sheet. */
+export function pageMarker(text: string): { page: number; of: number } | null {
+  const m = /\bPage\s+(\d{1,3})\s+of\s+(\d{1,3})\b/i.exec(text)
+  if (!m) return null
+  const page = Number(m[1])
+  const of = Number(m[2])
+  return of >= page && of > 0 && of < 500 ? { page, of } : null
+}
+
+/**
+ * What identifies the report a page belongs to.
+ *
+ * Presence of a report number is not the marker: continuation sheets
+ * reprint it, and splitting on presence cut one 25-exposure report into
+ * two. What separates reports is a *different* number, or a different
+ * procedure where a technician has sent a magnetic particle sheet and a
+ * radiographic one in the same file.
+ */
+function pageIdentity(lines: string[]): { number: string | null; procedure: string | null } {
+  return {
+    number: fieldAfter(lines, /REPORT\s*(?:NUMBER|#)\s*:?/i),
+    procedure: fieldAfter(lines, /PROCEDURE\s*#?\s*:?/i),
+  }
+}
+
+/** Two pages belong to different reports when a key they both state disagrees. */
+function conflicts(
+  a: { number: string | null; procedure: string | null },
+  b: { number: string | null; procedure: string | null },
+): boolean {
+  if (a.number && b.number && a.number !== b.number) return true
+  if (a.procedure && b.procedure && a.procedure !== b.procedure) return true
+  return false
+}
+
+/** Did this page give up anything at all that could be used? */
+function pageYieldedSomething(lines: string[]): boolean {
+  if (lines.some((l) => /^\s*\d{1,3}\s+\S/.test(l) && weldTokensOnLine(l).length > 0)) return true
+  return lines.some((l) =>
+    /REPORT\s*(?:NUMBER|#)|PROCEDURE|ACCEPTANCE\s*CRITERIA|Technician|JOB\s*LOCATION|REVISION/i.test(l))
+}
+
+/**
+ * Split a PDF into the reports it holds and the gaps it leaves.
+ *
+ * Several reports in one file is normal — a technician sends a day's
+ * work as one PDF — so a page announcing its own report number starts a
+ * new one and every other page continues the last.
+ */
+export function parseNdeDocument(extraction: PdfExtraction): ParsedNdeDocument {
+  const gaps: NdeGap[] = []
+  const open: { id: { number: string | null; procedure: string | null }; lines: string[] }[] = []
+
+  extraction.pages.forEach((page, i) => {
+    const lines = page.lines.map((l) => l.text)
+    const pageNo = i + 1
+
+    if (lines.length === 0) {
+      gaps.push({
+        kind: 'page_empty', severity: 'critical', page: pageNo,
+        detail: `Page ${pageNo} produced no text. If it carries exposures, they are not captured.`,
+      })
+      return
+    }
+
+    if (!pageYieldedSomething(lines)) {
+      // Deliberately not called noise. All that is known is that nothing
+      // usable came out, and a person has to look at the page itself.
+      gaps.push({
+        kind: 'page_not_understood', severity: 'critical', page: pageNo,
+        detail: `Page ${pageNo} produced text but no report details or exposure rows could be read from it.`,
+      })
+      return
+    }
+
+    const id = pageIdentity(lines)
+    const current = open.length > 0 ? open[open.length - 1]! : null
+
+    if (current === null || conflicts(current.id, id)) {
+      open.push({ id, lines: [...lines] })
+    } else {
+      // A continuation sheet often states less than the first; take
+      // whatever it does state so the segment's identity fills in.
+      current.id.number ??= id.number
+      current.id.procedure ??= id.procedure
+      current.lines.push(...lines)
+    }
+  })
+
+  const segments = open.map((o) => o.lines)
+  const reports = segments.map((lines) => parseNdeReport(lines))
+
+  // The sheets state their own extent, which is the one check that can
+  // catch a page the extractor never saw.
+  const declared = extraction.pages
+    .flatMap((p) => p.lines.map((l) => pageMarker(l.text)))
+    .filter((m): m is { page: number; of: number } => m !== null)
+    .reduce((max, m) => Math.max(max, m.of), 0)
+  if (declared > extraction.pages.length) {
+    gaps.push({
+      kind: 'pages_missing', severity: 'critical',
+      detail: `The report states ${declared} pages and the file gave up ${extraction.pages.length}.`,
+    })
+  }
+
+  if (reports.length === 0) {
+    gaps.push({
+      kind: 'no_reports', severity: 'critical',
+      detail: 'No inspection report could be read from this file.',
+    })
+  }
+
+  reports.forEach((r, i) => {
+    const which = reports.length > 1 ? ` (report ${i + 1} of ${reports.length})` : ''
+    if (r.unreadRows > 0) {
+      gaps.push({
+        kind: 'row_not_read', severity: 'critical',
+        detail: `${r.unreadRows} numbered row${r.unreadRows === 1 ? '' : 's'} carried content but named no weld${which}.`,
+      })
+    }
+    // A report without these cannot be audited later: there is nothing to
+    // cite, nothing to date it by, and nothing saying what it was shot to.
+    const required: [keyof ParsedNdeReport, string][] = [
+      ['reportNumber', 'report number'],
+      ['reportDate', 'report date'],
+      ['procedureReference', 'procedure reference'],
+      ['technicianName', 'technician name'],
+    ]
+    for (const [key, label] of required) {
+      if (r[key] === null) {
+        gaps.push({
+          kind: 'missing_field',
+          severity: key === 'reportDate' || key === 'reportNumber' ? 'critical' : 'warning',
+          detail: `No ${label} could be read${which}.`,
+        })
+      }
+    }
+    if (r.lines.length === 0) {
+      gaps.push({
+        kind: 'row_not_read', severity: 'critical',
+        detail: `No exposure rows were read${which}.`,
+      })
+    }
+  })
+
+  return { reports, gaps, complete: gaps.length === 0 }
 }
