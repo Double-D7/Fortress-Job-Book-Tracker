@@ -48,6 +48,7 @@ import { latestOfTier, scoreAudit } from '@/lib/domain/audits'
 import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
 import { createClient } from '@/lib/supabase/server'
 import { COLUMNS, domainToRow, rowToDomain, rowsToDomain } from './rowMap'
+import { resolveTechnician } from '@/lib/domain/welders'
 import { DOCUMENT_BUCKET, signMtrUrl } from '@/lib/supabase/storage'
 
 /** Statuses at or past hand-over. Countdowns stop here. */
@@ -722,9 +723,18 @@ export class SupabaseProvider implements DataProvider {
     let rowsHeld = 0
 
     for (const r of preview.plan.reports) {
+      // Resolved exactly or not at all. A report signed by somebody this
+      // book holds no credentials for is a finding, not a reason to mint
+      // a technician record from a printed name.
+      const tech = r.technicianName
+        ? resolveTechnician(r.technicianName, bundle.ndtTechnicians)
+        : null
+
       const { data: report, error } = await supabase.from('nde_report').insert({
         job_book_id: jobBookId,
         report_number: r.reportNumber,
+        technician_id: tech?.id ?? null,
+        technician_name: r.technicianName,
         // A report with no readable date is still worth holding — the gap
         // says so loudly — but the column will not take null.
         report_date: r.reportDate ?? new Date().toISOString().slice(0, 10),

@@ -22,6 +22,7 @@ import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/n
 import type { Division } from '@/lib/domain/divisions'
 import type { MtrDocument } from '@/lib/domain/types'
 import { heatKey, normalizeHeat, sameHeat } from '@/lib/domain/heats'
+import { resolveTechnician } from '@/lib/domain/welders'
 import { extractPdfText } from '@/lib/import/pdfText'
 import { parseNdeDocument } from '@/lib/import/ndeReport'
 import {
@@ -1513,6 +1514,11 @@ class SeedProvider implements DataProvider {
 
     for (const r of preview.plan.reports) {
       const id = `seed-nde-${b.ndeReports.length + 1}`
+      // Mirrors the Supabase provider exactly; a divergence here is the
+      // one this project has already paid for twice.
+      const tech = r.technicianName
+        ? resolveTechnician(r.technicianName, b.ndtTechnicians)
+        : null
       const lines = r.rows
         .filter((row) => row.status === 'confirmed')
         .map((row, i) => ({
@@ -1536,7 +1542,8 @@ class SeedProvider implements DataProvider {
         procedureReference: r.procedureReference,
         revision: r.revision,
         acceptanceCriteria: r.acceptanceCriteria,
-        technicianId: null,
+        technicianId: tech?.id ?? null,
+        technicianName: r.technicianName,
         documentId: null,
         isSuperseded: false,
         lines,

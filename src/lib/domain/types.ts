@@ -585,6 +585,9 @@ export interface NdeReport extends EnteredRecord {
    * fact in the record before it can be a finding somebody must clear.
    */
   importGaps?: NdeImportGap[] | null
+  /** The technician as printed on the report, kept even when it resolves
+   *  to no record — the finding needs the name to be actionable. */
+  technicianName?: string | null
   /** The file this report was read from. One file often holds several. */
   sourceFilename?: string | null
 }

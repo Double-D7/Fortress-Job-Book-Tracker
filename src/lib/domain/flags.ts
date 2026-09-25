@@ -355,6 +355,49 @@ export function ruleNdeImportGap(b: JobBookBundle): Finding[] {
   return cap('nde.import_gap', out)
 }
 
+
+/**
+ * A report signed by a technician this book holds no record for.
+ *
+ * Section 8 is the NDT technicians' credentials, and its purpose is to
+ * evidence that the people who examined this pipe were qualified to. A
+ * report naming somebody with no record at all defeats that completely:
+ * there is no certificate to check, no level, and nothing to expire.
+ *
+ * Distinct from `nde.technician_not_certified_on_report_date`, which
+ * catches a known technician whose certification did not cover the day.
+ * This catches the case that rule cannot see, because it needs a
+ * technician id to check and there is none.
+ *
+ * The name is carried through as printed. Matching is exact by design —
+ * attributing a radiograph to the wrong person is worse than admitting
+ * the name is unknown — so a spelling difference lands here, and the
+ * resolution is to add the record or correct the spelling, both of which
+ * a person does knowingly.
+ */
+export function ruleNdeTechnicianUnknown(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const r of b.ndeReports) {
+    if (r.isSuperseded || r.technicianId) continue
+    out.push({
+      ruleId: 'nde.technician_unknown',
+      severity: 'critical',
+      title: r.technicianName
+        ? `No credentials on file for ${r.technicianName}`
+        : 'An inspection report names no technician',
+      detail: r.technicianName
+        ? `Report ${r.reportNumber ?? r.id} was signed by ${r.technicianName}, who is not ` +
+          'among this book\u2019s NDT technicians. Section 8 cannot evidence their ' +
+          'qualification until the record exists or the spelling is corrected.'
+        : `Report ${r.reportNumber ?? r.id} does not name a technician, so there is ` +
+          'nobody whose qualification section 8 can evidence.',
+      entityType: 'nde_report', entityId: r.id, sectionNumber: '8',
+      fingerprint: fp('nde.technician_unknown', r.id),
+    })
+  }
+  return cap('nde.technician_unknown', out)
+}
+
 /** A weld referencing a heat number with no MTR on file. */
 export function ruleHeatWithoutMtr(b: JobBookBundle): Finding[] {
   if (sectionIsUnread(b, '15')) return []
@@ -1371,6 +1414,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleCalibrationCertificateUnread(b),
     ...ruleNdeTechnicianNotCertified(b),
     ...ruleNdeImportGap(b),
+    ...ruleNdeTechnicianUnknown(b),
     ...ruleHeatWithoutMtr(b),
     ...rulePressureTestNoRecorderCert(b),
     ...ruleWrongJobDocument(b),

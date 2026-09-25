@@ -16,7 +16,9 @@
  * DP452, an overstatement of ~5.7%). Both numbers are returned, and the UI
  * must label which one it is showing.
  */
-import type { JobBook, Weld, Welder, WelderQualification } from './types'
+import type {
+  JobBook, NdtTechnician, Weld, Welder, WelderQualification,
+} from './types'
 import { addDays, isAfter, isBefore, isWithin } from './dates'
 
 /** ASME Section IX: qualification lapses after 6 months without welding
@@ -363,6 +365,41 @@ export function resolveWelder(nameOrInitials: string, welders: Welder[]): Welder
     welders.find((w) => w.nameAliases.some((a) => a.toLowerCase() === needle)) ??
     null
   )
+}
+
+/**
+ * Resolve a technician named on an inspection report to a managed record.
+ *
+ * Exact, like `resolveWelder` and for the same reason: an NDT technician's
+ * credentials are what section 8 evidences, and attributing an
+ * examination to the wrong person is worse than admitting the name is
+ * unknown. A report signed by somebody this book holds no credentials for
+ * is a finding, not a prompt to invent a record.
+ *
+ * Whitespace is collapsed and case ignored, which is normalising rather
+ * than guessing — "Brendan  LeCompte" and "brendan lecompte" are the same
+ * string written carelessly, not two different readings of a name.
+ *
+ * Ambiguity returns null and is not resolved. Two technicians of the same
+ * name is a real state — this project's own database holds duplicate
+ * rows — and picking one would attribute a radiograph to whichever the
+ * query returned first.
+ */
+export function resolveTechnician(
+  name: string, technicians: readonly NdtTechnician[],
+): NdtTechnician | null {
+  const needle = name.trim().replace(/\s+/g, ' ').toLowerCase()
+  if (!needle) return null
+
+  const same = (a: string | null | undefined) =>
+    (a ?? '').trim().replace(/\s+/g, ' ').toLowerCase() === needle
+
+  const byName = technicians.filter((t) => same(t.fullName))
+  if (byName.length === 1) return byName[0]!
+  if (byName.length > 1) return null
+
+  const byInitials = technicians.filter((t) => same(t.initials))
+  return byInitials.length === 1 ? byInitials[0]! : null
 }
 
 /** Split a `Root/Hot/Fill/Cap` cell such as `CT/CT/HS2/HS2`. */
