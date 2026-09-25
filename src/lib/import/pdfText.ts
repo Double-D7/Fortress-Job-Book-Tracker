@@ -23,6 +23,7 @@
  */
 
 import { inflateSync } from 'node:zlib'
+import { decodeHexString, toUnicodeMaps, type FontMaps } from './pdfCmap'
 
 export interface PdfRun {
   x: number
@@ -169,11 +170,15 @@ function decodeString(s: string): string {
  * threshold below restores the gap without inventing spaces inside a word,
  * where the kerning is single digits.
  */
-function decodeTJ(body: string): string {
+function decodeTJ(body: string, font?: Map<number, string>): string {
   let out = ''
-  for (const m of body.matchAll(/\(((?:[^()\\]|\\.)*)\)|(-?[\d.]+)/g)) {
+  // Hex strings are matched before numbers so that <0034> is not read as
+  // the kerning value 0034. They carry glyph ids, not characters, and
+  // mean nothing without the font's ToUnicode map.
+  for (const m of body.matchAll(/\(((?:[^()\\]|\\.)*)\)|<([0-9A-Fa-f]+)>|(-?[\d.]+)/g)) {
     if (m[1] !== undefined) out += decodeString(m[1])
-    else if (m[2] !== undefined && Number(m[2]) <= -100) out += ' '
+    else if (m[2] !== undefined) out += decodeHexString(m[2], font)
+    else if (m[3] !== undefined && Number(m[3]) <= -100) out += ' '
   }
   return out
 }
@@ -186,6 +191,16 @@ export function extractPdfText(input: Buffer | Uint8Array): PdfExtraction {
   const pages: PdfPage[] = []
   let emptyStreams = 0
   let undecodable = 0
+
+  // Parsed once for the document: the vendor reports that drive this draw
+  // every character as a glyph id, and the map is the only way back.
+  let fonts: FontMaps = new Map()
+  try {
+    fonts = toUnicodeMaps(buf)
+  } catch {
+    // A malformed map must not cost the literal-string text in the same
+    // file, which is what the extractor could always read.
+  }
 
   for (const stream of contentStreams(buf)) {
     if (!isContent(stream.text)) {
@@ -200,8 +215,13 @@ export function extractPdfText(input: Buffer | Uint8Array): PdfExtraction {
     let lineX = 0
     let lineY = 0
 
+    // The font in force, which decides how a hex string is read. PDFs
+    // switch fonts mid-line, so this is tracked as the stream is walked
+    // rather than assumed per page.
+    let font: Map<number, string> | undefined
+
     const ops =
-      /(?<tm>[-\d.]+)\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s+Tm|(?<tdx>[-\d.]+)\s+([-\d.]+)\s+(?:Td|TD)|(?<star>T\*)|\[(?<tj>(?:[^\][\\]|\\.)*)\]\s*TJ|\((?<tj1>(?:[^()\\]|\\.)*)\)\s*Tj/g
+      /(?<tm>[-\d.]+)\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s+Tm|(?<tdx>[-\d.]+)\s+([-\d.]+)\s+(?:Td|TD)|(?<star>T\*)|\/(?<font>[A-Za-z0-9+._-]+)\s+[-\d.]+\s+Tf|\[(?<tj>(?:[^\][\\]|\\.)*)\]\s*TJ|\((?<tj1>(?:[^()\\]|\\.)*)\)\s*Tj|<(?<tjhex>[0-9A-Fa-f]+)>\s*Tj/g
 
     for (const m of stream.text.matchAll(ops)) {
       const g = m.groups!
@@ -213,8 +233,12 @@ export function extractPdfText(input: Buffer | Uint8Array): PdfExtraction {
         // No leading tracked; T* without Tm is rare in generated tables and
         // a nominal step keeps runs from collapsing onto one baseline.
         lineY -= 10; x = lineX; y = lineY
+      } else if (g.font !== undefined) {
+        font = fonts.get(g.font)
       } else {
-        const text = g.tj !== undefined ? decodeTJ(g.tj) : decodeString(g.tj1!)
+        const text = g.tj !== undefined ? decodeTJ(g.tj, font)
+          : g.tjhex !== undefined ? decodeHexString(g.tjhex, font)
+          : decodeString(g.tj1!)
         if (text.trim()) runs.push({ x, y, text })
       }
     }
