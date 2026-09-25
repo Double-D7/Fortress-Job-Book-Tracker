@@ -4,6 +4,8 @@ import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { checkWrenchCalibration, reconcileWrenches, torqueTotals } from '@/lib/domain/torque'
 import { torqueCompleteness } from '@/lib/domain/completeness'
 import { TorqueGrid } from '@/components/TorqueGrid'
+import { CalibrationImport } from '@/components/CalibrationImport'
+import { can } from '@/lib/domain/roles'
 import { Card, CardBody, CardHeader, CardTitle, Chip, Metric, Table, Td, Th, Tr } from '@/components/ui/primitives'
 import { num, pct } from '@/lib/utils'
 
@@ -77,6 +79,8 @@ export default async function TorquePage({ params }: { params: Promise<{ bookId:
           tone={totals.cpFlaggedConnections ? 'progress' : 'idle'}
         />
       </div>
+
+      {can(viewer.role, 'edit_records') && <CalibrationImport bookId={bookId} />}
 
       <Card>
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">

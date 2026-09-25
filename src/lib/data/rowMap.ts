@@ -138,6 +138,19 @@ export const COLUMNS = {
     // 0017 — the §8.1 entry stamp.
     'entered_at', 'entry_source',
   ],
+  // Added when calibration certificates became filable. Every column but
+  // `created_at`, which the table defaults and nothing here sets.
+  torque_wrench: [
+    'id', 'wrench_id', 'capacity_ft_lb', 'last_calibration_date',
+    'calibration_due_date', 'cert_document_id', 'cert_on_file', 'on_roster',
+    'deleted_at',
+    // 0007 — the certificate is the calibration record, and these are what
+    // it prints.
+    'cert_read', 'roster_claimed_calibration_date', 'serial_number',
+    'manufacturer', 'model', 'certificate_number',
+    'calibration_range_min_ft_lb', 'calibration_range_max_ft_lb',
+    'calibration_frequency', 'calibration_status',
+  ],
   torque_connection: [
     'id', 'job_book_id', 'iso_flange_number', 'iso_number', 'flange_pipe_size',
     'bolt_diameter', 'bolt_count', 'required_torque_ft_lb',

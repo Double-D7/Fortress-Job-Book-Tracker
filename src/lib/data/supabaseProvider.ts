@@ -22,6 +22,7 @@ import type {
   GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NdeImportPreview, NdeImportResult,
+  CalibrationImportPreview, CalibrationImportResult,
   NoteInput, NotificationItem,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
@@ -31,9 +32,10 @@ import type {
 import { can, rolesWith } from '@/lib/domain/roles'
 import type { NoteSeverity } from '@/lib/domain/notifications'
 import { heatKey, normalizeHeat } from '@/lib/domain/heats'
+import { applyCertificate } from '@/lib/domain/calibrationPlan'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
-  buildNdePreview,
+  buildNdePreview, buildCalibrationPreview,
   buildWeldLogPreview, redactForViewer, summarizeBook,
 } from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
@@ -905,6 +907,85 @@ export class SupabaseProvider implements DataProvider {
       ok: true,
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
+    }
+  }
+
+  async previewCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportPreview> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildCalibrationPreview(bundle, files)
+  }
+
+  async commitCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportResult> {
+    const empty = {
+      wrenchesCreated: 0, wrenchesUpdated: 0, filedUnread: 0, held: 0,
+      connectionsResolved: 0, connectionsExposed: 0,
+    }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+
+    // Re-planned server-side against the book as it stands, never taken
+    // from the browser — the rule every importer here follows.
+    const preview = buildCalibrationPreview(bundle, files)
+    if (!preview.ok || !preview.plan || !preview.counts) {
+      return { ok: false, error: preview.error ?? 'No certificate could be read.', ...empty }
+    }
+
+    // Folded onto a running map rather than upserted row by row, so a
+    // batch carrying two certificates for one wrench writes the winner
+    // once instead of writing both and letting the last one land.
+    const byWrenchId = new Map(bundle.torqueWrenches.map((w) => [w.wrenchId, w]))
+    let created = 0
+    for (const row of preview.plan.rows) {
+      if (!row.writable || !row.wrenchId) continue
+      const existing = byWrenchId.get(row.wrenchId) ?? null
+      if (!existing) created += 1
+      byWrenchId.set(row.wrenchId, {
+        ...applyCertificate(existing, row.wrenchId, row.parsed, row.disposition),
+        ...(existing ? { id: existing.id } : {}),
+      })
+    }
+
+    const touched = new Set(
+      preview.plan.rows.filter((r) => r.writable && r.wrenchId).map((r) => r.wrenchId!),
+    )
+    const records = [...byWrenchId.values()].filter((w) => touched.has(w.wrenchId))
+    if (records.length > 0) {
+      const supabase = await createClient()
+      // On `wrench_id`, not `id`: the table is keyed on the wrench number
+      // by a unique constraint and a wrench created here has no id yet.
+      const { error } = await supabase.from('torque_wrench').upsert(
+        records.map((w) => {
+          const row = domainToRow(w, COLUMNS.torque_wrench)
+          if (!w.id) delete row.id
+          return row
+        }),
+        { onConflict: 'wrench_id' },
+      )
+      if (error) return { ok: false, error: describe(error), ...empty }
+      await this.refreshScores(jobBookId, viewer)
+    }
+
+    return {
+      ok: true,
+      wrenchesCreated: created,
+      wrenchesUpdated: records.length - created,
+      filedUnread: preview.counts.unread,
+      held: preview.counts.held,
+      connectionsResolved: preview.counts.connectionsResolved,
+      connectionsExposed: preview.counts.connectionsExposed,
     }
   }
 

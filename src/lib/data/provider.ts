@@ -26,6 +26,13 @@ import { resolveTechnician } from '@/lib/domain/welders'
 import { extractPdfText } from '@/lib/import/pdfText'
 import { parseNdeDocument } from '@/lib/import/ndeReport'
 import {
+  parseCalibrationCertificate, type ParsedCalibrationCertificate,
+} from '@/lib/import/calibrationCertificate'
+import {
+  applyCertificate, countCalibrationPlan, planCalibrationImport,
+  type CalibrationCounts, type CalibrationPlan,
+} from '@/lib/domain/calibrationPlan'
+import {
   countPlan, evidencedButNotLogged, planNdeImport,
   type NdePlan, type PlanCounts,
 } from '@/lib/domain/ndePlan'
@@ -327,6 +334,21 @@ export interface DataProvider {
    * INSERT would let a Custodian audit their own book and produce a score
    * the gate engine would then believe.
    */
+  /**
+   * File torque-wrench calibration certificates (§13).
+   *
+   * A batch rather than one page at a time, because the certificates live
+   * together in the section 13 tab and get scanned together.
+   */
+  previewCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportPreview>
+  commitCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportResult>
+
   /** The same two steps for the pressure test hold sheet (§17). */
   previewPressureTestImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
@@ -598,6 +620,96 @@ export function buildNdePreview(
     counts: countPlan(plan),
     evidencedButNotLogged: evidencedButNotLogged(plan, bundle.welds),
   }
+}
+
+export interface CalibrationImportPreview {
+  ok: boolean
+  error?: string
+  plan?: CalibrationPlan
+  counts?: CalibrationCounts
+}
+
+export interface CalibrationImportResult {
+  ok: boolean
+  error?: string
+  wrenchesCreated: number
+  wrenchesUpdated: number
+  /** Certificates filed but recorded as unread — an ingestion gap, not a
+   *  deficiency in the book. */
+  filedUnread: number
+  /** Files that wrote nothing and need a person. */
+  held: number
+  connectionsResolved: number
+  connectionsExposed: number
+}
+
+/** One certificate, as read off one page. */
+export interface ReadCertificate {
+  filename: string
+  parsed: ParsedCalibrationCertificate
+}
+
+/**
+ * Read every certificate in an upload.
+ *
+ * A QA lead files these either as one PDF per wrench or as one scan of the
+ * whole section 13 tab, so pages are read independently and a page that
+ * repeats the serial of the page before it is a continuation rather than a
+ * second certificate. A file that yields nothing at all still produces a
+ * row: an unreadable page is a fact about the book that somebody has to
+ * see, and dropping it silently is how a wrench ends up with no
+ * calibration on record and nobody knowing why.
+ */
+export function readCertificates(
+  files: readonly { filename: string; bytes: Uint8Array }[],
+): ReadCertificate[] {
+  const out: ReadCertificate[] = []
+  for (const f of files) {
+    let pages: string[] = []
+    try {
+      pages = extractPdfText(f.bytes).pages.map((p) => p.lines.map((l) => l.text).join('\n'))
+    } catch {
+      pages = []
+    }
+
+    const multi = pages.length > 1
+    let lastSerial: string | null = null
+    let found = 0
+    for (const [i, text] of pages.entries()) {
+      const parsed = parseCalibrationCertificate(text)
+      if (!parsed.serialNumber && !parsed.dateCalibrated) continue
+      // A page carrying the serial of the page before it is the back of
+      // the same certificate, not another wrench's.
+      if (parsed.serialNumber && parsed.serialNumber === lastSerial) continue
+      lastSerial = parsed.serialNumber
+      found += 1
+      out.push({
+        filename: multi ? `${f.filename} · page ${i + 1}` : f.filename,
+        parsed,
+      })
+    }
+
+    if (found === 0) out.push({ filename: f.filename, parsed: parseCalibrationCertificate('') })
+  }
+  return out
+}
+
+/**
+ * Plan a batch of calibration certificates against one book.
+ *
+ * Shared by both providers, for the reason every other importer here
+ * states: a preview computed one way and a commit computed another is a
+ * divergence nobody can see.
+ */
+export function buildCalibrationPreview(
+  bundle: JobBookBundle,
+  files: readonly { filename: string; bytes: Uint8Array }[],
+): CalibrationImportPreview {
+  if (files.length === 0) return { ok: false, error: 'No certificates supplied.' }
+  const plan = planCalibrationImport(
+    readCertificates(files), bundle.torqueWrenches, bundle.torqueConnections,
+  )
+  return { ok: true, plan, counts: countCalibrationPlan(plan) }
 }
 
 export interface WeldLogImportPreview {
@@ -1659,6 +1771,65 @@ class SeedProvider implements DataProvider {
       ok: true,
       connectionsCreated: preview.plan.connectionsToCreate,
       connectionsUpdated: preview.plan.connectionsToUpdate,
+    }
+  }
+
+  async previewCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportPreview> {
+    const b = this.all().find((x) => x.book.id === jobBookId)
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.' }
+    }
+    return buildCalibrationPreview(b, files)
+  }
+
+  async commitCalibrationImport(
+    viewer: Viewer, jobBookId: string,
+    files: readonly { filename: string; bytes: Uint8Array }[],
+  ): Promise<CalibrationImportResult> {
+    const empty = {
+      wrenchesCreated: 0, wrenchesUpdated: 0, filedUnread: 0, held: 0,
+      connectionsResolved: 0, connectionsExposed: 0,
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.', ...empty }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+
+    const preview = buildCalibrationPreview(b, files)
+    if (!preview.ok || !preview.plan || !preview.counts) {
+      return { ok: false, error: preview.error ?? 'No certificate could be read.', ...empty }
+    }
+
+    // Applied in plan order onto a running map, so a batch holding two
+    // certificates for one wrench lands the same way it previewed.
+    const byWrenchId = new Map(b.torqueWrenches.map((w) => [w.wrenchId, w]))
+    let created = 0
+    for (const row of preview.plan.rows) {
+      if (!row.writable || !row.wrenchId) continue
+      const existing = byWrenchId.get(row.wrenchId) ?? null
+      if (!existing) created += 1
+      byWrenchId.set(row.wrenchId, {
+        ...applyCertificate(existing, row.wrenchId, row.parsed, row.disposition),
+        id: existing?.id ?? `wrench-${row.wrenchId}`,
+      })
+    }
+
+    this.commit(jobBookId, idx, { ...b, torqueWrenches: [...byWrenchId.values()] })
+    const written = preview.plan.rows.filter((r) => r.writable).length
+    return {
+      ok: true,
+      wrenchesCreated: created,
+      wrenchesUpdated: written - created,
+      filedUnread: preview.counts.unread,
+      held: preview.counts.held,
+      connectionsResolved: preview.counts.connectionsResolved,
+      connectionsExposed: preview.counts.connectionsExposed,
     }
   }
 

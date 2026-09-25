@@ -364,6 +364,26 @@ export interface TorqueWrench {
   /** Whether the wrench appears in the log's roster header block, as
    *  distinct from merely appearing on a connection row. */
   onRoster: boolean
+
+  /**
+   * What the certificate itself prints.
+   *
+   * These columns have existed since the calibration-certificate
+   * migration and had no way of being filled, because nothing could file
+   * a certificate. They are carried in the domain so the page a person
+   * sees can show the serial it matched on rather than only the last four
+   * it matched with.
+   */
+  serialNumber?: string | null
+  manufacturer?: string | null
+  model?: string | null
+  certificateNumber?: string | null
+  calibrationRangeMinFtLb?: number | null
+  calibrationRangeMaxFtLb?: number | null
+  calibrationFrequency?: string | null
+  /** The laboratory's own verdict. A failed wrench never carries a
+   *  calibration window, whatever dates its page prints. */
+  calibrationStatus?: 'pass' | 'fail' | null
 }
 
 /**

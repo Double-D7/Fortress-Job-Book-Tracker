@@ -229,6 +229,42 @@ export function ruleCalibrationCertificateUnread(b: JobBookBundle): Finding[] {
 }
 
 /**
+ * A wrench the calibration laboratory failed.
+ *
+ * A failure is not a calibration. The certificate reader has always
+ * captured the lab's own verdict and nothing has ever asked about it,
+ * because until certificates could be filed there was no verdict to ask
+ * about. Now that there is, a wrench that did not pass is a critical
+ * finding against every connection it torqued: the tool was out of
+ * tolerance, and the torque values it produced cannot be relied on.
+ *
+ * Distinct from an expired calibration, which says the window lapsed. A
+ * failure says the wrench was wrong while the window was open.
+ */
+export function ruleWrenchFailedCalibration(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const w of b.torqueWrenches) {
+    if (w.calibrationStatus !== 'fail') continue
+    const used = b.torqueConnections.filter(
+      (c) => c.wrenchId === w.id || c.wrenchIdRaw === w.wrenchId,
+    )
+    out.push({
+      ruleId: 'torque.wrench_failed_calibration',
+      severity: 'critical',
+      title: `Wrench ${w.wrenchId} failed its calibration`,
+      detail: `The calibration certificate on file for wrench ${w.wrenchId} records the ` +
+        `laboratory's verdict as a failure. A failed wrench has no calibration window, and ` +
+        `the ${used.length} connection${used.length === 1 ? '' : 's'} torqued with it ` +
+        `cannot be certified against it. Either an earlier certificate covers the work and ` +
+        `should be filed, or those connections need re-torquing with a calibrated wrench.`,
+      entityType: 'torque_wrench', entityId: w.id, sectionNumber: '13',
+      fingerprint: fp('torque.wrench_failed_calibration', w.id),
+    })
+  }
+  return cap('torque.wrench_failed_calibration', out)
+}
+
+/**
  * A wrench whose calibration was expired, missing, or — the case this
  * application exists to catch — not yet issued on the date of the work.
  */
@@ -1453,6 +1489,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleWrenchCalibrationInvalid(b),
     ...ruleRosterContradictsCertificate(b),
     ...ruleCalibrationCertificateUnread(b),
+    ...ruleWrenchFailedCalibration(b),
     ...ruleNdeTechnicianNotCertified(b),
     ...ruleNdeImportGap(b),
     ...ruleNdeTechnicianUnknown(b),
