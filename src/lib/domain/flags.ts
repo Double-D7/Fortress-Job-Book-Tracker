@@ -308,6 +308,53 @@ export function ruleNdeTechnicianNotCertified(b: JobBookBundle): Finding[] {
   return cap('nde.technician_not_certified_on_report_date', out)
 }
 
+
+/**
+ * An NDE report whose source file did not give up everything it holds.
+ *
+ * A job book with missing data is incomplete, and the missing data here
+ * is of a particular kind: it demonstrably exists — it is on a page of a
+ * PDF somebody uploaded — and the application could not read it. That is
+ * not the same as a document nobody has filed yet, and it is worse,
+ * because the folder looks full.
+ *
+ * So each critical gap the importer recorded becomes a finding against
+ * section 10, carrying the page number where there is one, so the person
+ * clearing it can open that page and enter what it says. A warning-level
+ * gap — a missing technician name, say — is left alone: it is expected
+ * and its absence is not evidence that the examination was wrong.
+ *
+ * Nothing here re-reads the PDF. The gap was decided when the file was
+ * imported, by the same parser the person confirmed; re-deriving it would
+ * be a second opinion that could differ from what they saw.
+ */
+export function ruleNdeImportGap(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const r of b.ndeReports) {
+    if (r.isSuperseded) continue
+    for (const gap of r.importGaps ?? []) {
+      if (gap.severity !== 'critical') continue
+      const where = gap.page ? ` (page ${gap.page})` : ''
+      const source = r.sourceFilename ? ` in ${r.sourceFilename}` : ''
+      out.push({
+        ruleId: 'nde.import_gap',
+        severity: 'critical',
+        title: `Part of an inspection report could not be read${where}`,
+        detail: `${gap.detail} Report ${r.reportNumber ?? r.id}${source}. ` +
+          'The examination it records is not evidenced in this book until ' +
+          'somebody enters it or replaces the file.',
+        entityType: 'nde_report',
+        entityId: r.id,
+        sectionNumber: '10',
+        // One finding per report and gap, so re-running evaluation does
+        // not duplicate it and clearing one does not clear the others.
+        fingerprint: fp('nde.import_gap', `${r.id}:${gap.kind}:${gap.page ?? ''}`),
+      })
+    }
+  }
+  return cap('nde.import_gap', out)
+}
+
 /** A weld referencing a heat number with no MTR on file. */
 export function ruleHeatWithoutMtr(b: JobBookBundle): Finding[] {
   if (sectionIsUnread(b, '15')) return []
@@ -1323,6 +1370,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleRosterContradictsCertificate(b),
     ...ruleCalibrationCertificateUnread(b),
     ...ruleNdeTechnicianNotCertified(b),
+    ...ruleNdeImportGap(b),
     ...ruleHeatWithoutMtr(b),
     ...rulePressureTestNoRecorderCert(b),
     ...ruleWrongJobDocument(b),

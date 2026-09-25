@@ -576,6 +576,24 @@ export interface NdeReport extends EnteredRecord {
   supersedesReportId?: string | null
   isSuperseded: boolean
   lines: NdeReportLine[]
+  /**
+   * What the source PDF did not give up: pages that yielded nothing,
+   * rows naming no weld, fields that could not be read.
+   *
+   * Stored rather than shown and forgotten, because flags in this system
+   * are derived from data by rules. A page nobody could read has to be a
+   * fact in the record before it can be a finding somebody must clear.
+   */
+  importGaps?: NdeImportGap[] | null
+  /** The file this report was read from. One file often holds several. */
+  sourceFilename?: string | null
+}
+
+export interface NdeImportGap {
+  kind: string
+  severity: 'critical' | 'warning'
+  detail: string
+  page?: number
 }
 
 export interface MaterialHeat extends EnteredRecord {
