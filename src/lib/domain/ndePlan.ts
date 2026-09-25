@@ -84,11 +84,18 @@ export function methodFrom(report: ParsedNdeReport): NdtMethod | null {
 /**
  * Choose the row's weld from the tokens printed on it.
  *
- * The first token that resolves wins, because both vendors print the
- * Weld/Line/Drawing column before the IQI columns whose designations
- * share the shape. A resolving token that is contradicted is still
- * preferred over a later one that matches nothing — reporting a doubtful
- * match is more useful than reporting no match at all.
+ * Two passes, and the order matters more than it looks.
+ *
+ * First, look for a token that resolves *and* is corroborated. Both
+ * vendors print the Weld/Line/Drawing column before the IQI columns, so
+ * in practice this is the weld column and the search ends immediately.
+ *
+ * Failing that, report on the *first* token and nothing else. An earlier
+ * version fell through to later tokens, and against a book that did not
+ * contain the report's welds every row came back as "B-7, several welds
+ * share this number" — an IQI designation explaining a row whose actual
+ * problem was that FW-1080 is not in this book. The person is owed the
+ * weld column's own answer, because that is the column that names a weld.
  */
 function chooseRow(
   line: ParsedNdeLine, welds: readonly Weld[], reportDate: string | null,
@@ -103,38 +110,40 @@ function chooseRow(
   const matches = matchWeldNumbers(welds, line.candidates)
   const byId = new Map(welds.map((w) => [w.id, w]))
 
-  let fallback: PlannedRow | null = null
+  const evaluate = (i: number): PlannedRow | null => {
+    const m = matches[i]
+    const printed = line.candidates[i]
+    if (!m || printed === undefined) return null
 
-  for (let i = 0; i < matches.length; i++) {
-    const m = matches[i]!
-    const printed = line.candidates[i]!
-
+    if (m.status === 'unknown') {
+      return {
+        ...base, printed, weldId: null, weldNumber: null,
+        status: 'unmatched', corroboration: null, candidateWeldIds: [],
+      }
+    }
     if (m.status === 'ambiguous') {
       return {
         ...base, printed, weldId: null, weldNumber: weldNumberKey(printed),
         status: 'ambiguous', corroboration: null, candidateWeldIds: m.weldIds,
       }
     }
-    if (m.status !== 'matched') continue
-
     const weld = byId.get(m.weldId)!
     const c = corroborate(weld, line, reportDate)
-    const row: PlannedRow = {
+    return {
       ...base, printed, weldId: weld.id, weldNumber: weld.weldNumber,
       status: isConfirmed(c) ? 'confirmed' : c.unchecked ? 'unchecked' : 'unconfirmed',
       corroboration: c, candidateWeldIds: [],
     }
-    // A corroborated match ends the search. An uncorroborated one is kept
-    // in case a later token does better — `B-7` resolving to weld 7 must
-    // not beat `FW-1130` resolving to weld 1130, and it cannot, because
-    // the weld column is printed first.
-    if (row.status === 'confirmed') return row
-    fallback ??= row
   }
 
-  return fallback ?? {
+  for (let i = 0; i < matches.length; i++) {
+    const row = evaluate(i)
+    if (row?.status === 'confirmed') return row
+  }
+
+  return evaluate(0) ?? {
     ...base,
-    printed: line.candidates[0] ?? '',
+    printed: '',
     weldId: null,
     weldNumber: null,
     status: 'unmatched',

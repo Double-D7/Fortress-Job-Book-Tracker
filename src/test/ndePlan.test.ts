@@ -178,3 +178,28 @@ describe('the counts the screen shows', () => {
     })
   })
 })
+
+describe('which token explains a row that could not be filed', () => {
+  it('reports the weld column, not an IQI code further along', () => {
+    // Found by running a DP-318 report against a book that does not hold
+    // its welds: every row came back as "B-7, several welds share this
+    // number", an IQI designation explaining a row whose actual problem
+    // was that FW-1080 is not in this book.
+    const p = planReport(report({
+      lines: [line(['FW-1080', 'A-0', 'B-7'], { welderStamp: 'KT' })],
+    }), LOG)
+    expect(p.rows[0]!.printed).toBe('FW-1080')
+    expect(p.rows[0]!.status).toBe('unmatched')
+  })
+
+  it('still takes a later token when that one is corroborated', () => {
+    // The fallback earns its place only on a confirmed match: a row whose
+    // first token is noise and whose second names a weld the log agrees
+    // with is still a real exposure.
+    const p = planReport(report({
+      lines: [line(['ZZ-99999', 'FW-1130'], { welderStamp: 'LC' })],
+    }), LOG)
+    expect(p.rows[0]!.printed).toBe('FW-1130')
+    expect(p.rows[0]!.status).toBe('confirmed')
+  })
+})

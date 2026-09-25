@@ -22,6 +22,12 @@ import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/n
 import type { Division } from '@/lib/domain/divisions'
 import type { MtrDocument } from '@/lib/domain/types'
 import { heatKey, normalizeHeat, sameHeat } from '@/lib/domain/heats'
+import { extractPdfText } from '@/lib/import/pdfText'
+import { parseNdeDocument } from '@/lib/import/ndeReport'
+import {
+  countPlan, evidencedButNotLogged, planNdeImport,
+  type NdePlan, type PlanCounts,
+} from '@/lib/domain/ndePlan'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
@@ -284,6 +290,18 @@ export interface DataProvider {
   previewWeldLogImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<WeldLogImportPreview>
+
+  /** Read an NDE report PDF and plan it against this book. One file
+   *  routinely holds several reports. */
+  previewNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportPreview>
+
+  /** Write the reports, their corroborated lines, and the gaps the file
+   *  left. Re-planned server-side; the browser's plan is never trusted. */
+  commitNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportResult>
   commitWeldLogImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<WeldLogImportResult>
@@ -524,6 +542,61 @@ export interface OverviewImportResult {
   qualificationsRecorded: number
   peopleCreated: number
   skipped: { stamp: string; reason: string }[]
+}
+
+export interface NdeImportPreview {
+  ok: boolean
+  error?: string
+  plan?: NdePlan
+  counts?: PlanCounts
+  /** Welds the report evidences that the log does not mark examined. */
+  evidencedButNotLogged?: string[]
+}
+
+export interface NdeImportResult {
+  ok: boolean
+  error?: string
+  reportsCreated: number
+  linesCreated: number
+  weldsLinked: number
+  /** Rows left for a person: uncorroborated, ambiguous or unmatched. */
+  rowsHeld: number
+  criticalGaps: number
+}
+
+/**
+ * Parse an NDE report PDF and plan it against one book.
+ *
+ * Shared by both providers, for the reason the weld log importer states
+ * and this project has since proved twice: a preview computed one way and
+ * a commit computed another is a divergence nobody can see.
+ */
+export function buildNdePreview(
+  bundle: JobBookBundle, file: Uint8Array, filename: string,
+): NdeImportPreview {
+  let doc
+  try {
+    doc = parseNdeDocument(extractPdfText(file))
+  } catch {
+    return { ok: false, error: `Could not read ${filename} as a PDF.` }
+  }
+
+  if (doc.reports.length === 0) {
+    // Still a failure worth describing: the gaps say what was seen.
+    return {
+      ok: false,
+      error: 'No inspection report could be read from that file.',
+      plan: { reports: [], gaps: doc.gaps },
+    }
+  }
+
+  const plan = planNdeImport(doc, bundle.welds)
+  return {
+    ok: true,
+    plan,
+    counts: countPlan(plan),
+    evidencedButNotLogged: evidencedButNotLogged(plan, bundle.welds),
+  }
 }
 
 export interface WeldLogImportPreview {
@@ -1403,6 +1476,94 @@ class SeedProvider implements DataProvider {
       return { ok: false, error: 'Not permitted to import into this book.' }
     }
     return buildWeldLogPreview(b, file, filename)
+  }
+
+  async previewNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportPreview> {
+    const b = await this.getBundle(viewer, jobBookId)
+    if (!b) return { ok: false, error: 'Job book not found.' }
+    return buildNdePreview(b, file, filename)
+  }
+
+  async commitNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportResult> {
+    const empty = {
+      reportsCreated: 0, linesCreated: 0, weldsLinked: 0, rowsHeld: 0, criticalGaps: 0,
+    }
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    if (idx < 0) return { ok: false, error: 'Job book not found.', ...empty }
+    const b = this.all()[idx]!
+
+    // Re-planned here, never taken from the browser: a plan supplied by a
+    // client is a client asserting what is in a document it also supplied.
+    const preview = buildNdePreview(b, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read that report.', ...empty }
+    }
+
+    let reportsCreated = 0
+    let linesCreated = 0
+    let weldsLinked = 0
+    let rowsHeld = 0
+
+    for (const r of preview.plan.reports) {
+      const id = `seed-nde-${b.ndeReports.length + 1}`
+      const lines = r.rows
+        .filter((row) => row.status === 'confirmed')
+        .map((row, i) => ({
+          id: `${id}-l${i + 1}`,
+          ndeReportId: id,
+          weldId: row.weldId,
+          weldNumber: row.printed,
+          result: null,
+          indications: row.discontinuity,
+          welderCode: row.welderStamp,
+        }))
+      rowsHeld += r.rows.length - lines.length
+
+      b.ndeReports.push({
+        id,
+        jobBookId,
+        reportNumber: r.reportNumber,
+        reportDate: r.reportDate ?? new Date().toISOString().slice(0, 10),
+        ndtCompany: r.ndtCompany,
+        method: r.method ?? 'RT',
+        procedureReference: r.procedureReference,
+        revision: r.revision,
+        acceptanceCriteria: r.acceptanceCriteria,
+        technicianId: null,
+        documentId: null,
+        isSuperseded: false,
+        lines,
+        enteredAt: new Date().toISOString(),
+        enteredBy: viewer.id,
+        entrySource: 'field_entry',
+        importGaps: preview.plan.gaps,
+        sourceFilename: filename,
+      } as (typeof b.ndeReports)[number])
+      reportsCreated += 1
+      linesCreated += lines.length
+
+      // The link back, so a weld can name the report that examined it.
+      for (const line of lines) {
+        const w = b.welds.find((x) => x.id === line.weldId)
+        if (w && !w.ndtReportId) { w.ndtReportId = id; weldsLinked += 1 }
+      }
+    }
+
+    return {
+      ok: true,
+      reportsCreated,
+      linesCreated,
+      weldsLinked,
+      rowsHeld,
+      criticalGaps: preview.plan.gaps.filter((g) => g.severity === 'critical').length,
+    }
   }
 
   async commitWeldLogImport(

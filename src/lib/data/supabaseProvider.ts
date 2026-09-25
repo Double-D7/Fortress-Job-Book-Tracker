@@ -21,6 +21,7 @@ import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
   GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
+  NdeImportPreview, NdeImportResult,
   NoteInput, NotificationItem,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
@@ -32,6 +33,7 @@ import type { NoteSeverity } from '@/lib/domain/notifications'
 import { heatKey, normalizeHeat } from '@/lib/domain/heats'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
+  buildNdePreview,
   buildWeldLogPreview, redactForViewer, summarizeBook,
 } from './provider'
 import { rowsForPlan } from '@/lib/import/overviewIngest'
@@ -682,6 +684,106 @@ export class SupabaseProvider implements DataProvider {
     const bundle = await this.getBundle(viewer, jobBookId)
     if (!bundle) return { ok: false, error: 'Job book not found.' }
     return buildWeldLogPreview(bundle, file, filename)
+  }
+
+  async previewNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportPreview> {
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    return buildNdePreview(bundle, file, filename)
+  }
+
+  async commitNdeImport(
+    viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
+  ): Promise<NdeImportResult> {
+    const empty = {
+      reportsCreated: 0, linesCreated: 0, weldsLinked: 0, rowsHeld: 0, criticalGaps: 0,
+    }
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to import into this book.', ...empty }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.', ...empty }
+
+    // Re-planned against the book as it stands now, never taken from the
+    // browser. A plan supplied by a client is a client asserting what is
+    // in a document it also supplied.
+    const preview = buildNdePreview(bundle, file, filename)
+    if (!preview.ok || !preview.plan) {
+      return { ok: false, error: preview.error ?? 'Could not read that report.', ...empty }
+    }
+
+    const supabase = await createClient()
+    const gaps = preview.plan.gaps
+    let reportsCreated = 0
+    let linesCreated = 0
+    let weldsLinked = 0
+    let rowsHeld = 0
+
+    for (const r of preview.plan.reports) {
+      const { data: report, error } = await supabase.from('nde_report').insert({
+        job_book_id: jobBookId,
+        report_number: r.reportNumber,
+        // A report with no readable date is still worth holding — the gap
+        // says so loudly — but the column will not take null.
+        report_date: r.reportDate ?? new Date().toISOString().slice(0, 10),
+        ndt_company: r.ndtCompany,
+        method: r.method ?? 'RT',
+        procedure_reference: r.procedureReference,
+        revision: r.revision,
+        acceptance_criteria: r.acceptanceCriteria,
+        import_gaps: gaps.length > 0 ? gaps : null,
+        source_filename: filename,
+      }).select('id').single()
+
+      if (error || !report) {
+        return { ok: false, error: describe(error), ...empty, reportsCreated, linesCreated }
+      }
+      reportsCreated += 1
+      const reportId = report.id as string
+
+      const writable = r.rows.filter((row) => row.status === 'confirmed')
+      rowsHeld += r.rows.length - writable.length
+
+      if (writable.length > 0) {
+        const { error: lineError } = await supabase.from('nde_report_line').insert(
+          writable.map((row) => ({
+            nde_report_id: reportId,
+            weld_id: row.weldId,
+            weld_number: row.printed,
+            indications: row.discontinuity,
+            welder_code: row.welderStamp,
+          })),
+        )
+        if (lineError) {
+          return { ok: false, error: describe(lineError), ...empty, reportsCreated }
+        }
+        linesCreated += writable.length
+
+        // The link back, so a weld names the report that examined it.
+        // Only where nothing claims it yet: a weld already tied to a
+        // report is not re-pointed by a later import.
+        const ids = writable
+          .map((row) => row.weldId)
+          .filter((id): id is string => id !== null)
+        if (ids.length > 0) {
+          const { data: linked } = await supabase.from('weld')
+            .update({ ndt_report_id: reportId })
+            .in('id', ids).is('ndt_report_id', null).select('id')
+          weldsLinked += linked?.length ?? 0
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      reportsCreated,
+      linesCreated,
+      weldsLinked,
+      rowsHeld,
+      criticalGaps: gaps.filter((g) => g.severity === 'critical').length,
+    }
   }
 
   async commitWeldLogImport(

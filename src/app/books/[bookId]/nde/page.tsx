@@ -7,6 +7,8 @@ import { isWithin } from '@/lib/domain/dates'
 import {
   Card, CardBody, CardHeader, CardTitle, Chip, Metric, Table, Td, Th, Tr,
 } from '@/components/ui/primitives'
+import { NdeImport } from '@/components/NdeImport'
+import { can } from '@/lib/domain/roles'
 import { num } from '@/lib/utils'
 
 export const dynamic = 'force-dynamic'
@@ -37,6 +39,11 @@ export default async function NdePage({ params }: { params: Promise<{ bookId: st
 
   return (
     <div className="space-y-4">
+      {/* Above the figures on purpose. The numbers below describe what the
+          book can evidence; this is the only thing on the page that
+          changes them. */}
+      {can(viewer.role, 'edit_records') && <NdeImport bookId={bookId} />}
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Reports on file" value={num(b.ndeReports.length)} />
         <Metric label="Welds linked to a report" value={num(rec.linkedCount)} />
