@@ -21,6 +21,7 @@ import {
   rollupByWelder,
 } from './welders'
 import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
+import { ndeCoverage } from './ndeCoverage'
 import { reconcileCp, reconcileHeats } from './reconcile'
 import { entryTimeliness, TIMELINESS_TARGET_PCT } from './timeliness'
 
@@ -396,6 +397,46 @@ export function ruleNdeTechnicianUnknown(b: JobBookBundle): Finding[] {
     })
   }
   return cap('nde.technician_unknown', out)
+}
+
+
+/**
+ * Examinations the weld log claims that no report evidences.
+ *
+ * The book passes its own arithmetic on the log's number and fails an
+ * audit on this one, because an auditor asks for the report. Both facts
+ * have been on the NDE screen all along without ever being subtracted.
+ *
+ * Aggregated rather than one finding per weld: 223 separate findings
+ * reading "weld 1130 is examined but not evidenced" is a wall nobody
+ * reads, and the actionable statement is the count and the shortfall
+ * against the rule.
+ */
+export function ruleNdeExaminedNotEvidenced(b: JobBookBundle): Finding[] {
+  if (sectionIsUnread(b, '10')) return []
+  const c = ndeCoverage(b.welds, b.ndeReports, b.book)
+  if (c.unevidenced.length === 0) return []
+
+  // Short of the rule on evidence is the serious case: the job owes a
+  // percentage it cannot currently show. Above it, the gap is still worth
+  // closing but the book is not failing its requirement.
+  const short = c.meetsOnEvidenced === false
+  const owed = c.requiredWelds !== null
+    ? ` The rule requires ${c.requiredWelds} of ${c.countableWelds}; ` +
+      `${c.evidenced} are evidenced.`
+    : ''
+
+  return [{
+    ruleId: 'nde.examined_not_evidenced',
+    severity: short ? 'critical' : 'warning',
+    title: `${c.unevidenced.length} weld(s) are recorded as examined with no inspection report`,
+    detail: `The weld log marks ${c.examined} weld(s) examined (${c.examinedPct}%). ` +
+      `Inspection reports on file evidence ${c.evidenced} (${c.evidencedPct}%).` + owed +
+      ` First without a report: ${c.unevidenced.slice(0, 10).join(', ')}` +
+      (c.unevidenced.length > 10 ? ` and ${c.unevidenced.length - 10} more.` : '.'),
+    entityType: 'job_book', entityId: b.book.id, sectionNumber: '10',
+    fingerprint: fp('nde.examined_not_evidenced', b.book.id),
+  }]
 }
 
 /** A weld referencing a heat number with no MTR on file. */
@@ -1415,6 +1456,7 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleNdeTechnicianNotCertified(b),
     ...ruleNdeImportGap(b),
     ...ruleNdeTechnicianUnknown(b),
+    ...ruleNdeExaminedNotEvidenced(b),
     ...ruleHeatWithoutMtr(b),
     ...rulePressureTestNoRecorderCert(b),
     ...ruleWrongJobDocument(b),
