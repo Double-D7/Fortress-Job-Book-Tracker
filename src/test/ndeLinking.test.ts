@@ -9,8 +9,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  linesNotMarkedExamined, matchWeldNumbers, parseWeldNumberList, summarise,
-  ticketOf, weldNumberKey, weldsForTicket,
+  corroborate, isConfirmed, linesNotMarkedExamined, matchWeldNumbers,
+  parseWeldNumberList, sameDay, summarise, ticketOf, weldNumberKey,
+  weldsForTicket,
 } from '@/lib/domain/ndeLinking'
 import type { Weld } from '@/lib/domain/types'
 
@@ -64,10 +65,33 @@ describe('matching a single weld number', () => {
     }
   })
 
-  it('does not treat leading zeros as noise', () => {
-    // W-0002 and W-2 are not obviously the same weld, and guessing that
-    // they are would link a report to whatever happened to be nearby.
-    expect(matchWeldNumbers(BOOK, ['W-2'])[0]!.status).toBe('unknown')
+  it('treats a padded number as the same weld', () => {
+    // An earlier reading here held that W-0002 and W-2 were different
+    // welds. The real DP-318 log settles it: welds are numbered 1 to
+    // 1193 with no padding at all, so a padded number on a report is the
+    // same weld written differently.
+    expect(matchWeldNumbers(BOOK, ['W-2'])[0]!.status).toBe('matched')
+    expect(matchWeldNumbers(BOOK, ['0002'])[0]!.status).toBe('matched')
+  })
+
+  it('reads a bare number, which is how the log writes them', () => {
+    expect(matchWeldNumbers(BOOK, ['2'])[0]!.status).toBe('matched')
+  })
+
+  it('drops the prefix, because the report and the log disagree on it', () => {
+    // The reports print FW-1130 for the weld the log calls 1130.
+    expect(weldNumberKey('FW-1130')).toBe('1130')
+    expect(weldNumberKey('1130')).toBe('1130')
+    expect(weldNumberKey('FW-851P')).toBe('851')
+    // Repairs are numbered with a decimal in the real log.
+    expect(weldNumberKey('124.1')).toBe('124.1')
+  })
+
+  it('is empty for something that is not a weld number', () => {
+    // So a caller cannot match on emptiness.
+    for (const junk of ['', 'FLANGE', '---', 'ASME B31.3']) {
+      expect(weldNumberKey(junk), junk).toBe('')
+    }
   })
 
   it('reports a weld number this book does not have', () => {
@@ -161,5 +185,55 @@ describe('a report covering a weld the log does not call examined', () => {
   it('says nothing about welds the log already marks examined', () => {
     expect(linesNotMarkedExamined(BOOK, matchWeldNumbers(BOOK, ['W-0002'])))
       .toEqual([])
+  })
+})
+
+
+describe('corroborating a match against facts both sides carry', () => {
+  // Keying on the number alone attaches a radiograph to a weld on the
+  // strength of a number that survived having its prefix removed. In the
+  // real data that is not always safe: `CW-1` keys to weld 1, and CW is
+  // Certified Welder in AWS terminology.
+  const w = weld({
+    id: 'x', weldNumber: '1130', welderStamp: 'LC',
+    ndtTicketNumber: '11/19/25', ndtMethod: 'RT',
+  })
+
+  it('confirms on the welder stamp', () => {
+    const c = corroborate(w, { welderStamp: 'LC' }, '2026-01-01')
+    expect(c.welderStamp).toBe(true)
+    expect(isConfirmed(c)).toBe(true)
+  })
+
+  it('confirms on the log ticket naming the report date', () => {
+    // DP-318 records the NDT ticket as the examination date, which is
+    // what makes this check possible.
+    const c = corroborate(w, { welderStamp: null }, '2025-11-19')
+    expect(c.ticketDate).toBe(true)
+    expect(isConfirmed(c)).toBe(true)
+  })
+
+  it('does not confirm when both disagree', () => {
+    // The CW-1 shape: the number lines up and nothing else does.
+    const c = corroborate(w, { welderStamp: 'MH' }, '2026-02-23')
+    expect(isConfirmed(c)).toBe(false)
+    expect(c.unchecked).toBe(false)
+  })
+
+  it('says so when there was nothing to check against', () => {
+    // Distinct from disagreeing: eight real rows have no ticket in the
+    // log, and those are the rows worth keeping.
+    const bare = weld({ id: 'y', weldNumber: '675' })
+    const c = corroborate(bare, { welderStamp: null }, '2025-11-19')
+    expect(c.unchecked).toBe(true)
+    expect(isConfirmed(c)).toBe(false)
+  })
+
+  it('compares the log\u2019s US date against the report\u2019s ISO one', () => {
+    expect(sameDay('11/19/25', '2025-11-19')).toBe(true)
+    expect(sameDay('6/5/26', '2026-06-05')).toBe(true)
+    expect(sameDay('11/19/25', '2026-11-19')).toBe(false)
+    expect(sameDay('', '2025-11-19')).toBe(false)
+    expect(sameDay('11/19/25', null)).toBe(false)
   })
 })

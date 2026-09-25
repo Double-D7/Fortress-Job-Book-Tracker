@@ -33,12 +33,26 @@ import type { Weld } from './types'
 /**
  * The comparison key for a weld number.
  *
- * Letters and digits, uppercased. A report typed as "W-0001" and a log
- * reading "W0001" are the same weld, and leading zeros are significant —
- * W-0001 and W-1 are not obviously the same and are not treated as such.
+ * The reports and the log do not write welds the same way, and this is
+ * measured rather than assumed: the DP-318 log numbers its 1,259 welds
+ * `1` … `1193`, with repairs as `124.1`, while the vendor's reports print
+ * the same welds as `FW-1130` — FW for Field Weld. So the prefix and any
+ * trailing letter are dropped and the number is what identifies a weld.
+ * Against the five real reports this resolves all 42 exposure rows to a
+ * weld in the log.
+ *
+ * Dropping the prefix is also what makes corroboration necessary rather
+ * than optional. `B-7`, an IQI designation printed on the same row, keys
+ * to weld 7 exactly as `FW-7` would — and in the real data `CW-1` keys to
+ * weld 1 and is almost certainly not that weld. A key alone is a
+ * proposal; see `corroborate`.
+ *
+ * Returns "" for anything that is not a weld number at all, so a caller
+ * cannot match on emptiness.
  */
 export function weldNumberKey(raw: string): string {
-  return raw.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const m = /^\s*(?:[A-Za-z]{1,5}[-_\s]?)?0*(\d+(?:\.\d+)?)[A-Za-z]?\s*$/.exec(raw)
+  return m ? m[1]! : ''
 }
 
 /** The ticket a weld was examined under, whichever column carries it. */
@@ -155,4 +169,73 @@ export function linesNotMarkedExamined(
       return w ? !w.ndtMethod && !ticketOf(w) : false
     })
     .map((m) => m.weldNumber)
+}
+
+
+// ---------------------------------------------------------------------
+// Corroboration.
+//
+// Keying on the number alone is not enough to attach a radiograph to a
+// weld. Measured against the five real DP-318 reports, 42 of 42 rows key
+// to a weld in the log — but one of them is `CW-1` keying to weld 1, and
+// CW is Certified Welder in AWS terminology, so that row almost certainly
+// names no weld at all. It is the welder stamp and the log's own NDT
+// ticket date that tell the two cases apart: on the true matches the
+// stamp agrees 35 times out of 37, and the log's ticket date agrees with
+// the report date 34 times.
+//
+// So a match is proposed, then checked against facts the report and the
+// log both carry. A match with nothing corroborating it is not refused —
+// it is handed to a person as the weakest thing on the screen.
+// ---------------------------------------------------------------------
+
+export type Corroboration = {
+  /** The report's welder stamp equals the log's for this weld. */
+  welderStamp: boolean
+  /** The log's NDT ticket for this weld names the report's own date.
+   *  DP-318 records the ticket as the examination date, which is what
+   *  makes this check possible at all. */
+  ticketDate: boolean
+  /** Neither could be checked — the report did not print a stamp and the
+   *  log holds no ticket. Distinct from disagreeing. */
+  unchecked: boolean
+}
+
+/** Same-day comparison that tolerates the log's `11/19/25` against an
+ *  ISO report date, without parsing either into a timezone. */
+export function sameDay(logTicket: string | null | undefined, reportDate: string | null): boolean {
+  if (!logTicket || !reportDate) return false
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(logTicket.trim())
+  if (!m) return logTicket.trim() === reportDate
+  const year = m[3]!.length === 2 ? `20${m[3]}` : m[3]!
+  const iso = `${year}-${m[1]!.padStart(2, '0')}-${m[2]!.padStart(2, '0')}`
+  return iso === reportDate
+}
+
+export function corroborate(
+  weld: Weld,
+  row: { welderStamp?: string | null },
+  reportDate: string | null,
+): Corroboration {
+  const stampComparable = !!row.welderStamp && !!weld.welderStamp
+  const ticketComparable = !!ticketOf(weld) && !!reportDate
+
+  return {
+    welderStamp: stampComparable
+      && weld.welderStamp!.toUpperCase() === row.welderStamp!.toUpperCase(),
+    ticketDate: ticketComparable && sameDay(ticketOf(weld), reportDate),
+    unchecked: !stampComparable && !ticketComparable,
+  }
+}
+
+/**
+ * Is this match strong enough to offer as the row's weld?
+ *
+ * One agreement is enough. Requiring both would reject the eight real
+ * rows where the log carries no ticket at all — which are precisely the
+ * rows worth keeping, because a report evidencing an examination the log
+ * never recorded is the finding section 10 exists to surface.
+ */
+export function isConfirmed(c: Corroboration): boolean {
+  return c.welderStamp || c.ticketDate
 }
