@@ -33,6 +33,8 @@ import {
   type FacilityWeldImportResult, type ParsedFacilityWeldRow,
 } from './facilityWeldLog'
 import type { OverviewFinding } from './weldLogOverview'
+import type { ParsedWeldRow, WeldImportResult } from './weldLog'
+import { rowsForFlowlinePlan } from './flowlineWeldLog'
 
 // ---------------------------------------------------------------------
 // Reading the file
@@ -43,6 +45,17 @@ export interface WeldLogGrid {
   format: 'xlsx' | 'pdf'
   /** Sheet names for a workbook; page count for a PDF. */
   sheetsParsed: string[]
+  /**
+   * Each sheet on its own, in workbook order. Empty for a PDF.
+   *
+   * The flat grid above is right for a facility log, which is one table
+   * however many tabs it is split across. It is wrong for the Noble
+   * flowline template, where each sheet is a line, the sheet *name* is
+   * the only place the line code appears, and each sheet repeats the job
+   * header block — so flattening reads the second sheet's header as data
+   * and throws every line code away.
+   */
+  sheets: { name: string; grid: unknown[][] }[]
   error?: string
 }
 
@@ -54,7 +67,7 @@ export function readWeldLogGrid(bytes: Uint8Array, filename = ''): WeldLogGrid {
     const extracted = extractPdfText(bytes)
     if (extracted.pages.length === 0) {
       return {
-        grid: [], format: 'pdf', sheetsParsed: [],
+        grid: [], format: 'pdf', sheetsParsed: [], sheets: [],
         error: extracted.undecodable > 0
           ? 'No text could be read from this PDF. It is either a scan or uses an encoding this reader does not handle, so the welds in it cannot be imported — file it as a document instead.'
           : 'No text found in this PDF.',
@@ -64,6 +77,7 @@ export function readWeldLogGrid(bytes: Uint8Array, filename = ''): WeldLogGrid {
       grid: pdfGridAllPages(extracted),
       format: 'pdf',
       sheetsParsed: extracted.pages.map((p) => `page ${p.index + 1}`),
+      sheets: [],
     }
   }
 
@@ -72,16 +86,18 @@ export function readWeldLogGrid(bytes: Uint8Array, filename = ''): WeldLogGrid {
     // Every sheet, concatenated. A weld log is routinely split by area or
     // by month across tabs, and the parser skips a repeated header row.
     const grid: unknown[][] = []
+    const sheets: { name: string; grid: unknown[][] }[] = []
     for (const name of wb.SheetNames) {
       const sheet = wb.Sheets[name]
       if (!sheet) continue
       const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null })
+      sheets.push({ name, grid: rows })
       grid.push(...rows)
     }
-    return { grid, format: 'xlsx', sheetsParsed: wb.SheetNames }
+    return { grid, format: 'xlsx', sheetsParsed: wb.SheetNames, sheets }
   } catch {
     return {
-      grid: [], format: 'xlsx', sheetsParsed: [],
+      grid: [], format: 'xlsx', sheetsParsed: [], sheets: [],
       error: 'That file could not be read as a workbook or a PDF.',
     }
   }
@@ -106,6 +122,16 @@ export interface PlannedStamp {
 }
 
 export interface WeldLogIngestPlan {
+  /**
+   * Which of the two weld log templates this workbook is.
+   *
+   * Carried on the plan rather than inferred again downstream, so the
+   * preview a person confirms and the rows the commit writes can never
+   * disagree about what was read.
+   */
+  template: 'facility' | 'flowline'
+  /** Why the reader decided that, in a person's words. */
+  templateReason: string
   format: 'xlsx' | 'pdf'
   sheetsParsed: string[]
   /** Rows the parser accepted. */
@@ -119,6 +145,14 @@ export interface WeldLogIngestPlan {
   /** Parser-level row issues, surfaced as they are. */
   issues: FacilityWeldImportResult['issues']
   rows: ParsedFacilityWeldRow[]
+
+  // -- flowline only ---------------------------------------------------
+  /** The Noble parse. Empty on a facility log. */
+  flowlineRows?: ParsedWeldRow[]
+  /** The job header block read off each line sheet. */
+  flowlineLines?: WeldImportResult['lines']
+  /** Every heat number the log names — the link to §15. */
+  proposedHeats?: string[]
 }
 
 const UNKNOWN_AREA = 'Unassigned'
@@ -127,6 +161,7 @@ export function planWeldLogIngest(
   parsed: FacilityWeldImportResult,
   bundle: Pick<JobBookBundle, 'book' | 'welds' | 'weldLines' | 'welders' | 'welderQualifications'>,
   format: 'xlsx' | 'pdf' = 'xlsx',
+  templateReason = 'Read as a facility log.',
 ): WeldLogIngestPlan {
   const findings: OverviewFinding[] = []
   const norm = (s: string) => s.trim().toUpperCase()
@@ -311,6 +346,8 @@ export function planWeldLogIngest(
   // reads on screen as a clean result.
 
   return {
+    template: 'facility',
+    templateReason,
     format,
     sheetsParsed: parsed.sheetsParsed,
     parsedRows: parsed.rows.length,
@@ -339,6 +376,11 @@ export function rowsForWeldPlan(
   bundle: Pick<JobBookBundle, 'book' | 'welders' | 'cwis' | 'weldLines'>,
   opts: { enteredAt: string; entrySource: 'field_entry' | 'bulk_import'; newId: () => string },
 ): WeldLogIngestRows {
+  // The two templates produce the same rows for the commit and differ in
+  // everything before it, so the branch belongs here — once, on the plan's
+  // own statement of what it is — rather than in each provider.
+  if (plan.template === 'flowline') return rowsForFlowlinePlan(plan, bundle, opts)
+
   const norm = (s: string) => s.trim().toUpperCase()
   const jobBookId = bundle.book.id
 

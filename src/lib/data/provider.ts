@@ -24,6 +24,9 @@ import type { MtrDocument } from '@/lib/domain/types'
 import { heatKey, normalizeHeat, sameHeat } from '@/lib/domain/heats'
 import { resolveTechnician } from '@/lib/domain/welders'
 import { extractPdfText } from '@/lib/import/pdfText'
+import * as XLSX from 'xlsx'
+import { detectWeldLogTemplate } from '@/lib/import/weldLogTemplate'
+import { parseFlowlineWorkbook, planFlowlineWeldLog } from '@/lib/import/flowlineWeldLog'
 import { parseNdeDocument } from '@/lib/import/ndeReport'
 import {
   parseCalibrationCertificate, type ParsedCalibrationCertificate,
@@ -742,6 +745,26 @@ export function buildWeldLogPreview(
     return { ok: false, error: 'No rows found in that file.' }
   }
 
+  // Fortress builds two kinds of book and they carry two genuinely
+  // different weld logs. Only the facility one was ever routed anywhere:
+  // a flowline log went through the facility reader, which flattens every
+  // sheet into one table, and came back `ok` having thrown away the line
+  // codes and merged each line's weld 1 into a single weld.
+  const verdict = detectWeldLogTemplate(read.sheets)
+  if (verdict.template === 'flowline') {
+    const parsed = parseFlowlineWorkbook(
+      XLSX.read(file, { type: 'array', cellDates: true }), bundle.welders,
+    )
+    if (parsed.rows.length === 0) {
+      return {
+        ok: false,
+        error: parsed.issues[0]?.message
+          ?? 'No weld rows could be read from any sheet of that workbook.',
+      }
+    }
+    return { ok: true, plan: planFlowlineWeldLog(parsed, bundle, verdict.reason) }
+  }
+
   const parsed = parseFacilityWeldRows(read.grid, {
     sheetName: read.sheetsParsed[0] ?? 'Weld Log',
     defaultDesignPressurePsi: bundle.book.defaultDesignPressurePsi ?? null,
@@ -753,7 +776,7 @@ export function buildWeldLogPreview(
         ?? 'No weld rows could be read. The column headers did not match anything this reader knows.',
     }
   }
-  return { ok: true, plan: planWeldLogIngest(parsed, bundle, read.format) }
+  return { ok: true, plan: planWeldLogIngest(parsed, bundle, read.format, verdict.reason) }
 }
 
 export interface TorqueLogImportPreview {
