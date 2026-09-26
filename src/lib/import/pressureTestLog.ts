@@ -32,6 +32,7 @@ import * as XLSX from 'xlsx'
 import type { IsoDate, PressureTest } from '@/lib/domain/types'
 import { extractPdfText, pdfGridAllPages } from './pdfText'
 import { parseLooseDate } from '@/lib/domain/dates'
+import { recordId } from '@/lib/domain/recordId'
 
 export interface ParsedPressureRow {
   rowNumber: number
@@ -282,7 +283,7 @@ export function readPressureLogGrid(
  * torque imports rely on, and for the same reason.
  */
 export function pressureTestRecordId(jobBookId: string, identifier: string): string {
-  return `${jobBookId}:pt:${identifier.trim().toUpperCase()}`
+  return recordId('pressure_test', jobBookId, identifier)
 }
 
 export function toPressureTestRecords(

@@ -825,20 +825,28 @@ export class SupabaseProvider implements DataProvider {
     const supabase = await createClient()
 
     if (rows.weldLines.length > 0) {
-      const { error } = await supabase.from('weld_line').insert(
+      // On the line code, which is what `weld_line` is unique on. A plan
+      // only creates lines it did not match, but matching normalises case
+      // and the constraint does not, so `FL-7` and `fl-7` would otherwise
+      // fail the whole import on a duplicate key.
+      const { error } = await supabase.from('weld_line').upsert(
         rows.weldLines.map((l) => domainToRow(l, COLUMNS.weld_line)),
+        { onConflict: 'job_book_id,line_code' },
       )
       if (error) return { ok: false, error: describe(error), ...empty }
     }
 
-    // `facilityWeldRecordId` derives the id from the book and the weld
-    // number, so re-importing a corrected log updates the same rows rather
-    // than laying a second copy of the book beside the first.
+    // On the natural key the database itself declares — `weld` is unique
+    // on (weld_line_id, weld_number) — rather than on the id. The record
+    // id is derived from the same key and so is stable across imports,
+    // but a weld that reached the table any other way carries a different
+    // id, and conflicting on the id would fail the whole import on a
+    // duplicate key instead of updating the row that is already there.
     const CHUNK = 500
     for (let i = 0; i < rows.welds.length; i += CHUNK) {
       const { error } = await supabase.from('weld').upsert(
         rows.welds.slice(i, i + CHUNK).map((w) => domainToRow(w, COLUMNS.weld)),
-        { onConflict: 'id' },
+        { onConflict: 'weld_line_id,weld_number' },
       )
       if (error) return { ok: false, error: describe(error), ...empty }
     }

@@ -15,6 +15,7 @@ import type { WorkBook, WorkSheet } from 'xlsx'
 import * as XLSX from 'xlsx'
 import type { JointType, NdtMethod, PassFail, Weld, WeldLine } from '@/lib/domain/types'
 import { parseLooseDate } from '@/lib/domain/dates'
+import { recordId } from '@/lib/domain/recordId'
 import { parsePassAssignment, resolveWelder } from '@/lib/domain/welders'
 import type { Welder } from '@/lib/domain/types'
 import type { ImportPreview, RowIssue } from './types'
@@ -352,7 +353,7 @@ export function toWeldRecords(
       : [null, null, null, null]
     const ids = passes.map((p) => (p ? resolveWelder(p, ctx.welders)?.id ?? null : null))
     out.push({
-      id: `${weldLineId}:${row.weldNumber}`,
+      id: recordId('weld', weldLineId, row.weldNumber),
       weldLineId,
       jobBookId: ctx.jobBookId,
       weldNumber: row.weldNumber,

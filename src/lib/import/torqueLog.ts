@@ -18,6 +18,7 @@ import type { TorqueConnection, TorqueWrench } from '@/lib/domain/types'
 import { parseLooseDate } from '@/lib/domain/dates'
 import { suggestWrenchTypo } from '@/lib/domain/torque'
 import type { ImportPreview, RowIssue } from './types'
+import { recordId } from '@/lib/domain/recordId'
 
 const COLUMN_MAP: Record<string, keyof ParsedTorqueRow> = {
   'iso flange number': 'isoFlangeNumber',
@@ -279,7 +280,7 @@ export function toTorqueRecords(
   ctx: { jobBookId: string; wrenchIdByCode: Map<string, string> },
 ): TorqueConnection[] {
   return parsed.map((row, i) => ({
-    id: `${ctx.jobBookId}:tq:${row.isoFlangeNumber}:${i}`,
+    id: recordId('torque_connection', ctx.jobBookId, row.isoFlangeNumber, i),
     jobBookId: ctx.jobBookId,
     isoFlangeNumber: row.isoFlangeNumber,
     isoNumber: row.isoNumber,

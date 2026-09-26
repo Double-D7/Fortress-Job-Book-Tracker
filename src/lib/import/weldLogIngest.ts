@@ -27,6 +27,7 @@ import type {
   IsoDate, JobBookBundle, Weld, WeldLine,
 } from '@/lib/domain/types'
 import { qualificationOn } from '@/lib/domain/welders'
+import { recordId } from '@/lib/domain/recordId'
 import { extractPdfText, pdfGridAllPages } from './pdfText'
 import {
   parseFacilityWeldRows, toFacilityWeldRecords,
@@ -408,7 +409,7 @@ export function rowsForWeldPlan(
   // A row with no area still needs a home, and putting it in a line named
   // for the gap keeps it countable instead of silently dropping it.
   if (!areaLineIdByCode.has(UNKNOWN_AREA)) {
-    areaLineIdByCode.set(UNKNOWN_AREA, `${jobBookId}:area:unknown`)
+    areaLineIdByCode.set(UNKNOWN_AREA, recordId('weld_line', jobBookId, UNKNOWN_AREA))
   }
 
   const welds = toFacilityWeldRecords(plan.rows, {

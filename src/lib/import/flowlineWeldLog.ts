@@ -26,6 +26,7 @@
  */
 import type { JobBookBundle, Welder, WeldLine } from '@/lib/domain/types'
 import { parsePassAssignment, resolveWelder } from '@/lib/domain/welders'
+import { recordId } from '@/lib/domain/recordId'
 import type { OverviewFinding } from './weldLogOverview'
 import {
   parseWeldLogSheets, toWeldRecords,
@@ -39,7 +40,7 @@ const norm = (s: string) => s.trim().toUpperCase()
 /** Stable id so a re-import updates rather than duplicating. Scoped to the
  *  line, because the weld number alone does not identify a weld here. */
 export function flowlineWeldRecordId(weldLineId: string, weldNumber: string): string {
-  return `${weldLineId}:${norm(weldNumber)}`
+  return recordId('weld', weldLineId, weldNumber)
 }
 
 export function parseFlowlineWorkbook(wb: WorkBook, welders: Welder[]): WeldImportResult {

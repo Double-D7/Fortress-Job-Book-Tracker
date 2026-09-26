@@ -15,6 +15,7 @@ import { parseLooseDate } from '@/lib/domain/dates'
 import { suggestWrenchTypo } from '@/lib/domain/torque'
 import { normalizeWrenchId } from './torqueLog'
 import type { ImportPreview, RowIssue } from './types'
+import { recordId } from '@/lib/domain/recordId'
 
 export interface RosterWrench {
   wrenchId: string
@@ -359,7 +360,9 @@ export function facilityTorqueRecordId(
 ): string {
   const iso = (isoNumber ?? '').trim().toUpperCase()
   const f = flange.trim().toUpperCase()
-  return iso ? `${jobBookId}:tq:${iso}:${f}` : `${jobBookId}:tq:${f}`
+  return iso
+    ? recordId('torque_connection', jobBookId, iso, f)
+    : recordId('torque_connection', jobBookId, f)
 }
 
 export function toFacilityTorqueRecords(

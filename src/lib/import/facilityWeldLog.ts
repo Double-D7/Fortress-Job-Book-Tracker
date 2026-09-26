@@ -16,6 +16,7 @@
  */
 import type { NdtMethod, PassFail, Weld } from '@/lib/domain/types'
 import { parseLooseDate } from '@/lib/domain/dates'
+import { recordId } from '@/lib/domain/recordId'
 import {
   computeSmys, type NpsDimension, type SmysResult, type TierRule,
 } from '@/lib/domain/engineering'
@@ -294,9 +295,15 @@ export function parseFacilityWeldRows(
   }
 }
 
-/** Stable id so a re-import updates rather than duplicates. */
+/**
+ * Stable id so a re-import updates rather than duplicates.
+ *
+ * Hashed into a UUID rather than being the natural key as text: `weld.id`
+ * is a uuid column and `<book>:weld:1140` is not one, so the text form
+ * could never be written to the database at all.
+ */
 export function facilityWeldRecordId(jobBookId: string, weldNumber: string): string {
-  return `${jobBookId}:weld:${weldNumber.trim().toUpperCase()}`
+  return recordId('weld', jobBookId, weldNumber)
 }
 
 export function toFacilityWeldRecords(
@@ -311,8 +318,9 @@ export function toFacilityWeldRecords(
   return parsed.map((row, i) => ({
     id: facilityWeldRecordId(ctx.jobBookId, row.weldNumber),
     weldLineId: row.constructionArea
-      ? ctx.areaLineIdByCode.get(row.constructionArea) ?? `${ctx.jobBookId}:area:unknown`
-      : `${ctx.jobBookId}:area:unknown`,
+      ? ctx.areaLineIdByCode.get(row.constructionArea)
+          ?? recordId('weld_line', ctx.jobBookId, 'Unassigned')
+      : recordId('weld_line', ctx.jobBookId, 'Unassigned'),
     jobBookId: ctx.jobBookId,
     weldNumber: row.weldNumber,
     sortOrder: i,
