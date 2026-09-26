@@ -140,6 +140,132 @@ export function isometricCoverage(
   }
 }
 
+/**
+ * Which isometric a filed drawing covers.
+ *
+ * Two honest answers and one honest refusal. A person tagging the drawing
+ * with its isometric at upload beats anything parsed, because it is a
+ * choice rather than an inference. A filename in the line-number
+ * convention is the next best thing. A drawing that gives neither is
+ * *unattributable* — it is on file, it counts toward nothing, and it is
+ * reported so somebody can tag it.
+ *
+ * Refusing is the point. Section 21 and 22 were scored by counting
+ * approved documents against the isometrics the logs reference, with
+ * nothing checking they were the same isometrics: a book could file 196
+ * drawings of the wrong lines and read 100%.
+ */
+export type DrawingAttribution =
+  | { kind: 'tagged'; isometric: string }
+  | { kind: 'filename'; isometric: string }
+  | { kind: 'unattributable'; isometric: null }
+
+export function attributeDrawing(
+  doc: { recordType?: string | null; recordId?: string | null; originalFilename: string },
+): DrawingAttribution {
+  const tagged = doc.recordType === 'isometric' ? doc.recordId?.trim() : null
+  if (tagged) return { kind: 'tagged', isometric: tagged.toUpperCase() }
+  const parsed = parseIsometricNumber(doc.originalFilename)
+  if (parsed) return { kind: 'filename', isometric: parsed.toUpperCase() }
+  return { kind: 'unattributable', isometric: null }
+}
+
+export interface DrawingRef {
+  originalFilename: string
+  storagePath?: string | null
+  recordType?: string | null
+  recordId?: string | null
+}
+
+export interface IsometricSectionCoverage {
+  /** Every isometric either log references — what the section owes. */
+  referenced: string[]
+  fromWeldLog: string[]
+  fromTorqueLog: string[]
+  /** Referenced isometrics with a drawing on file. */
+  covered: string[]
+  /** Referenced isometrics with none. The list somebody goes and collects. */
+  missing: string[]
+  /** Drawings naming an isometric neither log references. Not a fault on
+   *  its own — a line may be drawn before it is welded — but a book whose
+   *  drawings are all extraneous is filed against the wrong job. */
+  extraneous: string[]
+  /** Approved drawings that name no isometric at all. */
+  unattributable: string[]
+  /**
+   * Covered isometrics whose drawing does not carry this section's markup.
+   *
+   * Reported, never scored. The checkmark convention is how the Greeley
+   * book records markup sign-off in a filename, and a book that does not
+   * use it would otherwise be marked down for a convention it never
+   * adopted. So this only speaks where the convention is demonstrably in
+   * use — at least one drawing in the section carries a checkmark.
+   */
+  awaitingMarkup: string[]
+  markupConventionInUse: boolean
+  coveragePct: number
+}
+
+/**
+ * What sections 21 and 22 actually owe, and what is actually on file.
+ *
+ * Section 21 wants the X-ray markup, section 22 the heat number and torque
+ * markup, so the same drawing satisfies them separately and the markup
+ * test differs by section.
+ */
+export function isometricSectionCoverage(
+  sectionNumber: '21' | '22',
+  referencedByWelds: readonly (string | null | undefined)[],
+  referencedByTorque: readonly (string | null | undefined)[],
+  drawings: readonly DrawingRef[],
+): IsometricSectionCoverage {
+  const norm = (s: string | null | undefined) => (s ?? '').trim().toUpperCase()
+  const clean = (xs: readonly (string | null | undefined)[]) =>
+    [...new Set(xs.map(norm).filter(Boolean))].sort()
+
+  const fromWeldLog = clean(referencedByWelds)
+  const fromTorqueLog = clean(referencedByTorque)
+  const referenced = [...new Set([...fromWeldLog, ...fromTorqueLog])].sort()
+  const referencedSet = new Set(referenced)
+
+  const drawnBy = new Map<string, DrawingRef[]>()
+  const unattributable: string[] = []
+  for (const d of drawings) {
+    const a = attributeDrawing(d)
+    if (a.isometric === null) { unattributable.push(d.originalFilename); continue }
+    const at = drawnBy.get(a.isometric)
+    if (at) at.push(d)
+    else drawnBy.set(a.isometric, [d])
+  }
+
+  const covered = referenced.filter((i) => drawnBy.has(i))
+  const missing = referenced.filter((i) => !drawnBy.has(i))
+  const extraneous = [...drawnBy.keys()].filter((i) => !referencedSet.has(i)).sort()
+
+  const markedUp = (d: DrawingRef) => {
+    const state = parseMarkupState(d.storagePath || d.originalFilename, sectionNumber)
+    return sectionNumber === '21' ? state.xrayMarkupComplete : state.heatTorqueMarkupComplete
+  }
+  const markupConventionInUse = drawings.some((d) =>
+    CHECK.test(d.storagePath || d.originalFilename))
+  // `CHECK` is a global regex; `test` advances `lastIndex` and the next
+  // call would start mid-string. Reset it rather than leave a stateful
+  // regex to surprise the next caller.
+  CHECK.lastIndex = 0
+  const awaitingMarkup = markupConventionInUse
+    ? covered.filter((i) => !(drawnBy.get(i) ?? []).some(markedUp))
+    : []
+
+  return {
+    referenced, fromWeldLog, fromTorqueLog, covered, missing, extraneous,
+    unattributable: [...new Set(unattributable)].sort(),
+    awaitingMarkup, markupConventionInUse,
+    coveragePct: referenced.length
+      ? (covered.length / referenced.length) * 100
+      : 0,
+  }
+}
+
 /** Construction area, with its equipment tags. */
 export interface WorkUnit {
   area: string

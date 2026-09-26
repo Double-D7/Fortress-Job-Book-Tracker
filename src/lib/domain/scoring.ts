@@ -22,6 +22,7 @@ import {
 } from './completeness'
 import { certValidOn } from './certificates'
 import { isCountable } from './welders'
+import { isometricSectionCoverage } from './isometrics'
 
 export interface ScoreInput {
   label: string
@@ -210,8 +211,8 @@ export function scoreSection(
           : 'content') +
         (mb != null ? ` (${mb.toFixed(1)} MB)` : '') +
         ` ${files === 1 ? 'is' : files != null ? 'are' : 'is'} present in the source folder but ` +
-        `has not been read into the book. This section scores zero for lack of evidence, not for ` +
-        `lack of work.`,
+        `${files === 1 || files == null ? 'has' : 'have'} not been read into the book. This ` +
+        `section scores zero for lack of evidence, not for lack of work.`,
     }
   }
 
@@ -662,17 +663,20 @@ function scoreRecords(
       // Sections 21 and 22 are scored against the isometrics the logs
       // actually reference — the union of both, since a drawing is needed
       // wherever work happened, not only where welds happened.
-      const fromWelds = new Set(
-        bundle.welds.filter(isCountable)
-          .map((w) => w.isometricNumber?.trim().toUpperCase()).filter(Boolean) as string[],
+      //
+      // Each drawing is matched to the isometric it covers, not counted.
+      // Counting was the defect: the numerator was "approved documents in
+      // this section" and the denominator "isometrics the logs
+      // reference", with nothing checking they were the same isometrics.
+      // A book could file 196 drawings of the wrong lines, or one drawing
+      // 196 times, and read 100% against 196 owed.
+      const cov = isometricSectionCoverage(
+        def.sectionNumber === '22' ? '22' : '21',
+        bundle.welds.filter(isCountable).map((w) => w.isometricNumber),
+        bundle.torqueConnections.map((c) => c.isoNumber),
+        approvedDocuments(bundle.documents, section.id),
       )
-      const fromTorque = new Set(
-        bundle.torqueConnections
-          .map((c) => c.isoNumber?.trim().toUpperCase()).filter(Boolean) as string[],
-      )
-      const union = new Set([...fromWelds, ...fromTorque])
-      const drawings = approvedDocuments(bundle.documents, section.id)
-      const denominator = scopedDenominator(union.size, section.expectedCount)
+      const denominator = scopedDenominator(cov.referenced.length, section.expectedCount)
       if (denominator === 0) {
         return {
           ...base, pct: 0, countsTowardTotal: true,
@@ -680,16 +684,35 @@ function scoreRecords(
           explanation: 'No isometrics referenced by either log yet.',
         }
       }
+
+      const notes: string[] = []
+      const n = cov.unattributable.length
+      if (n > 0) {
+        notes.push(`${n} approved drawing${n === 1 ? '' : 's'} ` +
+          `${n === 1 ? 'names' : 'name'} no isometric and ` +
+          `${n === 1 ? 'counts' : 'count'} toward nothing until tagged`)
+      }
+      const e = cov.extraneous.length
+      if (e > 0) {
+        notes.push(`${e} drawing${e === 1 ? '' : 's'} ${e === 1 ? 'covers' : 'cover'} ` +
+          `${e === 1 ? 'an isometric' : 'isometrics'} neither log references`)
+      }
+      const m = cov.awaitingMarkup.length
+      if (m > 0) {
+        notes.push(`${m} ${m === 1 ? 'awaits' : 'await'} the markup sign-off this section is for`)
+      }
+
       return {
-        ...base, pct: pct(drawings.length, denominator), countsTowardTotal: true,
+        ...base, pct: pct(cov.covered.length, denominator), countsTowardTotal: true,
         inputs: [
-          { label: 'Drawings on file', numerator: drawings.length, denominator },
-          { label: 'Isometrics referenced by the weld log', numerator: fromWelds.size, denominator: union.size },
-          { label: 'Isometrics referenced by the torque log', numerator: fromTorque.size, denominator: union.size },
+          { label: 'Isometrics with a drawing on file', numerator: cov.covered.length, denominator },
+          { label: 'Isometrics referenced by the weld log', numerator: cov.fromWeldLog.length, denominator: cov.referenced.length },
+          { label: 'Isometrics referenced by the torque log', numerator: cov.fromTorqueLog.length, denominator: cov.referenced.length },
         ],
-        explanation: `${drawings.length} drawings against ${denominator} isometrics referenced ` +
-          `across both logs (${fromWelds.size} from the weld log, ${fromTorque.size} from the ` +
-          `torque log).`,
+        explanation: `${cov.covered.length} of ${denominator} isometrics referenced across both ` +
+          `logs have a drawing on file (${cov.fromWeldLog.length} referenced by the weld log, ` +
+          `${cov.fromTorqueLog.length} by the torque log).` +
+          (notes.length ? ` ${notes.join('; ')}.` : ''),
       }
     }
     case 'ut_reading': {

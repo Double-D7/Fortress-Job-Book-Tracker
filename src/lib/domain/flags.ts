@@ -22,6 +22,7 @@ import {
 } from './welders'
 import { computeSmys, tierRequiresNde, type TierRule } from './engineering'
 import { ndeCoverage } from './ndeCoverage'
+import { isometricSectionCoverage } from './isometrics'
 import { reconcileCp, reconcileHeats } from './reconcile'
 import { entryTimeliness, TIMELINESS_TARGET_PCT } from './timeliness'
 
@@ -473,6 +474,94 @@ export function ruleNdeExaminedNotEvidenced(b: JobBookBundle): Finding[] {
     entityType: 'job_book', entityId: b.book.id, sectionNumber: '10',
     fingerprint: fp('nde.examined_not_evidenced', b.book.id),
   }]
+}
+
+/**
+ * Isometrics the logs reference that no drawing covers.
+ *
+ * Sections 21 and 22 are the maps an operator reads the book against: the
+ * X-ray map and the heat-number-and-torque map. The logs name every line
+ * that was worked, so the drawings owed are not a matter of opinion.
+ *
+ * Aggregated per section. DP-318's torque log alone references 196
+ * isometrics, and 196 findings reading "no drawing for 3-PF-2051101A-BCM"
+ * is a wall nobody reads. The actionable statement is the count, the
+ * shortfall, and enough of the list to start on.
+ */
+export function ruleIsometricDrawingMissing(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const number of ['21', '22'] as const) {
+    if (sectionIsUnread(b, number)) continue
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === number)
+    if (!def) continue
+    const section = b.sections.find((s) => s.sectionDefinitionId === def.id)
+    if (!section || section.status === 'na') continue
+
+    const cov = isometricSectionCoverage(
+      number,
+      b.welds.filter(isCountable).map((w) => w.isometricNumber),
+      b.torqueConnections.map((c) => c.isoNumber),
+      b.documents.filter((d) => d.sectionId === section.id && !d.deletedAt && d.approvedAt),
+    )
+    if (cov.referenced.length === 0 || cov.missing.length === 0) continue
+
+    out.push({
+      ruleId: 'isometric.drawing_missing',
+      severity: 'critical',
+      title: `${cov.missing.length} isometric(s) worked on this job have no §${number} drawing`,
+      detail: `The logs reference ${cov.referenced.length} isometric(s) — ` +
+        `${cov.fromWeldLog.length} from the weld log, ${cov.fromTorqueLog.length} from the ` +
+        `torque log — and section ${number} (${def.title}) holds an approved drawing for ` +
+        `${cov.covered.length}. A drawing is matched to the isometric it covers, so filing ` +
+        `the right number of drawings for the wrong lines does not close this. ` +
+        `First without one: ${cov.missing.slice(0, 10).join(', ')}` +
+        (cov.missing.length > 10 ? ` and ${cov.missing.length - 10} more.` : '.'),
+      entityType: 'job_book', entityId: b.book.id, sectionNumber: number,
+      fingerprint: fp('isometric.drawing_missing', b.book.id, number),
+    })
+  }
+  return cap('isometric.drawing_missing', out)
+}
+
+/**
+ * Drawings on file that name no isometric.
+ *
+ * Not a deficiency in the book — the drawing is filed and ships with the
+ * turnover package — but it counts toward nothing, because nothing can
+ * say which line it covers. A warning in our own name, resolved by
+ * tagging the drawing at upload or renaming it to the line number.
+ */
+export function ruleDrawingNotAttributable(b: JobBookBundle): Finding[] {
+  const out: Finding[] = []
+  for (const number of ['21', '22'] as const) {
+    if (sectionIsUnread(b, number)) continue
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === number)
+    if (!def) continue
+    const section = b.sections.find((s) => s.sectionDefinitionId === def.id)
+    if (!section || section.status === 'na') continue
+
+    const cov = isometricSectionCoverage(
+      number,
+      b.welds.filter(isCountable).map((w) => w.isometricNumber),
+      b.torqueConnections.map((c) => c.isoNumber),
+      b.documents.filter((d) => d.sectionId === section.id && !d.deletedAt && d.approvedAt),
+    )
+    if (cov.unattributable.length === 0) continue
+
+    out.push({
+      ruleId: 'isometric.drawing_not_attributable',
+      severity: 'warning',
+      title: `${cov.unattributable.length} §${number} drawing(s) name no isometric`,
+      detail: `These are filed and approved in section ${number} and count toward its score ` +
+        `for no isometric, because neither their filename nor an upload tag says which line ` +
+        `they cover. Tag them on upload, or rename them to the line number. ` +
+        `First: ${cov.unattributable.slice(0, 5).join(', ')}` +
+        (cov.unattributable.length > 5 ? ` and ${cov.unattributable.length - 5} more.` : '.'),
+      entityType: 'job_book', entityId: b.book.id, sectionNumber: number,
+      fingerprint: fp('isometric.drawing_not_attributable', b.book.id, number),
+    })
+  }
+  return cap('isometric.drawing_not_attributable', out)
 }
 
 /** A weld referencing a heat number with no MTR on file. */
@@ -1494,6 +1583,8 @@ export function evaluateFlags(b: JobBookBundle, ctx: FlagContext = {}): Finding[
     ...ruleNdeImportGap(b),
     ...ruleNdeTechnicianUnknown(b),
     ...ruleNdeExaminedNotEvidenced(b),
+    ...ruleIsometricDrawingMissing(b),
+    ...ruleDrawingNotAttributable(b),
     ...ruleHeatWithoutMtr(b),
     ...rulePressureTestNoRecorderCert(b),
     ...ruleWrongJobDocument(b),

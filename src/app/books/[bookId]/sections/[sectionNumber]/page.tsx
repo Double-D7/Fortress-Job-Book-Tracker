@@ -11,6 +11,9 @@ import {
 } from '@/components/ui/primitives'
 import { SectionSignOff } from '@/components/SectionSignOff'
 import { SectionUpload } from '@/components/SectionUpload'
+import { IsometricCoverage } from '@/components/IsometricCoverage'
+import { isometricSectionCoverage } from '@/lib/domain/isometrics'
+import { isCountable } from '@/lib/domain/welders'
 import { OverviewImport } from '@/components/OverviewImport'
 import { WeldLogImport } from '@/components/WeldLogImport'
 import { TorqueLogImport } from '@/components/TorqueLogImport'
@@ -102,6 +105,17 @@ export default async function SectionDetail({
   const docs = b.documents.filter((d) => d.sectionId === section.id && !d.deletedAt)
   const flags = evaluateFlags(b).filter((f) => f.sectionNumber === number)
 
+  // §21 and §22 are the only sections whose deliverable is enumerable
+  // from the logs: every isometric either log names is owed a drawing.
+  const isoCoverage = (number === '21' || number === '22')
+    ? isometricSectionCoverage(
+        number,
+        b.welds.filter(isCountable).map((w) => w.isometricNumber),
+        b.torqueConnections.map((c) => c.isoNumber),
+        docs.filter((d) => d.approvedAt),
+      )
+    : null
+
   const canApprove = viewer.role === 'qaqc_manager' || viewer.role === 'fortress_admin'
   const isOwnSubmission = section.readyForReviewBy === viewer.id
 
@@ -184,6 +198,15 @@ export default async function SectionDetail({
             </Table>
           </CardBody>
         </Card>
+      )}
+
+      {isoCoverage && (
+        <IsometricCoverage
+          sectionNumber={number}
+          coverage={isoCoverage}
+          unread={section.ingestionStatus === 'not_imported'}
+          unreadFileCount={section.sourceFileCount ?? null}
+        />
       )}
 
       <SectionUpload
