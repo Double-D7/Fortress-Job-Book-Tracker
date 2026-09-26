@@ -144,8 +144,8 @@ function contentStreams(buf: Buffer): { text: string; inflated: boolean }[] {
 }
 
 /** `(a\(b\)c)` → `a(b)c`, with octal escapes resolved. */
-function decodeString(s: string): string {
-  return s.replace(/\\(n|r|t|b|f|\(|\)|\\|[0-7]{1,3})/g, (_, esc: string) => {
+function decodeString(s: string, font?: Map<number, string>): string {
+  const unescaped = s.replace(/\\(n|r|t|b|f|\(|\)|\\|[0-7]{1,3})/g, (_, esc: string) => {
     switch (esc) {
       case 'n': return '\n'
       case 'r': return '\r'
@@ -158,6 +158,13 @@ function decodeString(s: string): string {
       default: return String.fromCharCode(parseInt(esc, 8))
     }
   })
+  if (!font) return unescaped
+  let out = ''
+  for (const ch of unescaped) {
+    const mapped = font.get(ch.charCodeAt(0))
+    out += mapped ?? ch
+  }
+  return out
 }
 
 /**
@@ -176,7 +183,7 @@ function decodeTJ(body: string, font?: Map<number, string>): string {
   // the kerning value 0034. They carry glyph ids, not characters, and
   // mean nothing without the font's ToUnicode map.
   for (const m of body.matchAll(/\(((?:[^()\\]|\\.)*)\)|<([0-9A-Fa-f]+)>|(-?[\d.]+)/g)) {
-    if (m[1] !== undefined) out += decodeString(m[1])
+    if (m[1] !== undefined) out += decodeString(m[1], font)
     else if (m[2] !== undefined) out += decodeHexString(m[2], font)
     else if (m[3] !== undefined && Number(m[3]) <= -100) out += ' '
   }
@@ -238,7 +245,7 @@ export function extractPdfText(input: Buffer | Uint8Array): PdfExtraction {
       } else {
         const text = g.tj !== undefined ? decodeTJ(g.tj, font)
           : g.tjhex !== undefined ? decodeHexString(g.tjhex, font)
-          : decodeString(g.tj1!)
+          : decodeString(g.tj1!, font)
         if (text.trim()) runs.push({ x, y, text })
       }
     }

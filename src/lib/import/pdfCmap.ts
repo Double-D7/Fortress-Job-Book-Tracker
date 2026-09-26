@@ -141,12 +141,32 @@ export function parseCMap(cmap: string): Map<number, string> {
 /**
  * Every font resource name in the document, mapped to its decoder.
  *
- * Names are collected per resource dictionary and merged. A document that
- * used `/F1` for different fonts on different pages would be ambiguous
- * here — that is rare in generated reports, and the alternative is
- * resolving page resource trees, which is a great deal of machinery for a
- * case these files do not present. Where it happens, later definitions
- * win and the damage is confined to that name.
+ * ## Resource dictionaries come in two shapes
+ *
+ * A page can declare its fonts inline — `/Font << /F1 86 0 R >>` — or by
+ * reference — `/Font 24 0 R`, where object 24 holds the dictionary. Only
+ * the inline form was read here, and the welder qualification
+ * certificates use the other one: their first page, the page carrying
+ * every field worth reading, declares `/Font 24 0 R` pointing at
+ * `<< /R16 16 0 R /R18 18 0 R >>`. Those fonts have ToUnicode maps and
+ * draw the whole form, and none of them were found, so the page came out
+ * as control characters and read as an unreadable scan. It is not one.
+ *
+ * ## One name, two fonts
+ *
+ * A name is scoped to the resource dictionary that declares it, and this
+ * returns one map for the document — so a file that uses `/F1` for
+ * different fonts on different pages is genuinely ambiguous here. That
+ * was assumed rare. It is not: one of the two requalification
+ * certificates declares `/F1` as object 62 on one page and object 86 on
+ * another, along with three more collisions.
+ *
+ * Definitions are merged rather than overwritten, and the first
+ * definition wins a contested code. That recovers every code the two
+ * fonts do not both claim, and keeps the earliest page — which is where
+ * these forms put their data — correct. It is a heuristic and it is named
+ * as one: the real fix is to resolve each content stream against its own
+ * page's resources, which is a great deal more machinery.
  */
 export function toUnicodeMaps(input: Buffer | Uint8Array): FontMaps {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input)
@@ -166,12 +186,26 @@ export function toUnicodeMaps(input: Buffer | Uint8Array): FontMaps {
     if (parsed.size > 0) byFontObj.set(num, parsed)
   }
 
-  // resource dictionaries: /Font << /F1 12 0 R /F2 13 0 R >>
   const s = buf.toString('latin1')
-  for (const res of s.matchAll(/\/Font\s*<<([\s\S]*?)>>/g)) {
-    for (const entry of res[1]!.matchAll(/\/([A-Za-z0-9+._-]+)\s+(\d+)\s+\d+\s+R/g)) {
+
+  // Both shapes of resource dictionary: the inline one, and the body of
+  // every object a `/Font n 0 R` points at.
+  const dictionaries: string[] = []
+  for (const res of s.matchAll(/\/Font\s*<<([\s\S]*?)>>/g)) dictionaries.push(res[1]!)
+  for (const ref of s.matchAll(/\/Font\s+(\d+)\s+\d+\s+R/g)) {
+    const target = objects.get(Number(ref[1]))
+    if (target) dictionaries.push(target.body)
+  }
+
+  for (const dict of dictionaries) {
+    for (const entry of dict.matchAll(/\/([A-Za-z0-9+._-]+)\s+(\d+)\s+\d+\s+R/g)) {
       const parsed = byFontObj.get(Number(entry[2]))
-      if (parsed) maps.set(entry[1]!, parsed)
+      if (!parsed) continue
+      const name = entry[1]!
+      const existing = maps.get(name)
+      if (!existing) { maps.set(name, new Map(parsed)); continue }
+      // Merged, first definition winning a contested code. See above.
+      for (const [code, text] of parsed) if (!existing.has(code)) existing.set(code, text)
     }
   }
 
