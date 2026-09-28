@@ -19,6 +19,7 @@ import {
   buildCalibrationPreview, getDataProvider, readCertificates, type Viewer,
 } from '@/lib/data/provider'
 import { evaluateFlags } from '@/lib/domain/flags'
+import { certValidOn } from '@/lib/domain/certificates'
 import type { JobBookBundle, TorqueConnection, TorqueWrench } from '@/lib/domain/types'
 
 /**
@@ -250,5 +251,74 @@ describe('committing through the provider', () => {
       [file('c.pdf', certPages('0215', 'January 2, 2024', 'January 2, 2027'))],
     )
     expect(res.ok).toBe(false)
+  })
+})
+
+describe('the certificate register', () => {
+  const manager: Viewer = {
+    id: 'u-mgr', email: 'm@fortressds.com', fullName: 'M. Ruiz',
+    role: 'qaqc_manager', clientOrgId: null,
+  }
+
+  it('gains an entry when a certificate is filed', async () => {
+    // Filing one used to set the wrench's own columns and nothing else,
+    // so the torque page showed a valid window while the gate asking
+    // "is this wrench certified" still answered no. They read different
+    // tables and only one had a writer.
+    const p = getDataProvider()
+    const before = (await p.getBundle(manager, 'book-dp452'))!
+    // Any managed wrench: earlier cases in this file share the seed and
+    // may already have certified the one that started without a page.
+    const wrench = before.torqueWrenches[0]!
+
+    const pages = [[
+      'CERTIFICATE OF CALIBRATION',
+      'Certificate No: REG-0001',
+      'Manufacturer: HYTORC',
+      `SERIAL #: 012345${wrench.wrenchId}`,
+      // Newer than anything the seed carries, so it is not refused as a
+      // certificate older than the one already on file.
+      'DATE CALIBRATED: August 1, 2026',
+      'Calibration Due Date: August 1, 2027',
+      'Final Calibration Status: Pass',
+    ]]
+
+    const res = await p.commitCalibrationImport(
+      manager, 'book-dp452', [file('cert.pdf', pages)])
+    expect(res.ok).toBe(true)
+
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    const w = after.torqueWrenches.find((x) => x.wrenchId === wrench.wrenchId)!
+    const entry = after.certificates.find(
+      (c) => c.subjectType === 'torque_wrench' && c.subjectId === w.id &&
+        c.issueDate === '2026-08-01')
+    expect(entry, 'the filed certificate should reach the register').toBeTruthy()
+    expect(entry!.expiryDate).toBe('2027-08-01')
+    expect(entry!.certType).toBe('Calibration')
+  })
+
+  it('answers the question the gate actually asks', async () => {
+    const p = getDataProvider()
+    const b = (await p.getBundle(manager, 'book-dp452'))!
+    const w = b.torqueWrenches.find((x) => x.certOnFile && x.lastCalibrationDate)!
+    // Any date inside the window the certificate states.
+    expect(certValidOn(b.certificates, 'torque_wrench', w.id, w.lastCalibrationDate!))
+      .not.toBeNull()
+  })
+
+  it('does not stack a second entry when the same page is filed twice', async () => {
+    const p = getDataProvider()
+    const b0 = (await p.getBundle(manager, 'book-dp452'))!
+    const wrench = b0.torqueWrenches.find((x) => x.certOnFile)!
+    const pages = [[
+      'CERTIFICATE OF CALIBRATION', 'Certificate No: REG-0002',
+      `SERIAL #: 012345${wrench.wrenchId}`,
+      'DATE CALIBRATED: June 1, 2026', 'Calibration Due Date: June 1, 2027',
+      'Final Calibration Status: Pass',
+    ]]
+    await p.commitCalibrationImport(manager, 'book-dp452', [file('c.pdf', pages)])
+    const once = (await p.getBundle(manager, 'book-dp452'))!.certificates.length
+    await p.commitCalibrationImport(manager, 'book-dp452', [file('c.pdf', pages)])
+    expect((await p.getBundle(manager, 'book-dp452'))!.certificates.length).toBe(once)
   })
 })

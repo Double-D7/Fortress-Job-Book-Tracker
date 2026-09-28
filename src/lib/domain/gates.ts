@@ -23,12 +23,14 @@
  *    an auditor will read the two side by side.
  */
 
-import { certValidOn } from './certificates'
+import {
+  certValidOn, effectiveExpiry, DEFAULT_CALIBRATION_INTERVAL_MONTHS,
+} from './certificates'
 import { selfAuditsDue, summarizeAudits } from './audits'
 import { entryTimeliness } from './timeliness'
 import { qualifiedOn } from './welders'
 import { scoreBook } from './scoring'
-import { today } from './dates'
+import { isWithin, today } from './dates'
 import type {
   CriterionResult,
   CriterionSource,
@@ -224,7 +226,13 @@ function pastDue(
 // Gate 0 — Book Initiation
 // ---------------------------------------------------------------------
 
+/** The job's calibration interval, or the twelve-month default. */
+function calibrationInterval(b: JobBookBundle): number {
+  return b.book.calibrationIntervalMonths ?? DEFAULT_CALIBRATION_INTERVAL_MONTHS
+}
+
 function gate0(b: JobBookBundle, ctx: GateContext, asOf: IsoDate): CriterionResult[] {
+  const interval = calibrationInterval(b)
   const out: CriterionResult[] = []
   const G: GateId = 'G0'
 
@@ -397,7 +405,8 @@ function gate0(b: JobBookBundle, ctx: GateContext, asOf: IsoDate): CriterionResu
 
   // 7 — wrench calibration and register
   const wrenchProblems = b.torqueWrenches.filter(
-    (w) => !w.certOnFile || !certValidOn(b.certificates, 'torque_wrench', w.id, mobilizing),
+    (w) => !w.certOnFile ||
+      !certValidOn(b.certificates, 'torque_wrench', w.id, mobilizing, undefined, interval),
   )
   const wrenchesOnLog = new Set(
     b.torqueConnections.map((c) => c.wrenchId).filter((x): x is string => !!x),
@@ -676,6 +685,7 @@ function gate2(
 // ---------------------------------------------------------------------
 
 function gate3(b: JobBookBundle, ctx: GateContext, asOf: IsoDate): CriterionResult[] {
+  const interval = calibrationInterval(b)
   const G: GateId = 'G3'
   const out: CriterionResult[] = []
 
@@ -736,8 +746,13 @@ function gate3(b: JobBookBundle, ctx: GateContext, asOf: IsoDate): CriterionResu
     const gauge = t.gaugeCertId ? b.certificates.find((c) => c.id === t.gaugeCertId) : null
     const rec = t.recorderCertId ? b.certificates.find((c) => c.id === t.recorderCertId) : null
     const psv = t.psvCertId ? b.certificates.find((c) => c.id === t.psvCertId) : null
+    // Through the shared rule, not a second copy of it. This one read a
+    // blank expiry as unbounded, so a Crystal nVision certificate — which
+    // prints a calibration date and no expiry at all — certified a test
+    // in any later year. `effectiveExpiry` closes the window at the job's
+    // calibration interval instead.
     const validOn = (c: typeof gauge) =>
-      !!c && !!c.issueDate && c.issueDate <= d && (!c.expiryDate || c.expiryDate >= d)
+      !!c && !!c.issueDate && isWithin(d, c.issueDate, effectiveExpiry(c, interval))
     return !validOn(gauge) || !validOn(rec) || !validOn(psv)
   })
   out.push(
@@ -1136,6 +1151,7 @@ function ncrCriterion(gate: GateId, b: JobBookBundle, asOf: IsoDate): CriterionR
  * criterion true.
  */
 function certificateValidityProblems(b: JobBookBundle): string[] {
+  const interval = calibrationInterval(b)
   const problems: string[] = []
 
   for (const w of b.welds) {
@@ -1158,7 +1174,8 @@ function certificateValidityProblems(b: JobBookBundle): string[] {
   for (const c of b.torqueConnections) {
     if (!c.torqueDate || !c.wrenchId) continue
     const wrench = b.torqueWrenches.find((x) => x.id === c.wrenchId || x.wrenchId === c.wrenchId)
-    if (!wrench || !certValidOn(b.certificates, 'torque_wrench', wrench.id, c.torqueDate)) {
+    if (!wrench ||
+        !certValidOn(b.certificates, 'torque_wrench', wrench.id, c.torqueDate, undefined, interval)) {
       problems.push(`torque ${c.isoFlangeNumber} / ${c.wrenchId}`)
     }
   }

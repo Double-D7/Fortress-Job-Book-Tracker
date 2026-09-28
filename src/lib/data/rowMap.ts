@@ -81,6 +81,7 @@ export const COLUMNS = {
     'status', 'target_turnover_date', 'construction_start', 'construction_end',
     'data_as_of_date', 'required_xray_pct', 'required_torque_inspect_pct',
     'torque_tolerance_pct', 'cert_expiry_warning_days', 'xray_credit_rule',
+    'calibration_interval_months',
     'created_by', 'enabled_optional_sections', 'business_unit',
     'qaqc_representative', 'construction_areas', 'default_design_pressure_psi',
     // Governing documents (0014) and the governance spine (0015).
@@ -137,6 +138,14 @@ export const COLUMNS = {
     'result_document_id',
     // 0017 — the §8.1 entry stamp.
     'entered_at', 'entry_source',
+  ],
+  // The certificate register. Read by seven gate criteria, four flag
+  // rules and the personnel screen, and written by nothing until a filed
+  // calibration certificate started producing one.
+  certificate: [
+    'id', 'job_book_id', 'subject_type', 'subject_id', 'cert_type',
+    'issuing_body', 'issue_date', 'expiry_date', 'document_id',
+    'verified_by', 'verified_at', 'deleted_at',
   ],
   // Added when calibration certificates became filable. Every column but
   // `created_at`, which the table defaults and nothing here sets.

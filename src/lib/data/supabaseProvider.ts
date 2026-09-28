@@ -32,7 +32,8 @@ import type {
 import { can, rolesWith } from '@/lib/domain/roles'
 import type { NoteSeverity } from '@/lib/domain/notifications'
 import { heatKey, normalizeHeat } from '@/lib/domain/heats'
-import { applyCertificate } from '@/lib/domain/calibrationPlan'
+import { applyCertificate, calibrationRegisterEntry } from '@/lib/domain/calibrationPlan'
+import { recordId } from '@/lib/domain/recordId'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
   buildNdePreview, buildCalibrationPreview,
@@ -983,6 +984,33 @@ export class SupabaseProvider implements DataProvider {
         { onConflict: 'wrench_id' },
       )
       if (error) return { ok: false, error: describe(error), ...empty }
+
+      // The register entry too, keyed so a re-filed page updates rather
+      // than stacking. The wrench's own columns answer the torque page;
+      // the gate criteria read the certificate register, and until now
+      // nothing wrote it at all.
+      const { data: saved } = await supabase
+        .from('torque_wrench').select('id, wrench_id')
+        .in('wrench_id', records.map((w) => w.wrenchId))
+      const idByWrench = new Map(
+        (saved ?? []).map((w) => [w.wrench_id as string, w.id as string]))
+
+      const certRows = preview.plan.rows.flatMap((row) => {
+        if (!row.writable || !row.wrenchId) return []
+        const entry = calibrationRegisterEntry(row.wrenchId, row.parsed, row.disposition)
+        const subjectId = idByWrench.get(row.wrenchId)
+        if (!entry || !subjectId) return []
+        return [domainToRow({
+          id: recordId('certificate', subjectId, entry.certType, entry.issueDate ?? 'unread'),
+          jobBookId, subjectId, ...entry,
+        }, COLUMNS.certificate)]
+      })
+      if (certRows.length > 0) {
+        const { error: certError } = await supabase
+          .from('certificate').upsert(certRows, { onConflict: 'id' })
+        if (certError) return { ok: false, error: describe(certError), ...empty }
+      }
+
       await this.refreshScores(jobBookId, viewer)
     }
 

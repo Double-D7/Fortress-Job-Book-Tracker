@@ -32,9 +32,11 @@ import {
   parseCalibrationCertificate, type ParsedCalibrationCertificate,
 } from '@/lib/import/calibrationCertificate'
 import {
-  applyCertificate, countCalibrationPlan, planCalibrationImport,
+  applyCertificate, calibrationRegisterEntry, countCalibrationPlan,
+  planCalibrationImport,
   type CalibrationCounts, type CalibrationPlan,
 } from '@/lib/domain/calibrationPlan'
+import { recordId } from '@/lib/domain/recordId'
 import {
   countPlan, evidencedButNotLogged, planNdeImport,
   type NdePlan, type PlanCounts,
@@ -1843,7 +1845,28 @@ class SeedProvider implements DataProvider {
       })
     }
 
-    this.commit(jobBookId, idx, { ...b, torqueWrenches: [...byWrenchId.values()] })
+    // The register entry too. A wrench's own columns answer the torque
+    // page; the gate criteria read the certificate register, and until
+    // now the two disagreed by construction.
+    const certificates = [...b.certificates]
+    for (const row of preview.plan.rows) {
+      if (!row.writable || !row.wrenchId) continue
+      const entry = calibrationRegisterEntry(row.wrenchId, row.parsed, row.disposition)
+      if (!entry) continue
+      const wrench = byWrenchId.get(row.wrenchId)
+      if (!wrench) continue
+      const id = recordId('certificate', wrench.id, entry.certType, entry.issueDate ?? 'unread')
+      const at = certificates.findIndex((c) => c.id === id)
+      const record = {
+        id, jobBookId, subjectId: wrench.id, ...entry,
+      } as (typeof certificates)[number]
+      if (at >= 0) certificates[at] = record
+      else certificates.push(record)
+    }
+
+    this.commit(jobBookId, idx, {
+      ...b, torqueWrenches: [...byWrenchId.values()], certificates,
+    })
     const written = preview.plan.rows.filter((r) => r.writable).length
     return {
       ok: true,

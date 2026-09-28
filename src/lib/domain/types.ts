@@ -87,6 +87,14 @@ export interface JobBook {
   requiredXrayPct: number
   requiredTorqueInspectPct: number
   torqueTolerancePct: number
+  /**
+   * Months a calibration stands when its certificate prints no expiry.
+   *
+   * Twelve unless the client requires shorter; some require six. Applies
+   * only to instrument calibrations — a person's certificate states its
+   * own validity and never has one inferred.
+   */
+  calibrationIntervalMonths?: number | null
   certExpiryWarningDays: number
   xrayCreditRule: 'all_passes' | 'root_welder' | 'cap_welder'
   /** Section numbers of off-checklist optional sections enabled for this

@@ -211,6 +211,44 @@ export function applyCertificate(
   }
 }
 
+/**
+ * The register entry a filed calibration certificate produces.
+ *
+ * Filing one used to set the wrench's own columns and nothing else, so
+ * the torque page reported a certificate on file with a valid window
+ * while the gate that asks "is this wrench certified at mobilisation"
+ * still answered no. The two read different tables and only one of them
+ * had a writer.
+ *
+ * A failed or superseded page produces nothing: a register entry asserts
+ * a credential, and neither of those is one. A page whose dates could not
+ * be read produces an entry with no issue date — the state the schema was
+ * built for, which `certValidOn` refuses to certify anything against
+ * rather than treating as an unbounded window.
+ */
+export function calibrationRegisterEntry(
+  wrenchId: string,
+  cert: ParsedCalibrationCertificate,
+  disposition: CertDisposition,
+): {
+  subjectType: 'torque_wrench'
+  certType: string
+  issuingBody: string | null
+  issueDate: IsoDate | null
+  expiryDate: IsoDate | null
+} | null {
+  if (disposition !== 'calibration' && disposition !== 'unread') return null
+  return {
+    subjectType: 'torque_wrench',
+    certType: 'Calibration',
+    issuingBody: cert.manufacturer ?? null,
+    issueDate: disposition === 'calibration' ? cert.dateCalibrated : null,
+    // An expiry with no issue date is half a window, and the database
+    // refuses it outright.
+    expiryDate: disposition === 'calibration' ? cert.calibrationDueDate : null,
+  }
+}
+
 export function planCalibrationImport(
   certificates: readonly { filename: string; parsed: ParsedCalibrationCertificate }[],
   wrenches: readonly TorqueWrench[],
