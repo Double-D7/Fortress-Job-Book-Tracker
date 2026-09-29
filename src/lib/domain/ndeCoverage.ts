@@ -101,7 +101,12 @@ export function ndeCoverage(
   const evidencedIds = new Set<string>()
   for (const r of reports) {
     if (r.isSuperseded) continue
-    for (const line of r.lines) if (line.weldId) evidencedIds.add(line.weldId)
+    // `?? []` because a report whose exposure rows were never loaded is
+    // a report that evidences nothing, not a crash. This walked
+    // `undefined` in production and threw inside the flag engine, which
+    // took down the dashboard — the first page after signing in — rather
+    // than reporting one figure wrong.
+    for (const line of r.lines ?? []) if (line.weldId) evidencedIds.add(line.weldId)
   }
 
   const examinedWelds = countable.filter(isXrayed)

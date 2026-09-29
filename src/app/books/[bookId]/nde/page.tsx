@@ -151,7 +151,7 @@ export default async function NdePage({ params }: { params: Promise<{ bookId: st
                         <Chip tone="critical" className="ml-1.5">cert not valid on this date</Chip>
                       )}
                     </Td>
-                    <Td className="tnum text-right font-mono">{num(r.lines.length)}</Td>
+                    <Td className="tnum text-right font-mono">{num(r.lines?.length ?? 0)}</Td>
                     <Td className="font-mono text-ink-secondary">
                       {r.referencedFacility} / {r.referencedPad}
                     </Td>

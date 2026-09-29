@@ -73,7 +73,7 @@ export function reconcileNde(welds: Weld[], reports: NdeReport[]): NdeReconcilia
   const reportLinesWithoutWeld: NdeReconciliation['reportLinesWithoutWeld'] = []
 
   for (const r of live) {
-    for (const line of r.lines) {
+    for (const line of r.lines ?? []) {
       if (line.weldId) weldIdsCovered.add(line.weldId)
       else if (line.weldNumber) {
         reportLinesWithoutWeld.push({

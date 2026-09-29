@@ -204,13 +204,36 @@ export class SupabaseProvider implements DataProvider {
     const auditIds = (
       (Object.fromEntries(scoped).audits as { id: string }[] | undefined) ?? []
     ).map((a) => a.id)
-    const [findings, certification] = await Promise.all([
+
+    // Exposure rows hang off the report the same way, and for a long time
+    // nothing fetched them: the importer wrote `nde_report_line` and the
+    // bundle never read it back, so every report arrived with no `lines`
+    // at all. Anything that walked them — the coverage figures, the
+    // reconciliation, the count on the NDE screen — got `undefined` and
+    // threw, which took out the whole page rather than one number.
+    const reportIds = (
+      (Object.fromEntries(scoped).ndeReports as { id: string }[] | undefined) ?? []
+    ).map((r) => r.id)
+
+    const [findings, certification, reportLines] = await Promise.all([
       auditIds.length
         ? supabase.from('audit_finding').select('*').in('audit_id', auditIds)
         : Promise.resolve({ data: [] as unknown[] }),
       supabase.from('completeness_certification').select('*')
         .eq('job_book_id', jobBookId).maybeSingle(),
+      reportIds.length
+        ? supabase.from('nde_report_line').select('*').in('nde_report_id', reportIds)
+        : Promise.resolve({ data: [] as unknown[] }),
     ])
+
+    const linesByReport = new Map<string, unknown[]>()
+    for (const line of rowsToDomain<{ ndeReportId: string }>(
+      reportLines.data as Record<string, unknown>[] | null,
+    )) {
+      const at = linesByReport.get(line.ndeReportId)
+      if (at) at.push(line)
+      else linesByReport.set(line.ndeReportId, [line])
+    }
 
     const bundle = {
       book: rowToDomain<JobBookBundle['book']>(book),
@@ -220,6 +243,11 @@ export class SupabaseProvider implements DataProvider {
         : { id: '', name: 'Unknown operator' },
       sectionDefinitions: rowsToDomain<JobBookBundle['sectionDefinitions'][number]>(defs),
       ...Object.fromEntries([...scoped, ...global]),
+      // Always an array, never absent. A report with no exposure rows has
+      // none; it does not have `undefined` ones.
+      ndeReports: (
+        (Object.fromEntries(scoped).ndeReports as { id: string }[] | undefined) ?? []
+      ).map((r) => ({ ...r, lines: linesByReport.get(r.id) ?? [] })),
       auditFindings: rowsToDomain(findings.data as Record<string, unknown>[] | null),
       // `null` rather than `undefined`: the query ran, and this book has
       // no certification. The gate engine reads the two differently.
