@@ -67,10 +67,19 @@ interface DocRow {
 }
 
 Deno.serve(async (req) => {
-  // The scheduler calls this; nobody else should be able to.
+  // An Edge Function is a public URL and `verify_jwt` is off, because
+  // pg_cron has no user session to present a JWT for. The shared secret
+  // is what stands in for that.
+  //
+  // Unset means refuse, never "open" — the same rule the digest follows.
+  // Treating an absent secret as no gate is how a public URL that writes
+  // a tenant's whole archive ends up callable by anyone who learns it.
   const secret = Deno.env.get('BACKUP_SECRET')
-  if (secret && req.headers.get('x-backup-secret') !== secret) {
-    return new Response('Forbidden', { status: 403 })
+  if (!secret || req.headers.get('x-backup-secret') !== secret) {
+    return new Response(
+      secret ? 'Forbidden' : 'BACKUP_SECRET is not set; refusing to run.',
+      { status: 403 },
+    )
   }
 
   const cfg = graphConfigFromEnv()
