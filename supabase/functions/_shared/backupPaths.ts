@@ -157,6 +157,24 @@ export function libraryPath(filename: string): PlannedFile {
 }
 
 /**
+ * Where a replaced mill certificate goes.
+ *
+ * The library belongs to no book, so it needs its own superseded folder
+ * rather than borrowing one — a certificate filed under some book that
+ * merely happened to use that heat would be findable only by somebody who
+ * already knew which book that was.
+ */
+export function librarySupersededPath(
+  filename: string,
+  supersededOn: string,
+): PlannedFile {
+  return {
+    folders: [LIBRARY_FOLDER, SUPERSEDED_FOLDER, safeSegment(supersededOn.slice(0, 10))],
+    filename: safeSegment(filename),
+  }
+}
+
+/**
  * SharePoint refuses a path beyond roughly 400 characters, and a
  * refusal is how a document goes missing without anybody noticing.
  *

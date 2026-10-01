@@ -9,6 +9,14 @@
  * book, numbered section folders inside. Somebody opening it in Explorer
  * on the worst day sees what they have always had.
  *
+ * ## What it copies
+ *
+ * Every filed document, and the shared mill certificate library. The
+ * library is not attached to any one book — the certificate for a heat is
+ * the same certificate wherever that heat was welded — so it goes to
+ * `_library/` once rather than being duplicated into every book that used
+ * it.
+ *
  * ## Why it runs here rather than on Vercel
  *
  * It reads every document in every book, so it cannot run under any one
@@ -34,6 +42,14 @@
  * row was touched for an unrelated reason; comparing nothing would miss a
  * document replaced by one of the same size.
  *
+ * ## Why documents and certificates share one loop
+ *
+ * They are the same job: hash, compare, move the old copy aside, upload,
+ * record. Two loops would be two implementations of superseding, and the
+ * one exercised less often would be the one that quietly stopped keeping
+ * the previous version. Only the path differs, and that is decided in
+ * `_shared/backupPaths.ts` for both.
+ *
  * ## What this never does
  *
  * Delete. A replaced document is moved into `_superseded/<date>/` and
@@ -46,7 +62,8 @@ import { Graph, graphConfigFromEnv } from './graph.ts'
 // for the same reason. A second copy would drift, and the backup folder
 // and the screen would come to disagree about where a document lives.
 import {
-  documentPath, joinPath, pathTooLong, supersededPath,
+  documentPath, joinPath, libraryPath, librarySupersededPath, pathTooLong,
+  supersededPath, type PlannedFile,
 } from '../_shared/backupPaths.ts'
 import { redactCredentials } from '../_shared/redact.ts'
 
@@ -57,6 +74,10 @@ const BUCKET = 'job-book-documents'
 const MAX_FILES = Number(Deno.env.get('BACKUP_MAX_FILES') ?? 150)
 const MAX_BYTES = Number(Deno.env.get('BACKUP_MAX_BYTES') ?? 400 * 1024 * 1024)
 
+/** Enough to recognise which documents are affected without turning the
+ *  run row into a list of every one of them. */
+const MAX_EXAMPLES = 5
+
 interface DocRow {
   id: string
   job_book_id: string
@@ -65,6 +86,28 @@ interface DocRow {
   storage_path: string
   sha256: string
   byte_size: number | null
+}
+
+interface MtrRow {
+  id: string
+  original_filename: string
+  storage_path: string
+  sha256: string
+  byte_size: number | null
+}
+
+/** One file to copy, with everywhere it might go already decided. */
+interface Item {
+  kind: 'document' | 'mtr'
+  id: string
+  storagePath: string
+  sha256: string
+  byteSize: number | null
+  filename: string
+  jobBookId: string | null
+  plan: PlannedFile
+  /** Where the copy already in place goes when this one replaces it. */
+  aside: (supersededOn: string) => PlannedFile
 }
 
 Deno.serve(async (req) => {
@@ -106,7 +149,8 @@ Deno.serve(async (req) => {
   const runId = run?.id as string
 
   const detail: Record<string, string>[] = []
-  let written = 0, skipped = 0, failed = 0, bytes = 0
+  let written = 0, skipped = 0, failed = 0, missing = 0, bytes = 0
+  const missingExamples: string[] = []
 
   try {
     const graph = await Graph.connect(cfg)
@@ -131,76 +175,117 @@ Deno.serve(async (req) => {
         : null]
     }))
 
-    const { data: docs } = await supabase
-      .from('document')
-      .select('id, job_book_id, section_id, original_filename, storage_path, sha256, byte_size')
-      .is('deleted_at', null)
-      .order('uploaded_at')
+    const [{ data: docs }, { data: mtrs }, { data: existing }] = await Promise.all([
+      supabase.from('document')
+        .select('id, job_book_id, section_id, original_filename, storage_path, sha256, byte_size')
+        .is('deleted_at', null)
+        .order('uploaded_at'),
+      supabase.from('mtr_document')
+        .select('id, original_filename, storage_path, sha256, byte_size')
+        .is('deleted_at', null)
+        .order('uploaded_at'),
+      // What is already in place, by source. Keyed on kind as well as the
+      // key, because a document and a certificate are separate rows that
+      // could in principle carry the same identifier.
+      supabase.from('backup_object')
+        .select('id, kind, source_key, remote_path, sha256')
+        .is('superseded_at', null),
+    ])
 
-    // What is already in place, by source. A document whose hash matches
-    // the live backup row is already there and costs nothing tonight.
-    const { data: existing } = await supabase
-      .from('backup_object')
-      .select('id, source_key, remote_path, sha256')
-      .eq('kind', 'document')
-      .is('superseded_at', null)
     const liveBySource = new Map(
-      (existing ?? []).map((o) => [o.source_key as string, o]),
+      (existing ?? []).map((o) => [`${o.kind}:${o.source_key}`, o]),
     )
 
+    const items: Item[] = []
+
     for (const doc of (docs ?? []) as DocRow[]) {
+      const book = bookById.get(doc.job_book_id)
+      // A document whose book is gone has nowhere to be filed. Counted as
+      // skipped rather than failed: there is nothing to retry.
+      if (!book) { skipped += 1; continue }
+      items.push({
+        kind: 'document',
+        id: doc.id,
+        storagePath: doc.storage_path,
+        sha256: doc.sha256,
+        byteSize: doc.byte_size,
+        filename: doc.original_filename,
+        jobBookId: doc.job_book_id,
+        plan: documentPath(
+          book, sectionById.get(doc.section_id ?? '') ?? null, doc.original_filename,
+        ),
+        aside: (on) => supersededPath(book, doc.original_filename, on),
+      })
+    }
+
+    for (const mtr of (mtrs ?? []) as MtrRow[]) {
+      items.push({
+        kind: 'mtr',
+        id: mtr.id,
+        storagePath: mtr.storage_path,
+        sha256: mtr.sha256,
+        byteSize: mtr.byte_size,
+        filename: mtr.original_filename,
+        jobBookId: null,
+        plan: libraryPath(mtr.original_filename),
+        aside: (on) => librarySupersededPath(mtr.original_filename, on),
+      })
+    }
+
+    for (const item of items) {
       if (written >= MAX_FILES || bytes >= MAX_BYTES) {
         detail.push({ note: 'Reached this run\'s limit; the rest goes next run.' })
         break
       }
 
-      const book = bookById.get(doc.job_book_id)
-      if (!book) { skipped += 1; continue }
+      const prior = liveBySource.get(`${item.kind}:${item.id}`)
+      if (prior && prior.sha256 === item.sha256) { skipped += 1; continue }
 
-      const prior = liveBySource.get(doc.id)
-      if (prior && prior.sha256 === doc.sha256) { skipped += 1; continue }
+      const remotePath = joinPath(item.plan)
 
-      const plan = documentPath(
-        book, sectionById.get(doc.section_id ?? '') ?? null, doc.original_filename,
-      )
-      const remotePath = joinPath(plan)
-
-      if (pathTooLong(plan)) {
+      if (pathTooLong(item.plan)) {
         // Reported, never truncated: two documents fighting over one
         // shortened name is worse than one that did not get written.
         failed += 1
-        detail.push({ document: doc.id, error: `Path is too long for SharePoint: ${remotePath}` })
+        detail.push({ [item.kind]: item.id, error: `Path is too long for SharePoint: ${remotePath}` })
         continue
       }
 
       try {
-        // A changed document: move the copy already there aside first, so
-        // the previous version survives under _superseded.
-        if (prior) {
-          const aside = supersededPath(book, doc.original_filename, new Date().toISOString())
-          await graph.moveAside(prior.remote_path as string, joinPath(aside))
-          await supabase.from('backup_object')
-            .update({ superseded_at: new Date().toISOString(), remote_path: joinPath(aside) })
-            .eq('id', prior.id as string)
-        }
-
-        const file = await supabase.storage.from(BUCKET).download(doc.storage_path)
+        const file = await supabase.storage.from(BUCKET).download(item.storagePath)
         if (file.error || !file.data) {
-          failed += 1
-          detail.push({ document: doc.id, error: `Not in storage: ${file.error?.message ?? 'no body'}` })
+          // The application lists this file and has no bytes for it. That
+          // is a hole in the catalogue, not a backup failure — nothing
+          // here can fix it and retrying nightly never will. Counted
+          // apart so it cannot turn every run amber and bury a real
+          // upload failure underneath a hundred identical entries.
+          missing += 1
+          if (missingExamples.length < MAX_EXAMPLES) missingExamples.push(item.filename)
           continue
         }
 
-        const size = doc.byte_size ?? file.data.size
-        await graph.ensureFolder(plan.folders.join('/'))
+        // Only once the bytes are in hand: a replaced file's previous
+        // version is moved aside, so the live path is free. Doing this
+        // before the download would move a copy aside to make room for
+        // something that then turned out not to exist.
+        if (prior) {
+          const aside = joinPath(item.aside(new Date().toISOString()))
+          await graph.moveAside(prior.remote_path as string, aside)
+          await supabase.from('backup_object')
+            .update({ superseded_at: new Date().toISOString(), remote_path: aside })
+            .eq('id', prior.id as string)
+        }
+
+        const size = item.byteSize ?? file.data.size
+        await graph.ensureFolder(item.plan.folders.join('/'))
         await graph.upload(remotePath, file.data.stream(), size)
 
         await supabase.from('backup_object').insert({
-          kind: 'document',
-          source_key: doc.id,
-          job_book_id: doc.job_book_id,
+          kind: item.kind,
+          source_key: item.id,
+          job_book_id: item.jobBookId,
           remote_path: remotePath,
-          sha256: doc.sha256,
+          sha256: item.sha256,
           byte_size: size,
         })
 
@@ -210,24 +295,40 @@ Deno.serve(async (req) => {
         // One bad file does not end the night. The rest of the archive is
         // still worth writing, and this one is named in the run detail.
         failed += 1
-        detail.push({ document: doc.id, path: remotePath, error: redact(e) })
+        detail.push({ [item.kind]: item.id, path: remotePath, error: redact(e) })
       }
+    }
+
+    if (missing > 0) {
+      // One line, not one per file. The count is the finding; a few names
+      // are enough to start looking.
+      detail.push({
+        note: `${missing} ${missing === 1 ? 'file is' : 'files are'} listed by the ` +
+          `application with no stored bytes, so there was nothing to copy. ` +
+          `This is a gap in the catalogue rather than a backup failure.`,
+        examples: missingExamples.join(', '),
+      })
     }
 
     await supabase.from('backup_run').update({
       finished_at: new Date().toISOString(),
+      // Missing bytes do not make a run partial. A run that wrote
+      // everything it had bytes for did its job, and saying otherwise
+      // every night is how a genuine failure stops being noticed.
       status: failed > 0 ? 'partial' : 'ok',
       files_written: written, files_skipped: skipped, files_failed: failed,
+      files_missing: missing,
       bytes_written: bytes,
       detail: detail.length > 0 ? detail : null,
     }).eq('id', runId)
 
-    return Response.json({ ok: true, written, skipped, failed, bytes })
+    return Response.json({ ok: true, written, skipped, failed, missing, bytes })
   } catch (e) {
     await supabase.from('backup_run').update({
       finished_at: new Date().toISOString(),
       status: 'failed',
       files_written: written, files_skipped: skipped, files_failed: failed,
+      files_missing: missing,
       bytes_written: bytes,
       error: redact(e),
       detail: detail.length > 0 ? detail : null,

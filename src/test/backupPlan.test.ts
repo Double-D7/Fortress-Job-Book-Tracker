@@ -13,7 +13,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   DATA_FOLDER, LIBRARY_FOLDER, MAX_PATH, SUPERSEDED_FOLDER, UNFILED,
-  bookFolder, dataPath, documentPath, joinPath, libraryPath, pathTooLong,
+  bookFolder, dataPath, documentPath, joinPath, libraryPath,
+  librarySupersededPath, pathTooLong,
   safeSegment, sectionFolder, supersededPath,
 } from '../../supabase/functions/_shared/backupPaths'
 
@@ -77,6 +78,33 @@ describe('the folders that are not a section', () => {
 
   it('keeps generated exports apart from filed evidence', () => {
     expect(dataPath(BOOK, 'welds.csv').folders[1]).toBe(DATA_FOLDER)
+  })
+})
+
+describe('a mill certificate that has been replaced', () => {
+  it('is kept under the library, not under some book that used the heat', () => {
+    // Filing it under a book would make it findable only by somebody who
+    // already knew which of the books using that heat it had been put in.
+    const p = librarySupersededPath('D07821.pdf', '2026-09-29T14:00:00Z')
+    expect(p.folders).toEqual([LIBRARY_FOLDER, SUPERSEDED_FOLDER, '2026-09-29'])
+  })
+
+  it('does not collide with its own earlier version', () => {
+    expect(joinPath(librarySupersededPath('D07821.pdf', '2026-09-01T00:00:00Z')))
+      .not.toBe(joinPath(librarySupersededPath('D07821.pdf', '2026-09-29T00:00:00Z')))
+  })
+
+  it('leaves the live library path free for the replacement', () => {
+    expect(joinPath(librarySupersededPath('D07821.pdf', '2026-09-29T00:00:00Z')))
+      .not.toBe(joinPath(libraryPath('D07821.pdf')))
+  })
+
+  it('does not land in a book\'s superseded folder', () => {
+    // The two superseded folders must stay distinct, or a certificate and
+    // a document of the same name replaced on the same day overwrite each
+    // other — in the folder whose whole purpose is not losing versions.
+    expect(joinPath(librarySupersededPath('RT-031.pdf', '2026-09-29T00:00:00Z')))
+      .not.toBe(joinPath(supersededPath(BOOK, 'RT-031.pdf', '2026-09-29T00:00:00Z')))
   })
 })
 
