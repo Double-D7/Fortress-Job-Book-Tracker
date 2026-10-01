@@ -37,6 +37,12 @@ import {
   type CalibrationCounts, type CalibrationPlan,
 } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
+import { createHash } from 'node:crypto'
+import { normalizeFilename } from '@/lib/domain/upload'
+import {
+  alreadyFiled, missingSectionMessage, sourceMimeType, sourceSection,
+  sourceStoragePath, type SourceKind,
+} from '@/lib/domain/sourceFiling'
 import {
   countPlan, evidencedButNotLogged, planNdeImport,
   type NdePlan, type PlanCounts,
@@ -1624,6 +1630,56 @@ class SeedProvider implements DataProvider {
     return buildNdePreview(b, file, filename)
   }
 
+  /**
+   * Keep the file an import was made from, the same way the real provider
+   * does.
+   *
+   * In memory rather than in a bucket, but filed into the same section
+   * with the same content-addressed path and the same deduplication, so a
+   * demo book and a live one agree about what an import leaves behind.
+   * The comment further down about divergence being something this
+   * project has already paid for twice applies here too.
+   */
+  private fileSourceDocumentSeed(
+    viewer: Viewer,
+    b: JobBookBundle,
+    kind: SourceKind,
+    file: Uint8Array,
+    filename: string,
+  ): { ok: true; documentId: string } | { ok: false; error: string } {
+    const sectionNumber = sourceSection(kind)
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+    const section = def && b.sections.find((s) => s.sectionDefinitionId === def.id)
+    if (!def || !section) {
+      return { ok: false, error: missingSectionMessage(kind, sectionNumber) }
+    }
+
+    const sha256 = createHash('sha256').update(file).digest('hex')
+    const existing = alreadyFiled(b.documents, sha256)
+    if (existing) return { ok: true, documentId: existing.id }
+
+    const documentId = `doc-${b.book.id}-${sha256.slice(0, 16)}`
+    b.documents.push({
+      id: documentId,
+      jobBookId: b.book.id,
+      sectionId: section.id,
+      originalFilename: filename,
+      normalizedFilename: normalizeFilename(filename, sectionNumber, b.book.jobNumber),
+      storagePath: sourceStoragePath(b.book.id, sectionNumber, sha256),
+      mimeType: sourceMimeType(filename),
+      byteSize: file.byteLength,
+      sha256,
+      version: 1,
+      supersedesDocumentId: null,
+      isSuperseded: false,
+      visibility: 'internal',
+      uploadedBy: viewer.id,
+      uploadedAt: new Date().toISOString(),
+    } as (typeof b.documents)[number])
+
+    return { ok: true, documentId }
+  }
+
   async commitNdeImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<NdeImportResult> {
@@ -1648,6 +1704,10 @@ class SeedProvider implements DataProvider {
     let linesCreated = 0
     let weldsLinked = 0
     let rowsHeld = 0
+
+    // The report itself, filed into §10 before a single row is written.
+    const source = this.fileSourceDocumentSeed(viewer, b, 'nde_report', file, filename)
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     for (const r of preview.plan.reports) {
       const id = `seed-nde-${b.ndeReports.length + 1}`
@@ -1681,7 +1741,7 @@ class SeedProvider implements DataProvider {
         acceptanceCriteria: r.acceptanceCriteria,
         technicianId: tech?.id ?? null,
         technicianName: r.technicianName,
-        documentId: null,
+        documentId: source.documentId,
         isSuperseded: false,
         lines,
         enteredAt: new Date().toISOString(),
@@ -1725,6 +1785,10 @@ class SeedProvider implements DataProvider {
     if (!preview.ok || !preview.plan) {
       return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
     }
+
+    // The original, kept before anything derived from it is written.
+    const source = this.fileSourceDocumentSeed(viewer, b, 'weld_log', file, filename)
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     let n = 0
     const rows = rowsForWeldPlan(preview.plan, b, {
@@ -1780,6 +1844,10 @@ class SeedProvider implements DataProvider {
       return { ok: false, error: preview.error ?? 'Could not read the log.', ...empty }
     }
 
+    // The original, kept before anything derived from it is written.
+    const source = this.fileSourceDocumentSeed(viewer, b, 'torque_log', file, filename)
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
+
     const rows = rowsForTorquePlan(preview.plan, b, {
       enteredAt: new Date().toISOString(),
       entrySource: 'field_entry',
@@ -1831,6 +1899,18 @@ class SeedProvider implements DataProvider {
       return { ok: false, error: preview.error ?? 'No certificate could be read.', ...empty }
     }
 
+    // Every certificate page, kept — including the ones no wrench could
+    // be matched to. Filed per file so a certificate can be linked to the
+    // one page it came from.
+    const documentIdByFile = new Map<string, string>()
+    for (const f of files) {
+      const filed = this.fileSourceDocumentSeed(
+        viewer, b, 'calibration_certificate', f.bytes, f.filename,
+      )
+      if (!filed.ok) return { ok: false, error: filed.error, ...empty }
+      documentIdByFile.set(f.filename, filed.documentId)
+    }
+
     // Applied in plan order onto a running map, so a batch holding two
     // certificates for one wrench lands the same way it previewed.
     const byWrenchId = new Map(b.torqueWrenches.map((w) => [w.wrenchId, w]))
@@ -1859,6 +1939,7 @@ class SeedProvider implements DataProvider {
       const at = certificates.findIndex((c) => c.id === id)
       const record = {
         id, jobBookId, subjectId: wrench.id, ...entry,
+        documentId: documentIdByFile.get(row.filename) ?? null,
       } as (typeof certificates)[number]
       if (at >= 0) certificates[at] = record
       else certificates.push(record)
@@ -1905,6 +1986,10 @@ class SeedProvider implements DataProvider {
     if (!preview.ok || !preview.plan) {
       return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
     }
+
+    // The original, kept before anything derived from it is written.
+    const source = this.fileSourceDocumentSeed(viewer, b, 'pressure_test', file, filename)
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     const now = new Date().toISOString()
     const records = toPressureTestRecords(preview.plan.rows, { jobBookId })
@@ -2604,6 +2689,10 @@ class SeedProvider implements DataProvider {
     if (!preview.ok || !preview.plan) {
       return { ok: false, error: preview.error ?? 'Could not read the sheet.', ...empty }
     }
+
+    // The original, kept before anything derived from it is written.
+    const source = this.fileSourceDocumentSeed(viewer, b, 'weld_log_overview', file, filename)
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     let n = 0
     const rows = rowsForPlan(preview.plan, {

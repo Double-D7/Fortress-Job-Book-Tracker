@@ -43,12 +43,16 @@ import { rowsForPlan } from '@/lib/import/overviewIngest'
 import { rowsForWeldPlan } from '@/lib/import/weldLogIngest'
 import { rowsForTorquePlan } from '@/lib/import/torqueLogIngest'
 import { toPressureTestRecords } from '@/lib/import/pressureTestLog'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { latestOfTier, scoreAudit } from '@/lib/domain/audits'
-import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
+import { previewUploads, normalizeFilename, type PrepareInput } from '@/lib/domain/upload'
+import {
+  alreadyFiled, missingSectionMessage, sourceMimeType, sourceSection,
+  sourceStoragePath, type SourceKind,
+} from '@/lib/domain/sourceFiling'
 import { createClient } from '@/lib/supabase/server'
 import { COLUMNS, domainToRow, rowToDomain, rowsToDomain } from './rowMap'
 import { resolveTechnician } from '@/lib/domain/welders'
@@ -407,6 +411,80 @@ export class SupabaseProvider implements DataProvider {
     return { ok: true, jobBookId: book.id, warnings }
   }
 
+  /**
+   * Keep the file an import was made from, and say which document it is.
+   *
+   * Called by every importer before it writes a single row. An import
+   * that cannot keep its original does not proceed: for a book that gets
+   * submitted, rows without the document behind them are the failure this
+   * is here to prevent, and half-importing is worse than refusing,
+   * because the screens would then show evidence nobody can produce.
+   *
+   * Idempotent on the bytes. Re-importing the same file — a report re-run
+   * after a weld number was fixed, or two people importing the same PDF —
+   * returns the document already filed rather than keeping a second copy
+   * of it.
+   */
+  private async fileSourceDocument(
+    viewer: Viewer,
+    bundle: JobBookBundle,
+    kind: SourceKind,
+    file: Uint8Array,
+    filename: string,
+  ): Promise<{ ok: true; documentId: string } | { ok: false; error: string }> {
+    const sectionNumber = sourceSection(kind)
+    const def = bundle.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+    const section = def && bundle.sections.find((s) => s.sectionDefinitionId === def.id)
+    if (!def || !section) {
+      return { ok: false, error: missingSectionMessage(kind, sectionNumber) }
+    }
+
+    const sha256 = createHash('sha256').update(file).digest('hex')
+    const existing = alreadyFiled(bundle.documents, sha256)
+    if (existing) return { ok: true, documentId: existing.id }
+
+    const supabase = await createClient()
+    const storagePath = sourceStoragePath(bundle.book.id, sectionNumber, sha256)
+
+    // Bytes first, row second — the same order the manual upload uses, and
+    // for the same reason. An object with no row is invisible; a row with
+    // no object is a download that fails in front of an auditor.
+    const up = await supabase.storage.from(DOCUMENT_BUCKET).upload(storagePath, file, {
+      contentType: sourceMimeType(filename),
+      upsert: true,
+    })
+    if (up.error) {
+      return { ok: false, error: `Could not store the source file: ${up.error.message}` }
+    }
+
+    const documentId = randomUUID()
+    const { error } = await supabase.from('document').insert(domainToRow({
+      id: documentId,
+      jobBookId: bundle.book.id,
+      sectionId: section.id,
+      originalFilename: filename,
+      normalizedFilename: normalizeFilename(filename, sectionNumber, bundle.book.jobNumber),
+      storagePath,
+      mimeType: sourceMimeType(filename),
+      byteSize: file.byteLength,
+      sha256,
+      version: 1,
+      supersedesDocumentId: null,
+      isSuperseded: false,
+      visibility: 'internal',
+      uploadedBy: viewer.id,
+      uploadedAt: new Date().toISOString(),
+    }, COLUMNS.document))
+
+    if (error) {
+      // Leave no object behind that no row points at.
+      await supabase.storage.from(DOCUMENT_BUCKET).remove([storagePath])
+      return { ok: false, error: describe(error) }
+    }
+
+    return { ok: true, documentId }
+  }
+
   async addDocuments(
     viewer: Viewer,
     jobBookId: string,
@@ -623,7 +701,6 @@ export class SupabaseProvider implements DataProvider {
   async commitOverviewImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
   ): Promise<OverviewImportResult> {
-    void filename
     const empty = {
       weldersCreated: 0, weldersMatched: 0, qualificationsRecorded: 0,
       peopleCreated: 0, skipped: [] as { stamp: string; reason: string }[],
@@ -648,6 +725,12 @@ export class SupabaseProvider implements DataProvider {
       entrySource: 'field_entry',
       newId: () => randomUUID(),
     })
+
+    // The sheet itself, kept before anything derived from it is written.
+    const source = await this.fileSourceDocument(
+      viewer, bundle, 'weld_log_overview', file, filename,
+    )
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     const supabase = await createClient()
 
@@ -753,6 +836,14 @@ export class SupabaseProvider implements DataProvider {
     let weldsLinked = 0
     let rowsHeld = 0
 
+    // The report itself, filed into §10 before a single row is written.
+    // The rows are this application's reading of the document; the
+    // document is what an auditor asks to see, and what §15 retains.
+    const source = await this.fileSourceDocument(
+      viewer, bundle, 'nde_report', file, filename,
+    )
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
+
     for (const r of preview.plan.reports) {
       // Resolved exactly or not at all. A report signed by somebody this
       // book holds no credentials for is a finding, not a reason to mint
@@ -776,6 +867,7 @@ export class SupabaseProvider implements DataProvider {
         acceptance_criteria: r.acceptanceCriteria,
         import_gaps: gaps.length > 0 ? gaps : null,
         source_filename: filename,
+        document_id: source.documentId,
       }).select('id').single()
 
       if (error || !report) {
@@ -851,6 +943,12 @@ export class SupabaseProvider implements DataProvider {
       newId: () => randomUUID(),
     })
 
+    // The signed log itself, kept before anything derived from it.
+    const source = await this.fileSourceDocument(
+      viewer, bundle, 'weld_log', file, filename,
+    )
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
+
     const supabase = await createClient()
 
     if (rows.weldLines.length > 0) {
@@ -923,6 +1021,12 @@ export class SupabaseProvider implements DataProvider {
       enteredAt: new Date().toISOString(),
       entrySource: 'field_entry',
     })
+
+    // The signed log itself, kept before anything derived from it.
+    const source = await this.fileSourceDocument(
+      viewer, bundle, 'torque_log', file, filename,
+    )
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     const supabase = await createClient()
     // `facilityTorqueRecordId` derives the id from the book, the ISO
@@ -999,6 +1103,24 @@ export class SupabaseProvider implements DataProvider {
       preview.plan.rows.filter((r) => r.writable && r.wrenchId).map((r) => r.wrenchId!),
     )
     const records = [...byWrenchId.values()].filter((w) => touched.has(w.wrenchId))
+
+    // Every certificate page, kept — including the ones no wrench could be
+    // matched to. An unreadable or unmatched certificate is still a
+    // document somebody filed, and the §13 register is where an auditor
+    // looks for it; dropping it because this application could not use it
+    // would lose the page and the problem with it.
+    //
+    // Filed per file rather than once for the batch, so a certificate can
+    // be linked to the one page it came from.
+    const documentIdByFile = new Map<string, string>()
+    for (const f of files) {
+      const filed = await this.fileSourceDocument(
+        viewer, bundle, 'calibration_certificate', f.bytes, f.filename,
+      )
+      if (!filed.ok) return { ok: false, error: filed.error, ...empty }
+      documentIdByFile.set(f.filename, filed.documentId)
+    }
+
     if (records.length > 0) {
       const supabase = await createClient()
       // On `wrench_id`, not `id`: the table is keyed on the wrench number
@@ -1031,6 +1153,7 @@ export class SupabaseProvider implements DataProvider {
         return [domainToRow({
           id: recordId('certificate', subjectId, entry.certType, entry.issueDate ?? 'unread'),
           jobBookId, subjectId, ...entry,
+          documentId: documentIdByFile.get(row.filename) ?? null,
         }, COLUMNS.certificate)]
       })
       if (certRows.length > 0) {
@@ -1084,6 +1207,12 @@ export class SupabaseProvider implements DataProvider {
     const now = new Date().toISOString()
     const records = toPressureTestRecords(preview.plan.rows, { jobBookId })
       .map((t) => ({ ...t, enteredAt: now, entrySource: 'field_entry' as const }))
+
+    // The results sheet itself, kept before anything derived from it.
+    const source = await this.fileSourceDocument(
+      viewer, bundle, 'pressure_test', file, filename,
+    )
+    if (!source.ok) return { ok: false, error: source.error, ...empty }
 
     const supabase = await createClient()
     const { error } = await supabase.from('pressure_test').upsert(
