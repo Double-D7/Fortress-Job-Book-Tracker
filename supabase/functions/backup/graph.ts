@@ -24,6 +24,7 @@
  */
 
 import { describeCredentialShape } from '../_shared/credentialShape.ts'
+import { describeTokenRoles } from '../_shared/tokenRoles.ts'
 
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 
@@ -119,10 +120,18 @@ export class Graph {
     const res = await this.call(`/sites/${this.cfg.siteId}/drive?$select=id`)
     if (!res.ok) {
       const detail = await res.text()
+      // Sites.Selected denies identically whether the app was never
+      // consented or was consented but has no grant on this site. The
+      // token says which, and the site permission — the obvious thing to
+      // go and check — is the more likely of the two to already be right.
+      const roles = describeTokenRoles(this.token)
       throw new Error(
         `Cannot read the drive for site ${this.cfg.siteId} (${res.status}). ` +
-        `A 403 here usually means consent was granted but the per-site ` +
-        `permission was not: POST /sites/{siteId}/permissions. ${detail}`,
+        (roles ??
+          `The token holds Sites.Selected, so the app is consented; what ` +
+          `is missing is a permission on this particular site: ` +
+          `POST /sites/{siteId}/permissions.`) +
+        ` ${detail}`,
       )
     }
     this.cfg.driveId = (await res.json()).id as string
