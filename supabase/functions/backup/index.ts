@@ -48,6 +48,7 @@ import { Graph, graphConfigFromEnv } from './graph.ts'
 import {
   documentPath, joinPath, pathTooLong, supersededPath,
 } from '../_shared/backupPaths.ts'
+import { redactCredentials } from '../_shared/redact.ts'
 
 const BUCKET = 'job-book-documents'
 
@@ -89,6 +90,11 @@ Deno.serve(async (req) => {
     // that never starts must not look like one that had nothing to do.
     return await recordFailure(cfg.error)
   }
+
+  /** What gets written into `backup_run.error`, with this run's own
+   *  credentials taken back out. See `_shared/redact.ts` for why. */
+  const redact = (e: unknown): string =>
+    redactCredentials(String(e), [cfg.clientSecret, secret])
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
@@ -204,7 +210,7 @@ Deno.serve(async (req) => {
         // One bad file does not end the night. The rest of the archive is
         // still worth writing, and this one is named in the run detail.
         failed += 1
-        detail.push({ document: doc.id, path: remotePath, error: String(e) })
+        detail.push({ document: doc.id, path: remotePath, error: redact(e) })
       }
     }
 
@@ -223,10 +229,10 @@ Deno.serve(async (req) => {
       status: 'failed',
       files_written: written, files_skipped: skipped, files_failed: failed,
       bytes_written: bytes,
-      error: String(e),
+      error: redact(e),
       detail: detail.length > 0 ? detail : null,
     }).eq('id', runId)
-    return Response.json({ ok: false, error: String(e) }, { status: 500 })
+    return Response.json({ ok: false, error: redact(e) }, { status: 500 })
   }
 
   async function recordFailure(error: string): Promise<Response> {
