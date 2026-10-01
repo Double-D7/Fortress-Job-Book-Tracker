@@ -23,6 +23,8 @@
  * backup that can be told to remove things.
  */
 
+import { describeCredentialShape } from '../_shared/credentialShape.ts'
+
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 
 /** Graph wants chunks that are a multiple of 320 KiB. 8 MiB is inside an
@@ -82,8 +84,16 @@ export async function accessToken(cfg: GraphConfig): Promise<string> {
   if (!res.ok) {
     // Entra's own description is far more useful than a status code: it
     // names an unconsented permission or a wrong secret outright.
+    //
+    // What it will not tell you is which wrong thing is in the box, and
+    // "Invalid client secret provided" reads the same for a Secret ID, a
+    // stray newline and an expired secret. The shape of the configured
+    // value distinguishes them without disclosing it.
+    const shape = describeCredentialShape(cfg.clientSecret, { clientId: cfg.clientId })
     throw new Error(
-      `Graph token request failed (${res.status}): ${body.error_description ?? body.error ?? 'no detail'}`,
+      `Graph token request failed (${res.status}): ` +
+      `${body.error_description ?? body.error ?? 'no detail'}` +
+      (shape ? ` [GRAPH_CLIENT_SECRET: ${shape}]` : ''),
     )
   }
   return body.access_token as string
