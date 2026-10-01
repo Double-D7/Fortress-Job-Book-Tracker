@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_PATH, UNFILED, bookFolder, dataPath, documentPath, joinPath,
   libraryPath, pathTooLong, safeSegment, sectionFolder, supersededPath,
-} from '@/lib/domain/backupPaths'
+} from '../../supabase/functions/_shared/backupPaths'
 
 const BOOK = { code: 'DP-318', name: 'Greeley Crescent Facility' }
 
