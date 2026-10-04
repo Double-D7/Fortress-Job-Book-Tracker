@@ -3,6 +3,8 @@ import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { certHistory, evaluateCert, upcomingExpiries } from '@/lib/domain/certificates'
 import { continuityStatus, qualifiedOn, rollupByWelder } from '@/lib/domain/welders'
 import { reconcileWrenches } from '@/lib/domain/torque'
+import { can } from '@/lib/domain/roles'
+import { CredentialFiler } from '@/components/CredentialFiler'
 import {
   Card, CardBody, CardHeader, CardTitle, Chip, EmptyState, Table, Td, Th, Tr,
 } from '@/components/ui/primitives'
@@ -41,6 +43,14 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
 
   return (
     <div className="space-y-4">
+      {can(viewer.role, 'edit_records') && (
+        <CredentialFiler
+          bookId={bookId}
+          cwis={b.cwis.map((c) => ({ id: c.id, label: c.fullName }))}
+          technicians={b.ndtTechnicians.map((t) => ({ id: t.id, label: t.fullName }))}
+        />
+      )}
+
       <Card>
         <CardHeader className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>Welders</CardTitle>

@@ -35,6 +35,9 @@ import { heatKey, normalizeHeat } from '@/lib/domain/heats'
 import { applyCertificate, calibrationRegisterEntry } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
 import {
+  credentialToCertificate, validateCredential, type CredentialInput,
+} from '@/lib/domain/credentials'
+import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
   buildNdePreview, buildCalibrationPreview,
   buildWeldLogPreview, redactForViewer, summarizeBook,
@@ -1254,6 +1257,79 @@ export class SupabaseProvider implements DataProvider {
       connectionsResolved: preview.counts.connectionsResolved,
       connectionsExposed: preview.counts.connectionsExposed,
     }
+  }
+
+  async fileCredential(
+    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    file: Uint8Array, filename: string,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to file credentials on this book.' }
+    }
+    const bundle = await this.getBundle(viewer, jobBookId)
+    if (!bundle) return { ok: false, error: 'Job book not found.' }
+
+    // Re-validated here rather than trusted from the browser, the rule
+    // every writer in this file follows.
+    const problems = validateCredential(input)
+    if (problems.length > 0) return { ok: false, error: problems[0]!.message }
+
+    const supabase = await createClient()
+
+    // The roster first: the certificate needs somebody to hang off, and
+    // a certificate written against a person who failed to insert would
+    // be evidence attached to nobody.
+    let subjectId = input.subjectId
+    if (!subjectId) {
+      const table = input.subjectType === 'cwi' ? 'cwi' : 'ndt_technician'
+      subjectId = randomUUID()
+      const person = {
+        id: subjectId,
+        fullName: (input.fullName ?? '').trim(),
+        initials: (input.initials ?? '').trim() || null,
+        employer: (input.employer ?? '').trim() || null,
+        active: true,
+        enteredAt: new Date().toISOString(),
+        entrySource: 'field_entry' as const,
+      }
+      const { error } = await supabase.from(table).insert(domainToRow(
+        person,
+        input.subjectType === 'cwi' ? COLUMNS.cwi : COLUMNS.ndt_technician,
+      ))
+      if (error) return { ok: false, error: describe(error) }
+    } else {
+      // An id from the browser is a claim. Check it names somebody on
+      // the roster this book can see, so a filed credential cannot be
+      // attached to an arbitrary uuid.
+      const known = input.subjectType === 'cwi'
+        ? bundle.cwis.some((c) => c.id === subjectId)
+        : bundle.ndtTechnicians.some((t) => t.id === subjectId)
+      if (!known) return { ok: false, error: 'That person is not on this book\'s roster.' }
+    }
+
+    // The page itself. Filed before the certificate row so a row never
+    // points at a document that failed to store.
+    const filed = await this.fileSourceDocument(
+      viewer, bundle,
+      input.subjectType === 'cwi' ? 'cwi_certificate' : 'ndt_certificate',
+      file, filename,
+    )
+    if (!filed.ok) return { ok: false, error: filed.error }
+
+    const entry = credentialToCertificate(input, subjectId)
+    // Keyed on person, type and issue date, so re-filing the same card
+    // replaces it and a renewal files alongside rather than over.
+    const { error: certError } = await supabase.from('certificate').upsert(
+      domainToRow({
+        id: recordId('certificate', subjectId, entry.certType, entry.issueDate),
+        jobBookId, ...entry, documentId: filed.documentId,
+      }, COLUMNS.certificate),
+      { onConflict: 'id' },
+    )
+    if (certError) return { ok: false, error: describe(certError) }
+
+    await this.refreshScores(jobBookId, viewer)
+    return { ok: true }
   }
 
   async previewPressureTestImport(

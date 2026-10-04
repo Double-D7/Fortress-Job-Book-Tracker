@@ -43,6 +43,12 @@ export type SourceKind =
   | 'pressure_recorder_certificate'
   | 'torque_log'
   | 'pressure_test'
+  // The two personnel credentials. Filed by hand rather than parsed: a
+  // CWI card and an ASNT card are a photograph of a wallet card more
+  // often than a document, and guessing a certification date off one
+  // would be guessing about whether somebody was qualified.
+  | 'cwi_certificate'
+  | 'ndt_certificate'
 
 /**
  * Where each original is filed, by the book's own section numbering.
@@ -60,6 +66,8 @@ export const SOURCE_SECTION: Record<SourceKind, string> = {
   torque_log: '14',
   pressure_test: '17',
   pressure_recorder_certificate: '17',
+  cwi_certificate: '7',
+  ndt_certificate: '8',
 }
 
 export function sourceSection(kind: SourceKind): string {

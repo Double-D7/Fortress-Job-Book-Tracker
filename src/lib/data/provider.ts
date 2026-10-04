@@ -37,6 +37,9 @@ import {
   type CalibrationCounts, type CalibrationPlan,
 } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
+import {
+  credentialToCertificate, validateCredential, type CredentialInput,
+} from '@/lib/domain/credentials'
 import { createHash } from 'node:crypto'
 import { normalizeFilename } from '@/lib/domain/upload'
 import {
@@ -411,6 +414,23 @@ export interface DataProvider {
     viewer: Viewer, jobBookId: string,
     files: readonly { filename: string; bytes: Uint8Array }[],
   ): Promise<CalibrationImportResult>
+
+  /**
+   * File a CWI or NDT technician credential (§7 and §8).
+   *
+   * The one filing path the application never had, which is why those
+   * two sections could only ever be scored on paperwork nobody could
+   * enter. Adds the person to the roster when `subjectId` is null, so
+   * filing the first card for somebody is one action rather than two.
+   *
+   * Typed in rather than parsed: these are usually photographs of
+   * wallet cards, and a misread certification date is a wrong answer to
+   * the only question §7 and §8 ask.
+   */
+  fileCredential(
+    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    file: Uint8Array, filename: string,
+  ): Promise<ActionResult>
 
   /** The same two steps for the pressure test hold sheet (§17). */
   previewPressureTestImport(
@@ -2105,6 +2125,69 @@ class SeedProvider implements DataProvider {
       connectionsResolved: preview.counts.connectionsResolved,
       connectionsExposed: preview.counts.connectionsExposed,
     }
+  }
+
+  async fileCredential(
+    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    file: Uint8Array, filename: string,
+  ): Promise<ActionResult> {
+    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
+    const b = this.all()[idx]
+    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to file credentials on this book.' }
+    }
+
+    const problems = validateCredential(input)
+    if (problems.length > 0) return { ok: false, error: problems[0]!.message }
+
+    const filed = this.fileSourceDocumentSeed(
+      viewer, b,
+      input.subjectType === 'cwi' ? 'cwi_certificate' : 'ndt_certificate',
+      file, filename,
+    )
+    if (!filed.ok) return { ok: false, error: filed.error }
+
+    // The roster first, because the certificate needs somebody to hang
+    // off. Adding the person and filing their card is one action: making
+    // it two is how a roster ends up with people carrying no evidence.
+    let cwis = b.cwis
+    let ndtTechnicians = b.ndtTechnicians
+    let subjectId = input.subjectId
+    if (!subjectId) {
+      subjectId = recordId(input.subjectType, (input.fullName ?? '').trim())
+      const person = {
+        id: subjectId,
+        fullName: (input.fullName ?? '').trim(),
+        initials: (input.initials ?? '').trim() || null,
+        employer: (input.employer ?? '').trim() || null,
+        active: true,
+      }
+      if (input.subjectType === 'cwi') {
+        cwis = [...cwis, { ...person, initials: person.initials ?? '' } as typeof cwis[number]]
+      } else {
+        ndtTechnicians = [
+          ...ndtTechnicians,
+          { ...person, classification: null } as typeof ndtTechnicians[number],
+        ]
+      }
+    }
+
+    const entry = credentialToCertificate(input, subjectId)
+    const id = recordId('certificate', subjectId, entry.certType, entry.issueDate)
+    const certificates = [...b.certificates]
+    const record = {
+      id, jobBookId, ...entry, documentId: filed.documentId,
+      verifiedBy: null, verifiedAt: null,
+    } as (typeof certificates)[number]
+    // Keyed on person, type and issue date, so re-filing the same card
+    // replaces it and a renewal files alongside rather than over.
+    const at = certificates.findIndex((c) => c.id === id)
+    if (at >= 0) certificates[at] = record
+    else certificates.push(record)
+
+    this.commit(jobBookId, idx, { ...b, cwis, ndtTechnicians, certificates })
+    return { ok: true }
   }
 
   async previewPressureTestImport(
