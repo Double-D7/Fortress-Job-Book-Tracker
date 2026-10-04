@@ -444,6 +444,14 @@ export function buildGreeleyBundle(): JobBookBundle {
       id: `cert-dp318-ndt-${t.id}`, jobBookId: book.id,
       subjectType: 'ndt_technician' as const, subjectId: t.id,
       certType: 'ASNT Level II', issuingBody: null,
+      // Deliberately unrecorded. DP-318 is a reconstruction of a real
+      // book, and the real cards were never read closely enough to say
+      // which methods they cover. Inventing a method list here would
+      // make the seed certify work the paperwork does not, which is the
+      // precise failure this column exists to stop. Left null, the book
+      // raises a warning asking for the cards to be read, which is the
+      // honest state of that job.
+      ndtMethods: null,
       issueDate: '2024-01-01', expiryDate: '2027-01-01',
       documentId: `doc-dp318-ndtcert-${t.id}`, verifiedBy: null, verifiedAt: null,
     })),

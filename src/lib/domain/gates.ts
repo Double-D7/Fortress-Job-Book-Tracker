@@ -406,7 +406,7 @@ function gate0(b: JobBookBundle, ctx: GateContext, asOf: IsoDate): CriterionResu
   // 7 — wrench calibration and register
   const wrenchProblems = b.torqueWrenches.filter(
     (w) => !w.certOnFile ||
-      !certValidOn(b.certificates, 'torque_wrench', w.id, mobilizing, undefined, interval),
+      !certValidOn(b.certificates, 'torque_wrench', w.id, mobilizing, { intervalMonths: interval }),
   )
   const wrenchesOnLog = new Set(
     b.torqueConnections.map((c) => c.wrenchId).filter((x): x is string => !!x),
@@ -1175,14 +1175,18 @@ function certificateValidityProblems(b: JobBookBundle): string[] {
     if (!c.torqueDate || !c.wrenchId) continue
     const wrench = b.torqueWrenches.find((x) => x.id === c.wrenchId || x.wrenchId === c.wrenchId)
     if (!wrench ||
-        !certValidOn(b.certificates, 'torque_wrench', wrench.id, c.torqueDate, undefined, interval)) {
+        !certValidOn(b.certificates, 'torque_wrench', wrench.id, c.torqueDate,
+          { intervalMonths: interval })) {
       problems.push(`torque ${c.isoFlangeNumber} / ${c.wrenchId}`)
     }
   }
 
   for (const r of b.ndeReports) {
     if (!r.technicianId) continue
-    if (!certValidOn(b.certificates, 'ndt_technician', r.technicianId, r.reportDate)) {
+    // The method matters: a technician certified for PT is not thereby
+    // certified to interpret an RT film.
+    if (!certValidOn(b.certificates, 'ndt_technician', r.technicianId, r.reportDate,
+      { method: r.method })) {
       problems.push(`NDE report ${r.reportNumber ?? r.id}`)
     }
   }

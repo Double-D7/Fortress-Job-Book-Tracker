@@ -429,6 +429,25 @@ export interface Certificate {
   subjectType: CertSubjectType
   subjectId: string
   certType: string
+  /**
+   * For an NDT technician, the methods this card actually certifies.
+   *
+   * ASNT SNT-TC-1A certifies per method, not per person: a technician
+   * holds PT Level II and RT Level II as two separate qualifications,
+   * and plenty hold one without the other. `certType` records the level
+   * as the card prints it ("ASNT Level II") and cannot answer "which
+   * method", so this does.
+   *
+   * Null or empty means the methods have not been recorded, which is NOT
+   * the same as covering none and NOT the same as covering all. An
+   * unrecorded card certifies no method-specific work, for the same
+   * reason a certificate with no issue date certifies no date: the
+   * alternative is an unread page silently passing everything.
+   *
+   * Irrelevant to subjects whose work has no method — a CWI, a welder, a
+   * torque wrench — where it stays null and nothing asks.
+   */
+  ndtMethods?: NdtMethod[] | null
   issuingBody?: string | null
   /**
    * Null where the certificate is on file but has not been read — a

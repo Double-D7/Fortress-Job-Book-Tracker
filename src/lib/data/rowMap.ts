@@ -146,6 +146,9 @@ export const COLUMNS = {
     'id', 'job_book_id', 'subject_type', 'subject_id', 'cert_type',
     'issuing_body', 'issue_date', 'expiry_date', 'document_id',
     'verified_by', 'verified_at', 'deleted_at',
+    // 0041 — which methods an NDT card certifies. Null is "not recorded",
+    // and certifies nothing.
+    'ndt_methods',
   ],
   // Added when calibration certificates became filable. Every column but
   // `created_at`, which the table defaults and nothing here sets.

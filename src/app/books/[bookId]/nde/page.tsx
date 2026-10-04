@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { reconcileNde } from '@/lib/domain/reconcile'
 import { ndeCoverage } from '@/lib/domain/ndeCoverage'
-import { certValidOn } from '@/lib/domain/certificates'
+import { ndtMethodCoverage } from '@/lib/domain/certificates'
 import { isWithin } from '@/lib/domain/dates'
 import {
   Card, CardBody, CardHeader, CardTitle, Chip, Metric, Table, Td, Th, Tr,
@@ -126,9 +126,12 @@ export default async function NdePage({ params }: { params: Promise<{ bookId: st
             <tbody>
               {sorted.map((r) => {
                 const tech = r.technicianId ? techById.get(r.technicianId) : null
-                const certOk = r.technicianId
-                  ? !!certValidOn(b.certificates, 'ndt_technician', r.technicianId, r.reportDate)
-                  : false
+                // Method and date, not date alone. A PT card does not
+                // qualify somebody to interpret an RT film.
+                const coverage = r.technicianId
+                  ? ndtMethodCoverage(b.certificates, r.technicianId, r.reportDate, r.method)
+                  : null
+                const certOk = coverage?.state === 'covered'
                 const inWindow = isWithin(r.reportDate, b.book.constructionStart, b.book.constructionEnd)
                 const wrongJob =
                   (r.referencedPad ?? '').toUpperCase() !== (b.book.drillPadName ?? '').toUpperCase() ||
@@ -147,8 +150,16 @@ export default async function NdePage({ params }: { params: Promise<{ bookId: st
                     <Td className="text-ink-secondary">{r.ndtCompany}</Td>
                     <Td className="text-ink-secondary">
                       {tech?.fullName ?? '—'}
-                      {tech && !certOk && (
+                      {tech && coverage?.state === 'no_cert' && (
                         <Chip tone="critical" className="ml-1.5">cert not valid on this date</Chip>
+                      )}
+                      {tech && coverage?.state === 'methods_unrecorded' && (
+                        <Chip tone="progress" className="ml-1.5">methods not recorded</Chip>
+                      )}
+                      {tech && coverage?.state === 'method_not_covered' && (
+                        <Chip tone="critical" className="ml-1.5">
+                          not certified for {r.method} (holds {coverage.covers.join(', ')})
+                        </Chip>
                       )}
                     </Td>
                     <Td className="tnum text-right font-mono">{num(r.lines?.length ?? 0)}</Td>

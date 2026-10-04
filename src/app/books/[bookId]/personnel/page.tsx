@@ -138,7 +138,9 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
           <CardHeader><CardTitle>NDT technicians</CardTitle></CardHeader>
           <CardBody className="p-0">
             <Table>
-              <thead><tr><Th>Technician</Th><Th>Class</Th><Th>Expires</Th><Th>Status</Th></tr></thead>
+              <thead><tr>
+                <Th>Technician</Th><Th>Class</Th><Th>Methods</Th><Th>Expires</Th><Th>Status</Th>
+              </tr></thead>
               <tbody>
                 {b.ndtTechnicians.map((t) => {
                   const cert = certHistory(b.certificates, 'ndt_technician', t.id)[0] ?? null
@@ -154,6 +156,16 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
                       <Td>{t.fullName}
                         <div className="text-2xs text-ink-muted">{t.employer}</div></Td>
                       <Td className="text-ink-secondary">{t.classification ?? '—'}</Td>
+                      {/* ASNT certifies per method. "Class" above is the
+                          employer's category and says nothing about what
+                          this person may sign. */}
+                      <Td>
+                        {cert?.ndtMethods && cert.ndtMethods.length > 0
+                          ? <span className="font-mono text-ink-secondary">
+                              {cert.ndtMethods.join(', ')}
+                            </span>
+                          : <Chip tone="progress">Not recorded</Chip>}
+                      </Td>
                       <Td className="tnum font-mono text-ink-secondary">{e.expiresOn ?? '—'}</Td>
                       <Td>
                         <Chip tone={chip.tone}>{chip.label}</Chip>

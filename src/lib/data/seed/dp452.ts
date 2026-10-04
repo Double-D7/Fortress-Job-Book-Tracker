@@ -35,7 +35,7 @@
  */
 import type {
   Certificate, Cwi, CpTestPoint, DocumentRecord, JobBook, JobBookBundle,
-  JobBookSection, MaterialHeat, NdeReport, NdeReportLine, NdtTechnician,
+  JobBookSection, MaterialHeat, NdeReport, NdeReportLine, NdtMethod, NdtTechnician,
   SectionDefinition, TorqueConnection, TorqueWrench, Weld, WeldLine, Welder,
   WelderQualification,
 } from '@/lib/domain/types'
@@ -238,6 +238,21 @@ export function buildDp452Bundle(): JobBookBundle {
     // Certification lapsed mid-job; reports written after it are findings.
     { id: 'ndt-4', fullName: 'Owen Castillo', initials: 'OC', employer: 'Desert', classification: 'Formal', active: true },
   ]
+
+  /**
+   * What each technician's ASNT card actually covers.
+   *
+   * `classification` above is TEAM's employment category, not a method,
+   * which is exactly the confusion that let a PT-certified technician
+   * pass an RT report. Marcus Bell signs the PT report as well as
+   * radiographs, so his card carries both.
+   */
+  const NDT_METHODS: Record<string, NdtMethod[]> = {
+    'ndt-1': ['RT', 'PT'],
+    'ndt-2': ['RT', 'UT'],
+    'ndt-3': ['RT', 'MT'],
+    'ndt-4': ['RT'],
+  }
 
   // -------------------------------------------------------------------
   // Weld lines and welds
@@ -682,6 +697,11 @@ export function buildDp452Bundle(): JobBookBundle {
       id: `cert-ndt-${t.id}`, jobBookId: book.id,
       subjectType: 'ndt_technician' as const, subjectId: t.id,
       certType: `ASNT Level II — ${t.classification}`, issuingBody: t.employer ?? null,
+      // ASNT certifies per method, so the card lists what it covers.
+      // This book is the well-kept one, and every technician's card
+      // covers the methods they actually signed for. The Greeley book
+      // leaves these unrecorded, which is the other half of the picture.
+      ndtMethods: NDT_METHODS[t.id] ?? ['RT'],
       issueDate: '2022-03-01',
       // Owen Castillo's card lapses at the end of 2024, mid-job.
       expiryDate: t.id === 'ndt-4' ? '2024-12-31' : '2026-03-01',

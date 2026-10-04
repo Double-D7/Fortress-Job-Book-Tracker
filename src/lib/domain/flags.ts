@@ -14,7 +14,7 @@ import type {
   Certificate, ComplianceFlag, FlagSeverity, IsoDate, JobBookBundle, Weld,
 } from './types'
 import { today } from './dates'
-import { certValidOn, evaluateCert } from './certificates'
+import { certValidOn, evaluateCert, ndtMethodCoverage } from './certificates'
 import { checkWrenchCalibration, isInspected, reconcileWrenches, suggestWrenchTypo, torqueTotals, torqueWithinTolerance } from './torque'
 import {
   checkFlatRule, creditedWelders, isCountable, isXrayed, qualificationOn, qualifiedOn,
@@ -325,24 +325,74 @@ export function ruleWrenchCalibrationInvalid(b: JobBookBundle): Finding[] {
   return cap('torque.wrench_calibration', out)
 }
 
-/** An NDE report written by a technician whose certification did not cover
- *  the report date. */
+/**
+ * An NDE report signed by a technician whose certification does not cover
+ * it — in date, or in method.
+ *
+ * Method is not a detail. ASNT SNT-TC-1A certifies per method, so a
+ * technician holding PT Level II and nothing else is unqualified to
+ * interpret an RT film, however current that PT card is. Checking only
+ * the date passed exactly that report, which is the kind of gap an
+ * auditor finds and we should have.
+ *
+ * Three different problems, kept apart because the remedy differs: the
+ * card is missing, the card is on file but unread, or the card is read
+ * and genuinely does not cover this method. Only the last is a finding
+ * against the technician.
+ */
 export function ruleNdeTechnicianNotCertified(b: JobBookBundle): Finding[] {
   const out: Finding[] = []
   for (const r of b.ndeReports) {
     if (r.isSuperseded || !r.technicianId) continue
-    if (certValidOn(b.certificates, 'ndt_technician', r.technicianId, r.reportDate)) continue
+    const coverage = ndtMethodCoverage(b.certificates, r.technicianId, r.reportDate, r.method)
+    if (coverage.state === 'covered') continue
+
     const tech = b.ndtTechnicians.find((t) => t.id === r.technicianId)
+    const who = tech?.fullName ?? r.technicianId
+    const report = `Report ${r.reportNumber ?? r.id} is dated ${r.reportDate} and is a ${r.method} report.`
+
+    if (coverage.state === 'no_cert') {
+      out.push({
+        ruleId: 'nde.technician_not_certified_on_report_date',
+        severity: 'critical',
+        title: `NDT technician ${who} was not certified on ${r.reportDate}`,
+        detail: `${report} No certification for ${tech?.fullName ?? 'this technician'} covers that date.`,
+        entityType: 'nde_report', entityId: r.id, sectionNumber: '8',
+        fingerprint: fp('nde.technician_not_certified_on_report_date', r.id),
+      })
+      continue
+    }
+
+    if (coverage.state === 'methods_unrecorded') {
+      out.push({
+        ruleId: 'nde.technician_cert_methods_unrecorded',
+        // Warning, not critical: we do not know that anything is wrong,
+        // only that we cannot show it is right. The critical finding is
+        // reserved for a card that was read and does not cover the method.
+        severity: 'warning',
+        title: `Which methods ${who} is certified for has not been recorded`,
+        detail: `${report} A certification on file covers the date, but the methods it ` +
+          `certifies have not been entered, so there is no way to show ${r.method} is one ` +
+          `of them. Record the methods from the card to clear this.`,
+        entityType: 'nde_report', entityId: r.id, sectionNumber: '8',
+        fingerprint: fp('nde.technician_cert_methods_unrecorded', r.id),
+      })
+      continue
+    }
+
     out.push({
-      ruleId: 'nde.technician_not_certified_on_report_date',
+      ruleId: 'nde.technician_not_certified_for_method',
       severity: 'critical',
-      title: `NDT technician ${tech?.fullName ?? r.technicianId} was not certified on ${r.reportDate}`,
-      detail: `Report ${r.reportNumber ?? r.id} is dated ${r.reportDate}. No certification for ` +
-        `${tech?.fullName ?? 'this technician'} covers that date.`,
+      title: `NDT technician ${who} is not certified for ${r.method}`,
+      detail: `${report} The certification on file for ${tech?.fullName ?? 'this technician'} ` +
+        `covers ${coverage.covers.join(', ')} and does not cover ${r.method}.`,
       entityType: 'nde_report', entityId: r.id, sectionNumber: '8',
-      fingerprint: fp('nde.technician_not_certified_on_report_date', r.id),
+      fingerprint: fp('nde.technician_not_certified_for_method', r.id),
     })
   }
+  // One list, in report order. `aggregateFindings` groups by ruleId
+  // downstream, so the three kinds separate there without this having to
+  // sort them.
   return cap('nde.technician_not_certified_on_report_date', out)
 }
 
