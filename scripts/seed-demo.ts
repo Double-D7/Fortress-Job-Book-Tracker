@@ -1219,8 +1219,15 @@ writeFileSync('supabase/demo/seed-demo.sql', sql.filter(Boolean).join('\n') + '\
 const TABLES_IN_DELETE_ORDER = [
   'compliance_flag', 'gate_condition', 'gate_review', 'weld', 'torque_connection',
   'nde_report_line', 'nde_report', 'material_heat', 'pressure_test', 'cp_test_point',
-  'ut_reading', 'coating_inspection', 'document', 'weld_line', 'certificate',
-  'welder_qualification', 'welder', 'cwi', 'ndt_technician', 'torque_wrench',
+  'ut_reading', 'coating_inspection',
+  // Before `document`, not after it: welder_qualification.document_id
+  // points at a document and does NOT cascade, so deleting the documents
+  // first would fail the moment a qualification carries its filed
+  // certificate. Today every seeded qualification leaves that column
+  // null, which is the only reason the old order ever worked.
+  'welder_qualification',
+  'document', 'weld_line', 'certificate',
+  'welder', 'cwi', 'ndt_technician', 'torque_wrench',
   'timeliness_period', 'job_book_section', 'inspector_grant',
   // §10: findings hang off audits. The certification is keyed on the
   // book rather than on an id of its own, so it is removed separately.
