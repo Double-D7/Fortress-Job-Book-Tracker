@@ -157,19 +157,47 @@ export function libraryPath(filename: string): PlannedFile {
 }
 
 /**
+ * Where a shared personnel credential goes.
+ *
+ * Beside the mill certificates and for the same reason: a technician's
+ * ASNT card is the same card on every job they work, so filing it under
+ * one book would make it findable only by somebody who already knew
+ * which book that was.
+ *
+ * Its own folder rather than mixed in with the material, because the
+ * two get asked for by different people. An auditor chasing traceability
+ * wants the heats; somebody checking who was qualified wants this.
+ */
+export function credentialLibraryPath(filename: string): PlannedFile {
+  return {
+    folders: [LIBRARY_FOLDER, 'Personnel Credentials'],
+    filename: safeSegment(filename),
+  }
+}
+
+/**
  * Where a replaced mill certificate goes.
  *
  * The library belongs to no book, so it needs its own superseded folder
  * rather than borrowing one — a certificate filed under some book that
  * merely happened to use that heat would be findable only by somebody who
  * already knew which book that was.
+ *
+ * `area` keeps the two libraries apart once superseded. Without it a
+ * withdrawn card and a withdrawn mill certificate sharing a filename on
+ * the same day would overwrite one another, which is the quiet kind of
+ * loss this whole folder exists to prevent.
  */
 export function librarySupersededPath(
   filename: string,
   supersededOn: string,
+  area: 'Material Test Reports' | 'Personnel Credentials' = 'Material Test Reports',
 ): PlannedFile {
   return {
-    folders: [LIBRARY_FOLDER, SUPERSEDED_FOLDER, safeSegment(supersededOn.slice(0, 10))],
+    folders: [
+      LIBRARY_FOLDER, SUPERSEDED_FOLDER,
+      safeSegment(supersededOn.slice(0, 10)), safeSegment(area),
+    ],
     filename: safeSegment(filename),
   }
 }

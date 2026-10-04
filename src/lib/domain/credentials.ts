@@ -129,6 +129,46 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
   return out
 }
 
+/**
+ * What the stored file is called.
+ *
+ * Named for the person and the card rather than kept as whatever the
+ * phone called it, so the SharePoint copy is legible to somebody who
+ * never opens this application. The extension is preserved because it
+ * is what decides whether a browser previews the page or downloads a
+ * blob.
+ */
+export function credentialFilename(
+  entry: { certType: string; issueDate: string }, originalFilename: string,
+): string {
+  const ext = originalFilename.toLowerCase().split('.').pop() ?? 'pdf'
+  const safe = (s: string) => s.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '')
+  return `${safe(entry.certType)}_${entry.issueDate}.${safe(ext) || 'pdf'}`
+}
+
+/**
+ * Narrowing the library list.
+ *
+ * One function so the two providers cannot disagree about what a search
+ * matches, which is the drift this codebase keeps paying for. Matches
+ * the person, the certificate type, the issuer and the methods, because
+ * "who is certified for RT" is a question somebody will ask.
+ */
+export function filterPersonnelLibrary<
+  T extends {
+    personName: string; certType: string
+    issuingBody?: string | null; ndtMethods?: readonly string[] | null
+  },
+>(entries: T[], search?: string): T[] {
+  const q = (search ?? '').trim().toLowerCase()
+  if (!q) return entries
+  return entries.filter((e) =>
+    e.personName.toLowerCase().includes(q)
+    || e.certType.toLowerCase().includes(q)
+    || (e.issuingBody ?? '').toLowerCase().includes(q)
+    || (e.ndtMethods ?? []).some((m) => m.toLowerCase() === q))
+}
+
 /** Where this credential files, by the book's own section numbering. */
 export function credentialSection(subjectType: CredentialSubject): string {
   return subjectType === 'cwi' ? '7' : '8'

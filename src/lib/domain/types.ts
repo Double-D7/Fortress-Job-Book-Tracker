@@ -458,8 +458,19 @@ export interface Certificate {
   issueDate: IsoDate | null
   expiryDate?: IsoDate | null
   documentId?: string | null
+  /**
+   * The library card this register entry was pulled from.
+   *
+   * Null for a certificate filed against this book by hand, which is
+   * what keeps the two from colliding: a pulled entry is replaceable by
+   * the library, a hand-filed one belongs to whoever typed it.
+   */
+  credentialLibraryId?: string | null
   verifiedBy?: string | null
   verifiedAt?: string | null
+  /** Set when the library card behind this entry is withdrawn, so no
+   *  book keeps claiming a credential the library no longer supports. */
+  deletedAt?: string | null
 }
 
 export interface WeldLine {
@@ -673,6 +684,45 @@ export interface MaterialHeat extends EnteredRecord {
  * certificate wherever that steel was used, and filing it per-book means
  * filing it repeatedly and losing it individually.
  */
+/**
+ * A card in the personnel credential library.
+ *
+ * The same card on every job the person works, which is why it lives
+ * here rather than on a book. A book gets its own `Certificate` row
+ * pulled from this one when the person signs something on it; see
+ * migration 0043.
+ */
+export interface PersonnelCredential {
+  id: string
+  /** Only ever `cwi` or `ndt_technician`. A welder's qualification has
+   *  its own register and an instrument's calibration is not a person's
+   *  credential. */
+  subjectType: Extract<CertSubjectType, 'cwi' | 'ndt_technician'>
+  subjectId: string
+  certType: string
+  issuingBody?: string | null
+  /** Required here, unlike the book register, which tolerates an unread
+   *  page. Nothing enters the library unread: the point of it is to
+   *  answer "was this person covered on that date" without opening the
+   *  file. */
+  issueDate: IsoDate
+  expiryDate?: IsoDate | null
+  /** Which methods an NDT card certifies. Null is "not recorded", which
+   *  certifies nothing. */
+  ndtMethods?: NdtMethod[] | null
+  storagePath: string
+  originalFilename: string
+  normalizedFilename: string
+  sha256: string
+  byteSize?: number | null
+  pageCount?: number | null
+  mimeType?: string | null
+  notes?: string | null
+  uploadedBy?: string | null
+  uploadedAt: string
+  deletedAt?: string | null
+}
+
 export interface MtrDocument {
   id: string
   /** As the mill wrote it, uppercased. Matching is on letters and digits

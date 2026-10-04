@@ -15,7 +15,8 @@
  * a PostgREST error code.
  */
 import type {
-  CompetencyLevel, GateReview, JobBookBundle, MtrDocument, UserRole,
+  CompetencyLevel, GateReview, JobBookBundle, MtrDocument, PersonnelCredential,
+  UserRole,
 } from '@/lib/domain/types'
 import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
@@ -23,7 +24,7 @@ import type {
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NdeImportPreview, NdeImportResult,
   CalibrationImportPreview, CalibrationImportResult,
-  ErrorReportRow, NoteInput, NotificationItem, Operator,
+  ErrorReportRow, NoteInput, NotificationItem, Operator, PersonnelLibraryEntry,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
@@ -35,7 +36,8 @@ import { heatKey, normalizeHeat } from '@/lib/domain/heats'
 import { applyCertificate, calibrationRegisterEntry } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
 import {
-  credentialToCertificate, validateCredential, type CredentialInput,
+  credentialFilename, credentialToCertificate, filterPersonnelLibrary,
+  validateCredential, type CredentialInput,
 } from '@/lib/domain/credentials'
 import {
   buildOverviewPreview, buildPressureTestPreview, buildTorqueLogPreview,
@@ -1307,29 +1309,108 @@ export class SupabaseProvider implements DataProvider {
       if (!known) return { ok: false, error: 'That person is not on this book\'s roster.' }
     }
 
-    // The page itself. Filed before the certificate row so a row never
-    // points at a document that failed to store.
-    const filed = await this.fileSourceDocument(
-      viewer, bundle,
-      input.subjectType === 'cwi' ? 'cwi_certificate' : 'ndt_certificate',
-      file, filename,
-    )
-    if (!filed.ok) return { ok: false, error: filed.error }
+    // The page itself, into the library's own area of the bucket. Not
+    // `fileSourceDocument`, which files into one book's section: a card
+    // belongs to the person, and 0043 is what puts a copy of the record
+    // into each book they work.
+    const sha256 = createHash('sha256').update(file).digest('hex')
+    const storagePath = `personnel-library/${sha256}`
+    const up = await supabase.storage.from(DOCUMENT_BUCKET).upload(storagePath, file, {
+      contentType: sourceMimeType(filename),
+      upsert: true,
+    })
+    if (up.error) {
+      return { ok: false, error: `Could not store the certificate: ${up.error.message}` }
+    }
 
     const entry = credentialToCertificate(input, subjectId)
-    // Keyed on person, type and issue date, so re-filing the same card
-    // replaces it and a renewal files alongside rather than over.
-    const { error: certError } = await supabase.from('certificate').upsert(
+    // Bytes first, row second, and the row is what makes the card
+    // exist: an object with no row is invisible, a row with no object is
+    // a download that fails in front of an auditor.
+    const { error: cardError } = await supabase.from('personnel_credential').upsert(
       domainToRow({
-        id: recordId('certificate', subjectId, entry.certType, entry.issueDate),
-        jobBookId, ...entry, documentId: filed.documentId,
-      }, COLUMNS.certificate),
-      { onConflict: 'id' },
+        ...entry,
+        storagePath,
+        originalFilename: filename,
+        normalizedFilename: credentialFilename(entry, filename),
+        sha256,
+        byteSize: file.byteLength,
+        mimeType: sourceMimeType(filename),
+        uploadedBy: viewer.id,
+      }, COLUMNS.personnel_credential),
+      { onConflict: 'subject_id,cert_type,issue_date' },
     )
-    if (certError) return { ok: false, error: describe(certError) }
+    if (cardError) {
+      // Leave no object behind that no row points at, unless another
+      // card already filed from the same bytes is still using the path.
+      const { count } = await supabase
+        .from('personnel_credential').select('id', { count: 'exact', head: true })
+        .eq('storage_path', storagePath).is('deleted_at', null)
+      if ((count ?? 0) === 0) {
+        await supabase.storage.from(DOCUMENT_BUCKET).remove([storagePath])
+      }
+      return { ok: false, error: describe(cardError) }
+    }
 
+    // Nothing writes the book's register here. The triggers from 0043
+    // pull the card into every book this person has signed something
+    // on, including this one, and into books they work later.
     await this.refreshScores(jobBookId, viewer)
     return { ok: true }
+  }
+
+  async listPersonnelLibrary(
+    viewer: Viewer, search?: string,
+  ): Promise<PersonnelLibraryEntry[]> {
+    const supabase = await createClient()
+    let q = supabase.from('personnel_credential').select('*')
+      .is('deleted_at', null).order('uploaded_at', { ascending: false })
+    const { data } = await q
+    const cards = rowsToDomain<PersonnelCredential>(data)
+    if (cards.length === 0) return []
+
+    // Names and usage in two reads rather than per card.
+    const [{ data: cwis }, { data: techs }, { data: pulled }] = await Promise.all([
+      supabase.from('cwi').select('id, full_name').is('deleted_at', null),
+      supabase.from('ndt_technician').select('id, full_name').is('deleted_at', null),
+      supabase.from('certificate').select('credential_library_id, job_book_id')
+        .in('credential_library_id', cards.map((c) => c.id)).is('deleted_at', null),
+    ])
+    const nameById = new Map<string, string>([
+      ...(cwis ?? []).map((r) => [r.id as string, r.full_name as string] as const),
+      ...(techs ?? []).map((r) => [r.id as string, r.full_name as string] as const),
+    ])
+    const booksByCard = new Map<string, Set<string>>()
+    for (const r of pulled ?? []) {
+      const key = r.credential_library_id as string
+      if (!booksByCard.has(key)) booksByCard.set(key, new Set())
+      booksByCard.get(key)!.add(r.job_book_id as string)
+    }
+
+    const entries = cards.map((c) => ({
+      ...c,
+      personName: nameById.get(c.subjectId) ?? 'Unknown person',
+      referencedByBooks: booksByCard.get(c.id)?.size ?? 0,
+    }))
+    return filterPersonnelLibrary(entries, search)
+  }
+
+  async withdrawPersonnelCredential(
+    viewer: Viewer, credentialId: string, reason: string,
+  ): Promise<ActionResult> {
+    if (!WRITERS.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to withdraw a credential.' }
+    }
+    if (!reason.trim()) {
+      return { ok: false, error: 'Withdrawing a credential needs a reason.' }
+    }
+    const supabase = await createClient()
+    // Soft delete, matching the MTR library: retention outlives the
+    // correction, and the trigger on deleted_at un-files it everywhere.
+    const { error } = await supabase.from('personnel_credential')
+      .update({ deleted_at: new Date().toISOString(), notes: reason.trim() })
+      .eq('id', credentialId).is('deleted_at', null)
+    return error ? { ok: false, error: describe(error) } : { ok: true }
   }
 
   async previewPressureTestImport(

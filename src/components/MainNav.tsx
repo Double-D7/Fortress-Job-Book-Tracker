@@ -21,6 +21,7 @@ import type { UserRole } from '@/lib/domain/types'
 const LINKS: { href: string; label: string; needs?: Capability }[] = [
   { href: '/', label: 'Job books' },
   { href: '/mtr', label: 'Mill certificates', needs: 'view_internal' },
+  { href: '/credentials', label: 'Credentials', needs: 'view_internal' },
   { href: '/admin', label: 'Administration', needs: 'view_internal' },
 ]
 

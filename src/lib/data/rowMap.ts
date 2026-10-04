@@ -150,6 +150,15 @@ export const COLUMNS = {
     // and certifies nothing.
     'ndt_methods',
   ],
+  // The personnel credential library (0042). A card belongs to the
+  // person, not to a book; `certificate` rows are pulled from it.
+  personnel_credential: [
+    'id', 'subject_type', 'subject_id', 'cert_type', 'issuing_body',
+    'issue_date', 'expiry_date', 'ndt_methods', 'storage_path',
+    'original_filename', 'normalized_filename', 'sha256', 'byte_size',
+    'page_count', 'mime_type', 'notes', 'uploaded_by', 'uploaded_at',
+    'deleted_at',
+  ],
   // Added when calibration certificates became filable. Every column but
   // `created_at`, which the table defaults and nothing here sets.
   torque_wrench: [

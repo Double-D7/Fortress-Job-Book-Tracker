@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   DATA_FOLDER, LIBRARY_FOLDER, MAX_PATH, SUPERSEDED_FOLDER, UNFILED,
-  bookFolder, dataPath, documentPath, joinPath, libraryPath,
+  bookFolder, credentialLibraryPath, dataPath, documentPath, joinPath, libraryPath,
   librarySupersededPath, pathTooLong,
   safeSegment, sectionFolder, supersededPath,
 } from '../../supabase/functions/_shared/backupPaths'
@@ -81,12 +81,38 @@ describe('the folders that are not a section', () => {
   })
 })
 
+describe('a personnel credential in the library', () => {
+  it('files beside the mill certificates, not inside any book', () => {
+    // A technician's card is the same card on every job they work, in
+    // exactly the way a mill certificate is.
+    const p = credentialLibraryPath('ASNT_Level_II_2025-01-15.pdf')
+    expect(p.folders).toEqual([LIBRARY_FOLDER, 'Personnel Credentials'])
+    expect(p.filename).toBe('ASNT_Level_II_2025-01-15.pdf')
+  })
+
+  it('does not share a folder with the material, which is asked for by different people', () => {
+    expect(joinPath(credentialLibraryPath('x.pdf')))
+      .not.toBe(joinPath(libraryPath('x.pdf')))
+  })
+})
+
 describe('a mill certificate that has been replaced', () => {
   it('is kept under the library, not under some book that used the heat', () => {
     // Filing it under a book would make it findable only by somebody who
     // already knew which of the books using that heat it had been put in.
     const p = librarySupersededPath('D07821.pdf', '2026-09-29T14:00:00Z')
-    expect(p.folders).toEqual([LIBRARY_FOLDER, SUPERSEDED_FOLDER, '2026-09-29'])
+    expect(p.folders).toEqual([
+      LIBRARY_FOLDER, SUPERSEDED_FOLDER, '2026-09-29', 'Material Test Reports',
+    ])
+  })
+
+  it('keeps a withdrawn credential apart from a withdrawn mill certificate', () => {
+    // Same filename, same day, two libraries. Without the area folder
+    // one would overwrite the other, which is the quiet kind of loss
+    // the superseded folder exists to prevent.
+    const mtr = librarySupersededPath('CARD.pdf', '2026-09-29T14:00:00Z')
+    const card = librarySupersededPath('CARD.pdf', '2026-09-29T14:00:00Z', 'Personnel Credentials')
+    expect(joinPath(mtr)).not.toBe(joinPath(card))
   })
 
   it('does not collide with its own earlier version', () => {

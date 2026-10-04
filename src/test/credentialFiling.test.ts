@@ -164,7 +164,20 @@ describe('filing one, end to end', () => {
     return books[0]!.id
   }
 
-  it('adds the person and files the card in one action', async () => {
+  /** A seed book that actually has somebody signing NDE reports on it,
+   *  found rather than assumed: the first book in the list has none,
+   *  and a test that hard-codes an index breaks on the next seed. */
+  async function bookWithASignedReport(): Promise<{ id: string; techId: string }> {
+    const p = getDataProvider()
+    for (const summary of await p.listJobBooks(admin)) {
+      const b = await p.getBundle(admin, summary.id)
+      const signed = b?.ndeReports.find((r) => r.technicianId)
+      if (signed) return { id: summary.id, techId: signed.technicianId! }
+    }
+    throw new Error('no seed book has a signed NDE report')
+  }
+
+  it('adds the person and files the card to the library in one action', async () => {
     const p = getDataProvider()
     const id = await firstBook()
     const before = (await p.getBundle(admin, id))!.ndtTechnicians.length
@@ -176,10 +189,78 @@ describe('filing one, end to end', () => {
 
     const after = (await p.getBundle(admin, id))!
     expect(after.ndtTechnicians.length).toBe(before + 1)
-    const dale = after.ndtTechnicians.find((t) => t.fullName === 'Dale Whitcomb')
-    expect(dale).toBeDefined()
-    expect(certValidOn(after.certificates, 'ndt_technician', dale!.id, '2026-01-01',
-      { method: 'RT' })).not.toBeNull()
+
+    const card = (await p.listPersonnelLibrary(admin))
+      .find((c) => c.personName === 'Dale Whitcomb')
+    expect(card).toBeDefined()
+    expect(card!.ndtMethods).toEqual(['RT', 'UT'])
+  })
+
+  it('does not put the card on a book the person has not worked', async () => {
+    // The whole point of scoping it. A turnover package lists the people
+    // who worked that job, not everybody Fortress has ever certified.
+    const p = getDataProvider()
+    const id = await firstBook()
+    await p.fileCredential(admin, id, input({ fullName: 'Never Worked Here' }),
+      pdf('never'), 'never.pdf')
+    const b = (await p.getBundle(admin, id))!
+    const person = b.ndtTechnicians.find((t) => t.fullName === 'Never Worked Here')!
+    expect(b.certificates.some((c) => c.subjectId === person.id)).toBe(false)
+  })
+
+  it('pulls the card onto every book the person has signed a report on', async () => {
+    // The half that makes the library worth having: file once, and the
+    // books they already worked resolve by themselves.
+    const p = getDataProvider()
+    const { id, techId } = await bookWithASignedReport()
+
+    const res = await p.fileCredential(admin, id, input({
+      subjectId: techId, fullName: null,
+      certType: 'ASNT Level II (library pull test)', ndtMethods: ['RT', 'PT', 'MT', 'UT'],
+      issueDate: '2020-01-01', expiryDate: '2030-01-01',
+    }), pdf('pull'), 'pull.pdf')
+    expect(res.ok).toBe(true)
+
+    const after = (await p.getBundle(admin, id))!
+    const pulled = after.certificates.filter(
+      (c) => c.subjectId === techId && c.credentialLibraryId && !c.deletedAt)
+    expect(pulled.length).toBe(1)
+    expect(certValidOn(after.certificates, 'ndt_technician', techId, '2025-06-01',
+      { method: 'UT' })).not.toBeNull()
+  })
+
+  it('withdrawing a card stops every book claiming it is on file', async () => {
+    const p = getDataProvider()
+    const { id, techId } = await bookWithASignedReport()
+
+    await p.fileCredential(admin, id, input({
+      subjectId: techId, fullName: null,
+      certType: 'ASNT Level II (withdrawal test)', ndtMethods: ['RT'],
+      issueDate: '2021-02-02', expiryDate: '2031-02-02',
+    }), pdf('withdraw'), 'withdraw.pdf')
+
+    const card = (await p.listPersonnelLibrary(admin))
+      .find((c) => c.certType === 'ASNT Level II (withdrawal test)')!
+    expect(card.referencedByBooks).toBeGreaterThan(0)
+
+    const res = await p.withdrawPersonnelCredential(admin, card.id, 'Superseded')
+    expect(res.ok).toBe(true)
+
+    const after = (await p.getBundle(admin, id))!
+    expect(after.certificates.some(
+      (c) => c.credentialLibraryId === card.id && !c.deletedAt)).toBe(false)
+    expect((await p.listPersonnelLibrary(admin)).some((c) => c.id === card.id)).toBe(false)
+  })
+
+  it('refuses to withdraw without a reason', async () => {
+    const p = getDataProvider()
+    const id = await firstBook()
+    await p.fileCredential(admin, id, input({
+      fullName: 'Reasonless Withdrawal', certType: 'ASNT Level II (reason test)',
+    }), pdf('reason'), 'reason.pdf')
+    const card = (await p.listPersonnelLibrary(admin))
+      .find((c) => c.certType === 'ASNT Level II (reason test)')!
+    expect((await p.withdrawPersonnelCredential(admin, card.id, '   ')).ok).toBe(false)
   })
 
   it('files the card itself, not just the dates', async () => {
@@ -193,17 +274,21 @@ describe('filing one, end to end', () => {
     expect((await p.getBundle(admin, id))!.documents.length).toBe(before + 1)
   })
 
-  it('makes the method it recorded the method that counts', async () => {
+  it('carries the recorded methods through to the book it is pulled onto', async () => {
     const p = getDataProvider()
-    const id = await firstBook()
+    const { id, techId } = await bookWithASignedReport()
+
     await p.fileCredential(admin, id, input({
-      fullName: 'Pat Mercer', ndtMethods: ['PT'],
+      subjectId: techId, fullName: null,
+      certType: 'ASNT Level II (method test)', ndtMethods: ['PT'],
+      issueDate: '2019-03-03', expiryDate: '2029-03-03',
     }), pdf('mercer'), 'mercer-asnt.pdf')
+
     const b = (await p.getBundle(admin, id))!
-    const pat = b.ndtTechnicians.find((t) => t.fullName === 'Pat Mercer')!
-    expect(ndtMethodCoverage(b.certificates, pat.id, '2026-01-01', 'PT').state).toBe('covered')
-    expect(ndtMethodCoverage(b.certificates, pat.id, '2026-01-01', 'RT').state)
-      .toBe('method_not_covered')
+    const pulled = b.certificates.filter(
+      (c) => c.certType === 'ASNT Level II (method test)')
+    expect(pulled).toHaveLength(1)
+    expect(pulled[0]!.ndtMethods).toEqual(['PT'])
   })
 
   it('files a CWI card into the roster it belongs to', async () => {
@@ -223,9 +308,9 @@ describe('filing one, end to end', () => {
     const id = await firstBook()
     const card = input({ fullName: 'Desmond Clary' })
     await p.fileCredential(admin, id, card, pdf('clary'), 'clary.pdf')
-    const once = (await p.getBundle(admin, id))!.certificates.length
+    const once = (await p.listPersonnelLibrary(admin, 'Desmond Clary')).length
     await p.fileCredential(admin, id, card, pdf('clary'), 'clary.pdf')
-    expect((await p.getBundle(admin, id))!.certificates.length).toBe(once)
+    expect((await p.listPersonnelLibrary(admin, 'Desmond Clary')).length).toBe(once)
   })
 
   it('files a renewal alongside the old card rather than over it', async () => {
@@ -236,11 +321,11 @@ describe('filing one, end to end', () => {
     await p.fileCredential(admin, id, input({
       fullName: 'Lorna Pike', issueDate: '2022-01-10', expiryDate: '2025-01-10',
     }), pdf('pike-old'), 'pike-2022.pdf')
-    const once = (await p.getBundle(admin, id))!.certificates.length
+    const once = (await p.listPersonnelLibrary(admin, 'Lorna Pike')).length
     await p.fileCredential(admin, id, input({
       fullName: 'Lorna Pike', issueDate: '2025-01-11', expiryDate: '2028-01-11',
     }), pdf('pike-new'), 'pike-2025.pdf')
-    expect((await p.getBundle(admin, id))!.certificates.length).toBe(once + 1)
+    expect((await p.listPersonnelLibrary(admin, 'Lorna Pike')).length).toBe(once + 1)
   })
 
   it('refuses a third party inspector', async () => {
@@ -255,6 +340,7 @@ describe('filing one, end to end', () => {
     const p = getDataProvider()
     const id = await firstBook()
     const before = (await p.getBundle(admin, id))!
+    const beforeCards = (await p.listPersonnelLibrary(admin)).length
     const res = await p.fileCredential(admin, id, input({
       fullName: 'Unwritten Person', ndtMethods: [],
     }), pdf('invalid'), 'x.pdf')
@@ -263,5 +349,6 @@ describe('filing one, end to end', () => {
     expect(after.certificates.length).toBe(before.certificates.length)
     expect(after.documents.length).toBe(before.documents.length)
     expect(after.ndtTechnicians.length).toBe(before.ndtTechnicians.length)
+    expect((await p.listPersonnelLibrary(admin)).length).toBe(beforeCards)
   })
 })

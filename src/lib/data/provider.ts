@@ -20,7 +20,7 @@ import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
 import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
 import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
 import type { Division } from '@/lib/domain/divisions'
-import type { MtrDocument } from '@/lib/domain/types'
+import type { MtrDocument, PersonnelCredential } from '@/lib/domain/types'
 import { heatKey, normalizeHeat, sameHeat } from '@/lib/domain/heats'
 import { resolveTechnician } from '@/lib/domain/welders'
 import { extractPdfText } from '@/lib/import/pdfText'
@@ -38,7 +38,8 @@ import {
 } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
 import {
-  credentialToCertificate, validateCredential, type CredentialInput,
+  credentialFilename, credentialToCertificate, filterPersonnelLibrary,
+  validateCredential, type CredentialInput,
 } from '@/lib/domain/credentials'
 import { createHash } from 'node:crypto'
 import { normalizeFilename } from '@/lib/domain/upload'
@@ -432,6 +433,19 @@ export interface DataProvider {
     file: Uint8Array, filename: string,
   ): Promise<ActionResult>
 
+  // -- The personnel credential library, §7 and §8 -----------------------
+
+  /** Every credential on file, newest first. Fortress staff see the
+   *  whole library; anyone else sees only cards pulled onto a book they
+   *  can read, which RLS enforces rather than this. */
+  listPersonnelLibrary(viewer: Viewer, search?: string): Promise<PersonnelLibraryEntry[]>
+
+  /** Withdraw a card. Every book that pulled it stops claiming it is on
+   *  file, rather than keeping a claim the library no longer supports. */
+  withdrawPersonnelCredential(
+    viewer: Viewer, credentialId: string, reason: string,
+  ): Promise<ActionResult>
+
   /** The same two steps for the pressure test hold sheet (§17). */
   previewPressureTestImport(
     viewer: Viewer, jobBookId: string, file: Uint8Array, filename: string,
@@ -547,6 +561,15 @@ export interface DataProvider {
 }
 
 /** One library row, with how many books lean on it. */
+export interface PersonnelLibraryEntry extends PersonnelCredential {
+  /** The person's name, resolved from whichever roster they are on, so
+   *  the library reads as a list of people rather than of uuids. */
+  personName: string
+  /** How many books have pulled this card in. Shown so somebody about
+   *  to withdraw one can see what it would un-file. */
+  referencedByBooks: number
+}
+
 export interface MtrLibraryEntry extends MtrDocument {
   /** Heats across all books that resolve to this certificate. Shown so
    *  somebody about to withdraw one can see what it would un-file. */
@@ -1334,6 +1357,9 @@ class SeedProvider implements DataProvider {
    * empty when nothing is wrong. It starts empty and stays empty.
    */
   private errorReports: ErrorReportRow[] = []
+  /** The personnel credential library. Global, like the two rosters it
+   *  hangs off, and deliberately not part of any book's bundle. */
+  private personnelLibrary: PersonnelCredential[] = []
 
   async listErrorReports(viewer: Viewer, limit = 50): Promise<ErrorReportRow[]> {
     if (!can(viewer.role, 'view_internal')) return []
@@ -2174,19 +2200,126 @@ class SeedProvider implements DataProvider {
     }
 
     const entry = credentialToCertificate(input, subjectId)
-    const id = recordId('certificate', subjectId, entry.certType, entry.issueDate)
-    const certificates = [...b.certificates]
-    const record = {
-      id, jobBookId, ...entry, documentId: filed.documentId,
-      verifiedBy: null, verifiedAt: null,
-    } as (typeof certificates)[number]
-    // Keyed on person, type and issue date, so re-filing the same card
-    // replaces it and a renewal files alongside rather than over.
-    const at = certificates.findIndex((c) => c.id === id)
-    if (at >= 0) certificates[at] = record
-    else certificates.push(record)
+    // The library card. Keyed on person, type and issue date, so
+    // re-filing the same card replaces it and a renewal files alongside
+    // rather than over.
+    const cardId = recordId('personnel_credential', subjectId, entry.certType, entry.issueDate)
+    const card: PersonnelCredential = {
+      id: cardId,
+      subjectType: entry.subjectType,
+      subjectId,
+      certType: entry.certType,
+      issuingBody: entry.issuingBody,
+      issueDate: entry.issueDate,
+      expiryDate: entry.expiryDate,
+      ndtMethods: entry.ndtMethods,
+      storagePath: `personnel-library/${filed.documentId}`,
+      originalFilename: filename,
+      normalizedFilename: credentialFilename(entry, filename),
+      sha256: filed.documentId,
+      byteSize: file.byteLength,
+      mimeType: null,
+      uploadedBy: viewer.id,
+      uploadedAt: new Date().toISOString(),
+      deletedAt: null,
+    }
+    const atCard = this.personnelLibrary.findIndex((c) => c.id === cardId)
+    if (atCard >= 0) this.personnelLibrary[atCard] = card
+    else this.personnelLibrary.push(card)
 
-    this.commit(jobBookId, idx, { ...b, cwis, ndtTechnicians, certificates })
+    this.commit(jobBookId, idx, { ...b, cwis, ndtTechnicians })
+    // What 0043's triggers do in the database: pull the card into every
+    // book this person has signed something on. Done here rather than
+    // only for the book in hand, because the whole point is that a card
+    // filed once follows the person.
+    this.pullCredentialsIntoBooks(card)
+    return { ok: true }
+  }
+
+  /**
+   * The seed's stand-in for the triggers in migration 0043.
+   *
+   * A person is on a book by signing something on it: a CWI when they
+   * signed a weld, a technician when they signed a report. Mirrored
+   * here rather than approximated, because a seed that resolves on
+   * different rules from the database is how this codebase has shipped
+   * four bugs.
+   */
+  private pullCredentialsIntoBooks(card: PersonnelCredential): void {
+    const all = this.all()
+    all.forEach((b, i) => {
+      const onBook = card.subjectType === 'cwi'
+        ? b.welds.some((w) => w.cwiId === card.subjectId)
+        : b.ndeReports.some((r) => r.technicianId === card.subjectId)
+      if (!onBook) return
+      // Deterministic, so pulling twice lands once.
+      const id = recordId('certificate', b.book.id, card.id)
+      if (b.certificates.some((c) => c.id === id)) return
+      this.commit(b.book.id, i, {
+        ...b,
+        certificates: [...b.certificates, {
+          id,
+          jobBookId: b.book.id,
+          subjectType: card.subjectType,
+          subjectId: card.subjectId,
+          certType: card.certType,
+          issuingBody: card.issuingBody,
+          issueDate: card.issueDate,
+          expiryDate: card.expiryDate,
+          ndtMethods: card.ndtMethods,
+          documentId: null,
+          credentialLibraryId: card.id,
+        } as (typeof b.certificates)[number]],
+      })
+    })
+  }
+
+  async listPersonnelLibrary(
+    viewer: Viewer, search?: string,
+  ): Promise<PersonnelLibraryEntry[]> {
+    const all = this.all()
+    const nameById = new Map<string, string>()
+    for (const b of all) {
+      for (const c of b.cwis) nameById.set(c.id, c.fullName)
+      for (const t of b.ndtTechnicians) nameById.set(t.id, t.fullName)
+    }
+    const entries = this.personnelLibrary
+      .filter((c) => !c.deletedAt)
+      .map((c) => ({
+        ...c,
+        personName: nameById.get(c.subjectId) ?? 'Unknown person',
+        referencedByBooks: all.filter(
+          (b) => b.certificates.some((x) => x.credentialLibraryId === c.id && !x.deletedAt),
+        ).length,
+      }))
+      .sort((a, z) => (a.uploadedAt < z.uploadedAt ? 1 : -1))
+    return filterPersonnelLibrary(entries, search)
+  }
+
+  async withdrawPersonnelCredential(
+    viewer: Viewer, credentialId: string, reason: string,
+  ): Promise<ActionResult> {
+    if (!WRITER_ROLES.has(viewer.role)) {
+      return { ok: false, error: 'Not permitted to withdraw a credential.' }
+    }
+    if (!reason.trim()) {
+      return { ok: false, error: 'Withdrawing a credential needs a reason.' }
+    }
+    const card = this.personnelLibrary.find((c) => c.id === credentialId && !c.deletedAt)
+    if (!card) return { ok: false, error: 'That credential is not on file.' }
+    card.deletedAt = new Date().toISOString()
+    card.notes = reason.trim()
+    // What the withdrawal trigger does: no book keeps claiming a card
+    // the library no longer supports.
+    this.all().forEach((b, i) => {
+      if (!b.certificates.some((c) => c.credentialLibraryId === credentialId)) return
+      this.commit(b.book.id, i, {
+        ...b,
+        certificates: b.certificates.map((c) =>
+          c.credentialLibraryId === credentialId
+            ? { ...c, deletedAt: card.deletedAt } : c),
+      })
+    })
     return { ok: true }
   }
 

@@ -62,6 +62,7 @@ import { Graph, graphConfigFromEnv } from './graph.ts'
 // for the same reason. A second copy would drift, and the backup folder
 // and the screen would come to disagree about where a document lives.
 import {
+  credentialLibraryPath,
   documentPath, joinPath, libraryPath, librarySupersededPath, pathTooLong,
   supersededPath, type PlannedFile,
 } from '../_shared/backupPaths.ts'
@@ -96,9 +97,19 @@ interface MtrRow {
   byte_size: number | null
 }
 
+/** A personnel credential. Carries the normalised name rather than the
+ *  original, because that is what the SharePoint copy is called. */
+interface CredentialRow {
+  id: string
+  normalized_filename: string
+  storage_path: string
+  sha256: string
+  byte_size: number | null
+}
+
 /** One file to copy, with everywhere it might go already decided. */
 interface Item {
-  kind: 'document' | 'mtr'
+  kind: 'document' | 'mtr' | 'credential'
   id: string
   storagePath: string
   sha256: string
@@ -175,13 +186,21 @@ Deno.serve(async (req) => {
         : null]
     }))
 
-    const [{ data: docs }, { data: mtrs }, { data: existing }] = await Promise.all([
+    const [{ data: docs }, { data: mtrs }, { data: cards }, { data: existing }] =
+      await Promise.all([
       supabase.from('document')
         .select('id, job_book_id, section_id, original_filename, storage_path, sha256, byte_size')
         .is('deleted_at', null)
         .order('uploaded_at'),
       supabase.from('mtr_document')
         .select('id, original_filename, storage_path, sha256, byte_size')
+        .is('deleted_at', null)
+        .order('uploaded_at'),
+      // The personnel credential library. Backed up under its own name
+      // rather than the phone's, because the SharePoint copy has to be
+      // legible to somebody who never opens this application.
+      supabase.from('personnel_credential')
+        .select('id, normalized_filename, storage_path, sha256, byte_size')
         .is('deleted_at', null)
         .order('uploaded_at'),
       // What is already in place, by source. Keyed on kind as well as the
@@ -228,7 +247,22 @@ Deno.serve(async (req) => {
         filename: mtr.original_filename,
         jobBookId: null,
         plan: libraryPath(mtr.original_filename),
-        aside: (on) => librarySupersededPath(mtr.original_filename, on),
+        aside: (on) => librarySupersededPath(mtr.original_filename, on, 'Material Test Reports'),
+      })
+    }
+
+    for (const card of (cards ?? []) as CredentialRow[]) {
+      items.push({
+        kind: 'credential',
+        id: card.id,
+        storagePath: card.storage_path,
+        sha256: card.sha256,
+        byteSize: card.byte_size,
+        filename: card.normalized_filename,
+        jobBookId: null,
+        plan: credentialLibraryPath(card.normalized_filename),
+        aside: (on) =>
+          librarySupersededPath(card.normalized_filename, on, 'Personnel Credentials'),
       })
     }
 
