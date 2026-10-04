@@ -186,8 +186,9 @@ Deno.serve(async (req) => {
         : null]
     }))
 
-    const [{ data: docs }, { data: mtrs }, { data: cards }, { data: existing }] =
-      await Promise.all([
+    const [
+      { data: docs }, { data: mtrs }, { data: cards }, { data: existing },
+    ] = await Promise.all([
       supabase.from('document')
         .select('id, job_book_id, section_id, original_filename, storage_path, sha256, byte_size')
         .is('deleted_at', null)
