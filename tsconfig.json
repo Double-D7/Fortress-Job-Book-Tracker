@@ -22,5 +22,10 @@
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "//": "The Edge Function is Deno, not Node: it has Deno globals, jsr: imports and explicit .ts extensions, none of which this config permits. The same is true of the backup function, whose Graph client lives beside it rather than in _shared precisely because it needs Deno globals. supabase/functions/_shared is plain TypeScript with no imports at all and stays included — that is the whole point of the split, and digest.test.ts asserts it keeps no imports.",
-  "exclude": ["node_modules", "supabase/functions/daily-digest", "supabase/functions/backup"]
+  "exclude": [
+    "node_modules",
+    "supabase/functions/daily-digest",
+    "supabase/functions/backup",
+    "supabase/functions/error-alert"
+  ]
 }

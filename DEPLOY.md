@@ -394,3 +394,80 @@ junk" trains one mailbox. A mail flow rule in the Exchange admin centre
 allowlisting the sender, or adding the domain to the tenant safe-sender
 list, means the next person hired does not rediscover the junk folder on
 their first morning.
+
+---
+
+## When something breaks
+
+The app records every failure it meets in `error_report`, one row per
+distinct fault with a count, and shows the person who hit it a short
+reference they can read out over the phone. `0039` creates that table.
+
+That is half of it. The other half is somebody being told, because a
+record nobody opens is only slightly better than no record. The Edge
+Function in `supabase/functions/error-alert` runs every fifteen minutes,
+collects the open faults that are due, and emails them to every active
+`fortress_admin`. Nobody is on a configured recipient list: the function
+reads the directory, so an administrator added next month starts
+receiving these without anybody remembering to wire them in.
+
+### Setting it up
+
+**1. The shared secret.** Same reasoning as the digest: an Edge Function
+is a public URL and `pg_cron` has no session to present a JWT for.
+Create it once, in the SQL editor:
+
+```sql
+select vault.create_secret(
+  encode(extensions.gen_random_bytes(32), 'hex'), 'alert_secret',
+  'Shared secret so only pg_cron can trigger the error alerter.');
+```
+
+Read it back to paste into the dashboard:
+
+```sql
+select decrypted_secret from vault.decrypted_secrets
+ where name = 'alert_secret';
+```
+
+**2. Edge Function secret.** Supabase Dashboard → Edge Functions →
+Secrets: add `ALERT_SECRET` with that value. `RESEND_API_KEY`, `APP_URL`
+and `DIGEST_FROM` are already set by the digest and are reused.
+
+Until `ALERT_SECRET` is set the function returns 503 on every run and
+sends nothing. That is deliberate: an unset secret must not mean "open
+to anyone", and a cron run failing loudly every quarter hour is easier
+to notice than one that quietly succeeds at nothing.
+
+**3. The schedule** is created by `0040`. It reads the secret from Vault
+when it fires rather than storing it in `cron.job`.
+
+### Checking it
+
+```sql
+-- Did the job fire, and what did it get back?
+select status, start_time, return_message from cron.job_run_details
+ where jobid = (select jobid from cron.job where jobname='error-alert')
+ order by start_time desc limit 5;
+
+-- What would it send right now?
+select reference, error_name, occurrences, last_seen_at
+  from error_report
+ where resolved_at is null
+   and (notified_at is null or notified_at < now() - interval '60 minutes')
+ order by last_seen_at desc;
+```
+
+An empty second query is the normal state and means nothing is broken.
+
+### Why it does not email on every throw
+
+A broken page throws for everybody who opens it. One email per
+occurrence would be a hundred messages for one bug, and a hundred
+messages are read as often as none. Each fault is mentioned once, then
+goes quiet for an hour. Closing it on the admin screen records that it
+was dealt with; it reopens by itself if it happens again, so a bug that
+comes back cannot sit closed and unnoticed.
+
+The email is also sent before `notified_at` is stamped, not after, so a
+Resend outage cannot silence a live fault for an hour.
