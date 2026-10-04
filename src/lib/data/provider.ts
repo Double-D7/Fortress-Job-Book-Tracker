@@ -206,6 +206,19 @@ export interface ActionResult {
   error?: string
 }
 
+/** A recorded failure, as the administration screen lists it. */
+export interface ErrorReportRow {
+  id: string
+  reference: string
+  errorName: string
+  message: string
+  route: string | null
+  occurrences: number
+  firstSeenAt: string
+  lastSeenAt: string
+  resolvedAt: string | null
+}
+
 /** An operator as the administration screen lists it. */
 export interface Operator {
   id: string
@@ -256,6 +269,15 @@ export interface DataProvider {
    * with a second operator.
    */
   listOperators(viewer: Viewer): Promise<Operator[]>
+  /**
+   * Failures the application has recorded, newest first.
+   *
+   * One row per distinct fault rather than per occurrence, so a page
+   * broken all morning is one line that says how many times.
+   */
+  listErrorReports(viewer: Viewer, limit?: number): Promise<ErrorReportRow[]>
+  /** Mark a fault dealt with. It reopens by itself if it happens again. */
+  resolveErrorReport(viewer: Viewer, id: string): Promise<ActionResult>
   /**
    * Add an operator. Admin only, refused by the database in the same
    * transaction as the insert.
@@ -1282,6 +1304,30 @@ class SeedProvider implements DataProvider {
     return orgs
       .map((o) => ({ ...o, bookCount: counts.get(o.id) ?? 0 }))
       .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  /**
+   * Failures recorded in this session.
+   *
+   * Seed mode has no database to read, and inventing fake outages would
+   * make the demo lie about the one screen whose whole value is being
+   * empty when nothing is wrong. It starts empty and stays empty.
+   */
+  private errorReports: ErrorReportRow[] = []
+
+  async listErrorReports(viewer: Viewer, limit = 50): Promise<ErrorReportRow[]> {
+    if (!can(viewer.role, 'view_internal')) return []
+    return this.errorReports.slice(0, limit)
+  }
+
+  async resolveErrorReport(viewer: Viewer, id: string): Promise<ActionResult> {
+    if (viewer.role !== 'fortress_admin' && viewer.role !== 'qaqc_manager') {
+      return { ok: false, error: 'Only a manager or admin may close an error.' }
+    }
+    const row = this.errorReports.find((r) => r.id === id)
+    if (!row) return { ok: false, error: 'No such error report.' }
+    row.resolvedAt = new Date().toISOString()
+    return { ok: true }
   }
 
   async createClientOrg(viewer: Viewer, name: string): Promise<ActionResult> {

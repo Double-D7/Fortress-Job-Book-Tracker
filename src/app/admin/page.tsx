@@ -4,6 +4,7 @@ import { buildTemplateSections } from '@/lib/domain/checklist'
 import { SectionHeading } from '@/components/ui/primitives'
 import { UserAdmin } from '@/components/UserAdmin'
 import { OperatorAdmin } from '@/components/OperatorAdmin'
+import { ErrorReports } from '@/components/ErrorReports'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { CAPABILITY_LABELS, ROLES, can } from '@/lib/domain/roles'
 
@@ -18,10 +19,11 @@ export default async function AdminPage() {
   if (!can(viewer.role, 'view_internal')) redirect('/')
 
   const provider = getDataProvider()
-  const [users, orgs, operators] = await Promise.all([
+  const [users, orgs, operators, errors] = await Promise.all([
     provider.listUsers(viewer),
     provider.listClientOrgs(viewer),
     provider.listOperators(viewer),
+    provider.listErrorReports(viewer),
   ])
 
   const flowline = buildTemplateSections('flowline', 'tpl')
@@ -44,6 +46,11 @@ export default async function AdminPage() {
         <OperatorAdmin
           operators={operators}
           canManage={can(viewer.role, 'manage_users')}
+        />
+
+        <ErrorReports
+          reports={errors}
+          canResolve={viewer.role === 'fortress_admin' || viewer.role === 'qaqc_manager'}
         />
 
         <Card>

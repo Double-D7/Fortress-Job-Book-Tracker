@@ -23,7 +23,7 @@ import type {
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NdeImportPreview, NdeImportResult,
   CalibrationImportPreview, CalibrationImportResult,
-  NoteInput, NotificationItem, Operator,
+  ErrorReportRow, NoteInput, NotificationItem, Operator,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
@@ -301,6 +301,36 @@ export class SupabaseProvider implements DataProvider {
       name: o.name as string,
       bookCount: counts.get(o.id as string) ?? 0,
     }))
+  }
+
+  async listErrorReports(viewer: Viewer, limit = 50): Promise<ErrorReportRow[]> {
+    // RLS limits this to Fortress staff, so there is no role filter here
+    // and there must not be: adding one would imply the check is this
+    // file's job, and the day it drifts the policy is the only thing
+    // still holding.
+    const supabase = await createClient()
+    const { data } = await supabase
+      .from('error_report')
+      .select('id, reference, error_name, message, route, occurrences, first_seen_at, last_seen_at, resolved_at')
+      .order('last_seen_at', { ascending: false })
+      .limit(limit)
+    return (data ?? []).map((r) => ({
+      id: r.id as string,
+      reference: r.reference as string,
+      errorName: r.error_name as string,
+      message: r.message as string,
+      route: (r.route as string | null) ?? null,
+      occurrences: r.occurrences as number,
+      firstSeenAt: r.first_seen_at as string,
+      lastSeenAt: r.last_seen_at as string,
+      resolvedAt: (r.resolved_at as string | null) ?? null,
+    }))
+  }
+
+  async resolveErrorReport(viewer: Viewer, id: string): Promise<ActionResult> {
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('resolve_error_report', { p_id: id })
+    return error ? { ok: false, error: describeOperator(error) } : { ok: true }
   }
 
   async createClientOrg(viewer: Viewer, name: string): Promise<ActionResult> {
