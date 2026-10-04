@@ -23,7 +23,7 @@ import type {
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NdeImportPreview, NdeImportResult,
   CalibrationImportPreview, CalibrationImportResult,
-  NoteInput, NotificationItem,
+  NoteInput, NotificationItem, Operator,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
@@ -273,6 +273,56 @@ export class SupabaseProvider implements DataProvider {
     const { data } = await supabase
       .from('client_org').select('id, name').is('deleted_at', null).order('name')
     return (data ?? []).map((o) => ({ id: o.id as string, name: o.name as string }))
+  }
+
+  async listOperators(viewer: Viewer): Promise<Operator[]> {
+    const supabase = await createClient()
+    // Two reads rather than an embedded count: a book belongs to an
+    // operator through its project, and PostgREST cannot count across
+    // two hops. Both are small — operators are tens of rows, not
+    // thousands — and RLS scopes each of them on its own.
+    const [{ data: orgs }, { data: projects }, { data: books }] = await Promise.all([
+      supabase.from('client_org').select('id, name').is('deleted_at', null).order('name'),
+      supabase.from('project').select('id, client_org_id'),
+      supabase.from('job_book').select('project_id').is('deleted_at', null),
+    ])
+
+    const orgByProject = new Map(
+      (projects ?? []).map((p) => [p.id as string, p.client_org_id as string]),
+    )
+    const counts = new Map<string, number>()
+    for (const b of books ?? []) {
+      const orgId = orgByProject.get(b.project_id as string)
+      if (orgId) counts.set(orgId, (counts.get(orgId) ?? 0) + 1)
+    }
+
+    return (orgs ?? []).map((o) => ({
+      id: o.id as string,
+      name: o.name as string,
+      bookCount: counts.get(o.id as string) ?? 0,
+    }))
+  }
+
+  async createClientOrg(viewer: Viewer, name: string): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may add an operator.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('create_client_org', { p_name: name })
+    return error ? { ok: false, error: describeOperator(error) } : { ok: true }
+  }
+
+  async renameClientOrg(
+    viewer: Viewer, orgId: string, name: string,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may rename an operator.' }
+    }
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('rename_client_org', {
+      p_id: orgId, p_name: name,
+    })
+    return error ? { ok: false, error: describeOperator(error) } : { ok: true }
   }
 
   async markSectionReady(
@@ -1972,6 +2022,24 @@ export class SupabaseProvider implements DataProvider {
 }
 
 /** A PostgREST error a person can act on. */
+/**
+ * Errors from the operator functions, which write their own sentences.
+ *
+ * `describe` rewrites 23505 as "That record already exists in this book",
+ * which is both wrong here — an operator belongs to no book — and less
+ * useful than what `create_client_org` already raised, which names the
+ * operator it collided with. These functions were written to be read, so
+ * their message is passed through rather than replaced.
+ */
+function describeOperator(
+  error: { message: string; code?: string; details?: string },
+): string {
+  if (error.code === '23505' || error.code === '23514' || error.code === 'P0002') {
+    return error.message
+  }
+  return describe(error)
+}
+
 function describe(error: { message: string; code?: string; details?: string }): string {
   if (error.code === '42501' || /row-level security/i.test(error.message)) {
     return 'The database refused this write for your role. If you believe you should be able ' +

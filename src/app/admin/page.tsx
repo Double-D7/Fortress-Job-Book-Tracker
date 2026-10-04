@@ -3,6 +3,7 @@ import { Card, CardBody, CardHeader, CardTitle, Chip, Table, Td, Th, Tr } from '
 import { buildTemplateSections } from '@/lib/domain/checklist'
 import { SectionHeading } from '@/components/ui/primitives'
 import { UserAdmin } from '@/components/UserAdmin'
+import { OperatorAdmin } from '@/components/OperatorAdmin'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { CAPABILITY_LABELS, ROLES, can } from '@/lib/domain/roles'
 
@@ -17,9 +18,10 @@ export default async function AdminPage() {
   if (!can(viewer.role, 'view_internal')) redirect('/')
 
   const provider = getDataProvider()
-  const [users, orgs] = await Promise.all([
+  const [users, orgs, operators] = await Promise.all([
     provider.listUsers(viewer),
     provider.listClientOrgs(viewer),
+    provider.listOperators(viewer),
   ])
 
   const flowline = buildTemplateSections('flowline', 'tpl')
@@ -37,6 +39,11 @@ export default async function AdminPage() {
           orgs={orgs}
           canManage={can(viewer.role, 'manage_users')}
           viewerId={viewer.id}
+        />
+
+        <OperatorAdmin
+          operators={operators}
+          canManage={can(viewer.role, 'manage_users')}
         />
 
         <Card>

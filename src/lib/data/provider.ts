@@ -206,6 +206,15 @@ export interface ActionResult {
   error?: string
 }
 
+/** An operator as the administration screen lists it. */
+export interface Operator {
+  id: string
+  name: string
+  /** Books filed against this operator. Zero means nothing references it
+   *  yet; any number above zero is why the name matters. */
+  bookCount: number
+}
+
 export interface DataProvider {
   /**
    * Mark a section ready for a second person to review.
@@ -238,6 +247,27 @@ export interface DataProvider {
   getBundle(viewer: Viewer, jobBookId: string): Promise<JobBookBundle | null>
   createJobBook(viewer: Viewer, input: NewJobBookInput): Promise<CreateResult>
   listClientOrgs(viewer: Viewer): Promise<{ id: string; name: string }[]>
+  /**
+   * The operator list as the administration screen shows it.
+   *
+   * Carries the number of books behind each operator, which is the one
+   * fact that makes the list safe to act on: it says which rows are in
+   * use, and so why a name is worth correcting rather than replacing
+   * with a second operator.
+   */
+  listOperators(viewer: Viewer): Promise<Operator[]>
+  /**
+   * Add an operator. Admin only, refused by the database in the same
+   * transaction as the insert.
+   *
+   * A job book cannot exist without one, so until this existed a new
+   * client could not be set up without someone opening a SQL editor.
+   */
+  createClientOrg(viewer: Viewer, name: string): Promise<ActionResult>
+  /** Correct an operator's name. The name is printed on every book that
+   *  belongs to it, so a typo is worth fixing in place rather than
+   *  leaving a second operator beside the first. */
+  renameClientOrg(viewer: Viewer, orgId: string, name: string): Promise<ActionResult>
   /**
    * Add documents to one section.
    *
@@ -1230,8 +1260,78 @@ class SeedProvider implements DataProvider {
     return !g.expiresAt || Date.parse(g.expiresAt) > Date.now()
   }
 
-  async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {
-    const out: JobBookSummary[] = []
+  /**
+   * Operators added in this session, beside the ones the seed books
+   * imply.
+   *
+   * Held separately because the seeded operators are derived from the
+   * books rather than stored, so there is no list to append to. Mirrors
+   * the Supabase provider's behaviour, which is the thing that matters:
+   * a divergence between the two is what this project has already paid
+   * for four times.
+   */
+  private addedOrgs = new Map<string, string>()
+
+  async listOperators(viewer: Viewer): Promise<Operator[]> {
+    const counts = new Map<string, number>()
+    for (const b of this.all()) {
+      if (!this.canSee(viewer, b)) continue
+      counts.set(b.clientOrg.id, (counts.get(b.clientOrg.id) ?? 0) + 1)
+    }
+    const orgs = await this.listClientOrgs(viewer)
+    return orgs
+      .map((o) => ({ ...o, bookCount: counts.get(o.id) ?? 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  async createClientOrg(viewer: Viewer, name: string): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may add an operator.' }
+    }
+    const trimmed = name.trim()
+    if (!trimmed) return { ok: false, error: 'An operator needs a name.' }
+
+    const existing = (await this.listClientOrgs(viewer))
+      .find((o) => o.name.toLowerCase() === trimmed.toLowerCase())
+    if (existing) {
+      return {
+        ok: false,
+        error: `${trimmed} is already on the operator list, as "${existing.name}".`,
+      }
+    }
+
+    this.addedOrgs.set(`org-${trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, trimmed)
+    return { ok: true }
+  }
+
+  async renameClientOrg(
+    viewer: Viewer, orgId: string, name: string,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may rename an operator.' }
+    }
+    const trimmed = name.trim()
+    if (!trimmed) return { ok: false, error: 'An operator needs a name.' }
+
+    const orgs = await this.listClientOrgs(viewer)
+    if (!orgs.some((o) => o.id === orgId)) {
+      return { ok: false, error: 'No such operator.' }
+    }
+    const clash = orgs.find(
+      (o) => o.id !== orgId && o.name.toLowerCase() === trimmed.toLowerCase(),
+    )
+    if (clash) {
+      return { ok: false, error: `Another operator is already called "${clash.name}".` }
+    }
+
+    // Only operators added here can be renamed in seed mode: the rest are
+    // a property of the seed books themselves. The real provider renames
+    // any of them.
+    if (this.addedOrgs.has(orgId)) this.addedOrgs.set(orgId, trimmed)
+    return { ok: true }
+  }
+
+  async listJobBooks(viewer: Viewer): Promise<JobBookSummary[]> {    const out: JobBookSummary[] = []
     for (const b of this.all()) {
       if (!this.canSee(viewer, b)) continue
       out.push(summarizeBook(b, b.clientOrg.name))
@@ -1254,6 +1354,7 @@ class SeedProvider implements DataProvider {
     // hides the client-isolation story the wizard is meant to show.
     orgs.set('org-oxy', 'Occidental')
     orgs.set('org-devon', 'Devon Energy')
+    for (const [id, name] of this.addedOrgs) orgs.set(id, name)
     return [...orgs.entries()].map(([id, name]) => ({ id, name }))
                               .sort((a, b) => a.name.localeCompare(b.name))
   }
