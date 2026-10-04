@@ -7,8 +7,9 @@
  * reports, which is the same as sending none because nobody reads them.
  */
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
-  fingerprintError, normalizeMessage, referenceCode, shouldNotify, topAppFrame,
+  digest12, fingerprintError, normalizeMessage, referenceCode, shouldNotify, topAppFrame,
 } from '@/lib/domain/errorReport'
 
 describe('the same fault reached from different data', () => {
@@ -133,5 +134,52 @@ describe('deciding whether to send an email', () => {
       .toBe(true)
     expect(shouldNotify({ lastNotifiedAt: '2026-10-04T17:58:00Z', now, windowMinutes: 5 }))
       .toBe(false)
+  })
+})
+
+/**
+ * `instrumentation.ts` is compiled for the edge runtime as well as for
+ * Node, and webpack resolves whatever it imports regardless of the
+ * runtime guard inside it. A `node:crypto` import in this module was
+ * enough to fail `next build` outright while the typechecker and all
+ * 1100 tests passed, so the break reached a push.
+ *
+ * This is the cheap guard that catches it next time.
+ */
+describe('what this module is allowed to depend on', () => {
+  const source = readFileSync('src/lib/domain/errorReport.ts', 'utf8')
+
+  it('imports no node builtin, because the edge runtime has none', () => {
+    expect(source).not.toMatch(/from\s+['"]node:/)
+    expect(source).not.toMatch(/require\(\s*['"]node:/)
+  })
+
+  it('imports nothing at all, which is what keeps it loadable anywhere', () => {
+    expect(source).not.toMatch(/^\s*import\s/m)
+  })
+})
+
+describe('the digest that replaced sha256', () => {
+  it('is stable, and 12 hex characters', () => {
+    expect(digest12('the same input')).toBe(digest12('the same input'))
+    expect(digest12('x')).toMatch(/^[0-9a-f]{12}$/)
+    expect(digest12('')).toMatch(/^[0-9a-f]{12}$/)
+  })
+
+  it('separates inputs that differ by one character', () => {
+    expect(digest12('weld 4471 not found')).not.toBe(digest12('weld 4472 not found'))
+    expect(digest12('a')).not.toBe(digest12('b'))
+  })
+
+  it('spreads a realistic run of inputs without collisions', () => {
+    // The low bits are the ones kept, so a hash whose avalanche is poor
+    // would show up here rather than in production six months on.
+    const seen = new Set<string>()
+    for (let i = 0; i < 5000; i += 1) seen.add(digest12(`/books/[bookId]/nde|Error|row ${i}`))
+    expect(seen.size).toBe(5000)
+  })
+
+  it('handles characters outside the ascii range', () => {
+    expect(digest12('wall thickness 9.5 mm ±0.1')).toMatch(/^[0-9a-f]{12}$/)
   })
 })

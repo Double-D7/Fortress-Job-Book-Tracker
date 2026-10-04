@@ -29,8 +29,13 @@
  * the grouping rules testable without a database, which matters because
  * grouping too hard hides a second bug behind the first, and grouping
  * too softly brings back the flood it exists to prevent.
+ *
+ * It also imports nothing, and must not. `instrumentation.ts` is
+ * compiled for the edge runtime as well as for Node, and webpack
+ * resolves what it imports whether or not the runtime guard lets it
+ * run. A `node:crypto` import here was enough to fail the production
+ * build outright while every test and the typechecker passed.
  */
-import { createHash } from 'node:crypto'
 
 /** Patterns that are the data rather than the fault, longest first so a
  *  UUID is not first mangled into a run of hex. */
@@ -112,7 +117,36 @@ export function fingerprintError(error: ErrorShape): string {
     topAppFrame(error.stack) ?? '',
     error.route ?? '',
   ]
-  return createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 12)
+  return digest12(parts.join('\u0000'))
+}
+
+/**
+ * A stable 48-bit digest, in hex.
+ *
+ * FNV-1a over the UTF-8 bytes with a final mix, rather than sha256,
+ * because this module has to load under the edge runtime where
+ * `node:crypto` does not exist. Nothing is lost by it: the old code
+ * sliced sha256 to the same 12 characters, so the collision resistance
+ * was already 48 bits, and this is a grouping key rather than a
+ * security boundary. A collision merges two faults into one row, which
+ * is untidy and not dangerous.
+ */
+const FNV_OFFSET = 0xcbf29ce484222325n
+const FNV_PRIME = 0x100000001b3n
+const MASK64 = 0xffffffffffffffffn
+
+export function digest12(input: string): string {
+  let h = FNV_OFFSET
+  for (const byte of new TextEncoder().encode(input)) {
+    h = ((h ^ BigInt(byte)) * FNV_PRIME) & MASK64
+  }
+  // FNV alone leaves the low bits sluggish, and the low bits are the
+  // ones being kept. xor-shift and multiply so every input bit reaches
+  // the slice.
+  h ^= h >> 33n
+  h = (h * 0xff51afd7ed558ccdn) & MASK64
+  h ^= h >> 33n
+  return h.toString(16).padStart(16, '0').slice(0, 12)
 }
 
 /**
