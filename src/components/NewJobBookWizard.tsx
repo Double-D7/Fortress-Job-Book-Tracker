@@ -129,8 +129,14 @@ export function NewJobBookWizard({
     setServerErrors([])
     const payload = {
       jobNumber, bookType, division, clientOrgId,
-      projectId: `proj-${jobNumber.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-      bookTemplateId: `tpl-${bookType}-v1`,
+      // The project and the checklist template are rows the server
+      // resolves from the operator and the book type. This used to send
+      // ids it made up, which the seed accepted and Postgres refused as
+      // malformed uuids, so creating a book never once worked against
+      // the real database. Left empty deliberately: the provider fills
+      // them in, and a placeholder here would start the same habit.
+      projectId: '',
+      bookTemplateId: '',
       facilityName, drillPadName,
       wellNames: wellNames.split(',').map((w) => w.trim()).filter(Boolean),
       constructionCompany, weldingCompany,

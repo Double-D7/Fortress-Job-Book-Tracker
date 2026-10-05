@@ -1674,8 +1674,16 @@ class SeedProvider implements DataProvider {
       }
     }
 
+    // Resolved here rather than taken from the caller, matching what the
+    // Supabase provider does with the real `book_template` and `project`
+    // rows. The wizard sends neither any more: it was inventing ids that
+    // this provider accepted and Postgres refused.
     const { book, sections, weldLines, sectionDefinitions } = scaffoldJobBook(
-      input,
+      {
+        ...input,
+        bookTemplateId: input.bookTemplateId || `tpl-${input.bookType}-v1`,
+        projectId: input.projectId || `proj-${slug}`,
+      },
       (kind, key) => (kind === 'book' ? `book-${slug}` : `${kind}-${slug}-${key.split(':').pop()}`),
     )
     const orgs = await this.listClientOrgs(viewer)

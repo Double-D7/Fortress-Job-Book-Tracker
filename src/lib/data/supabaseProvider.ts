@@ -463,7 +463,95 @@ export class SupabaseProvider implements DataProvider {
     if (errors.length) return { ok: false, errors, warnings }
 
     const supabase = await createClient()
-    const { book, sections, weldLines } = scaffoldJobBook(input, () => crypto.randomUUID())
+
+    // The checklist template is a row in the database, not a string the
+    // browser can invent. The wizard used to send `tpl-facility-v1`,
+    // which is the seed provider's id shape, and `job_book.book_template_id`
+    // is a uuid — so creating a book against the real database failed
+    // with "invalid input syntax for type uuid" every single time, and
+    // nothing caught it because the seed accepted that id happily.
+    const { data: template } = await supabase
+      .from('book_template').select('id')
+      .eq('book_type', input.bookType)
+      .order('version', { ascending: false })
+      .limit(1).maybeSingle()
+    if (!template) {
+      return {
+        ok: false,
+        errors: [{
+          field: 'bookType',
+          message: `No ${input.bookType} checklist template is loaded in this project, `
+            + 'so there is nothing to scaffold the sections from.',
+        }],
+      }
+    }
+    const templateId = template.id as string
+
+    // The project, likewise. The wizard sent `proj-dp-137`, derived from
+    // the job number, and `job_book.project_id` is a uuid pointing at a
+    // row that has to exist. Found or created here rather than invented
+    // in the browser: a project groups a client's books, and which
+    // client this belongs to is the one thing the wizard does know.
+    const projectName = input.facilityName?.trim()
+      || input.drillPadName?.trim()
+      || input.jobNumber.trim()
+    const { data: existingProject } = await supabase
+      .from('project').select('id')
+      .eq('client_org_id', input.clientOrgId)
+      .ilike('name', projectName)
+      .limit(1).maybeSingle()
+
+    let projectId = existingProject?.id as string | undefined
+    if (!projectId) {
+      projectId = crypto.randomUUID()
+      const { error: projErr } = await supabase.from('project').insert(domainToRow({
+        id: projectId, clientOrgId: input.clientOrgId, name: projectName,
+      }, COLUMNS.project))
+      if (projErr) {
+        return { ok: false, errors: [{ field: 'projectId', message: describe(projErr) }] }
+      }
+    }
+
+    // The section definitions likewise. `buildTemplateSections` makes an
+    // id of its own for the seed's benefit; against the database the
+    // real rows are what `job_book_section.section_definition_id`
+    // points at.
+    const { data: defs } = await supabase
+      .from('section_definition').select('id, section_number')
+      .eq('book_template_id', templateId)
+    const defIdByNumber = new Map(
+      (defs ?? []).map((d) => [d.section_number as string, d.id as string]),
+    )
+
+    const { book, sections, weldLines } = scaffoldJobBook(
+      { ...input, bookTemplateId: templateId, projectId }, () => crypto.randomUUID(),
+    )
+
+    // The scaffolded id is `${templateId}:${sectionNumber}`, so the
+    // number is whatever follows the template's own id. Stripped rather
+    // than matched by position, because relying on two lists staying in
+    // the same order across a function boundary is how a book ends up
+    // scoring section 14 against section 13's definition.
+    const unknown: string[] = []
+    const sectionRows = sections.map((s) => {
+      const number = (s.sectionDefinitionId ?? '').slice(templateId.length + 1)
+      const realId = defIdByNumber.get(number)
+      if (!realId) unknown.push(number || '(unnamed)')
+      return { ...s, sectionDefinitionId: realId ?? s.sectionDefinitionId }
+    })
+    if (unknown.length > 0) {
+      // Refused rather than part-written. A book missing sections scores
+      // against a checklist it does not have, and looks complete.
+      return {
+        ok: false,
+        errors: [{
+          field: 'sections',
+          message: `The ${input.bookType} template in this project has no definition for `
+            + `section ${unknown.join(', ')}. The checklist in the database is out of step `
+            + 'with the one in the application.',
+        }],
+      }
+    }
 
     // The book and its sections must arrive together or not at all: a book
     // with no sections scores 0% against nothing and looks like a real
@@ -478,7 +566,7 @@ export class SupabaseProvider implements DataProvider {
 
     const { error: secErr } = await supabase
       .from('job_book_section')
-      .insert(sections.map((s) => domainToRow(s, COLUMNS.job_book_section)))
+      .insert(sectionRows.map((s) => domainToRow(s, COLUMNS.job_book_section)))
     if (secErr) {
       await supabase.from('job_book').delete().eq('id', book.id)
       return { ok: false, errors: [{ field: 'sections', message: describe(secErr) }] }
