@@ -28,6 +28,7 @@ import { useRouter } from 'next/navigation'
 import { Loader2, Paperclip, Plus } from 'lucide-react'
 import { NDT_METHODS, defaultCertType, type CredentialSubject } from '@/lib/domain/credentials'
 import type { NdtMethod } from '@/lib/domain/types'
+import type { RosterMember } from '@/lib/data/provider'
 import { Button, Card, CardBody, CardHeader, CardTitle } from '@/components/ui/primitives'
 
 const field =
@@ -36,12 +37,13 @@ const field =
 
 const NEW_PERSON = '__new__'
 
-export interface RosterMember { id: string; label: string }
-
 export function CredentialFiler({
   bookId, cwis, technicians,
 }: {
-  bookId: string
+  /** The book to rescore afterwards, when filing from one. Absent when
+   *  filing from the library, which is where a card normally starts:
+   *  it belongs to the person, not to a job. */
+  bookId?: string
   cwis: RosterMember[]
   technicians: RosterMember[]
 }) {
@@ -100,9 +102,10 @@ export function CredentialFiler({
       for (const m of methods) form.append('ndtMethods', m)
       if (file) form.set('file', file)
 
-      const res = await fetch(`/api/books/${bookId}/credentials`, {
-        method: 'POST', body: form,
-      })
+      const res = await fetch(
+        bookId ? `/api/books/${bookId}/credentials` : '/api/credentials',
+        { method: 'POST', body: form },
+      )
       const json = (await res.json()) as { ok: boolean; error?: string }
       if (!json.ok) setError(json.error ?? 'That did not work.')
       else { reset(); setOpen(false); router.refresh() }

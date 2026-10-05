@@ -25,6 +25,7 @@ import type {
   NdeImportPreview, NdeImportResult,
   CalibrationImportPreview, CalibrationImportResult,
   ErrorReportRow, NoteInput, NotificationItem, Operator, PersonnelLibraryEntry,
+  RosterMember,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
@@ -1262,14 +1263,19 @@ export class SupabaseProvider implements DataProvider {
   }
 
   async fileCredential(
-    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    viewer: Viewer, jobBookId: string | null, input: CredentialInput,
     file: Uint8Array, filename: string,
   ): Promise<ActionResult> {
     if (!WRITERS.has(viewer.role)) {
-      return { ok: false, error: 'Not permitted to file credentials on this book.' }
+      return { ok: false, error: 'Not permitted to file credentials.' }
     }
-    const bundle = await this.getBundle(viewer, jobBookId)
-    if (!bundle) return { ok: false, error: 'Job book not found.' }
+    // Only when a book was named. A card belongs to the library, and
+    // requiring a book to file one would mean no credential could be
+    // filed until a job book existed.
+    if (jobBookId) {
+      const bundle = await this.getBundle(viewer, jobBookId)
+      if (!bundle) return { ok: false, error: 'Job book not found.' }
+    }
 
     // Re-validated here rather than trusted from the browser, the rule
     // every writer in this file follows.
@@ -1300,13 +1306,13 @@ export class SupabaseProvider implements DataProvider {
       ))
       if (error) return { ok: false, error: describe(error) }
     } else {
-      // An id from the browser is a claim. Check it names somebody on
-      // the roster this book can see, so a filed credential cannot be
-      // attached to an arbitrary uuid.
-      const known = input.subjectType === 'cwi'
-        ? bundle.cwis.some((c) => c.id === subjectId)
-        : bundle.ndtTechnicians.some((t) => t.id === subjectId)
-      if (!known) return { ok: false, error: 'That person is not on this book\'s roster.' }
+      // An id from the browser is a claim. Checked against the roster
+      // itself rather than a book's view of it, because the rosters are
+      // global and a card filed from the library names nobody's book.
+      const { data: person } = await supabase
+        .from(input.subjectType === 'cwi' ? 'cwi' : 'ndt_technician')
+        .select('id').eq('id', subjectId).is('deleted_at', null).maybeSingle()
+      if (!person) return { ok: false, error: 'That person is not on the roster.' }
     }
 
     // The page itself, into the library's own area of the bucket. Not
@@ -1352,11 +1358,27 @@ export class SupabaseProvider implements DataProvider {
       return { ok: false, error: describe(cardError) }
     }
 
-    // Nothing writes the book's register here. The triggers from 0043
+    // Nothing writes any book's register here. The triggers from 0043
     // pull the card into every book this person has signed something
-    // on, including this one, and into books they work later.
-    await this.refreshScores(jobBookId, viewer)
+    // on, now and later. Only the book in hand, if there is one, is
+    // rescored; the rest pick it up on their own next recompute.
+    if (jobBookId) await this.refreshScores(jobBookId, viewer)
     return { ok: true }
+  }
+
+  async listCredentialRosters(
+    _viewer: Viewer,
+  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }> {
+    const supabase = await createClient()
+    const [{ data: cwis }, { data: techs }] = await Promise.all([
+      supabase.from('cwi').select('id, full_name')
+        .is('deleted_at', null).order('full_name'),
+      supabase.from('ndt_technician').select('id, full_name')
+        .is('deleted_at', null).order('full_name'),
+    ])
+    const toMembers = (rows: { id: unknown; full_name: unknown }[] | null): RosterMember[] =>
+      (rows ?? []).map((r) => ({ id: r.id as string, label: r.full_name as string }))
+    return { cwis: toMembers(cwis), technicians: toMembers(techs) }
   }
 
   async listPersonnelLibrary(

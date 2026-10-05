@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { CredentialFiler } from '@/components/CredentialFiler'
 import { PersonnelLibrary } from '@/components/PersonnelLibrary'
 import { SectionHeading } from '@/components/ui/primitives'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
@@ -14,7 +15,12 @@ export default async function CredentialsPage({
 
   const { q } = await searchParams
   const search = (q ?? '').trim()
-  const entries = await getDataProvider().listPersonnelLibrary(viewer, search || undefined)
+  const provider = getDataProvider()
+  const canManage = can(viewer.role, 'edit_records')
+  const [entries, rosters] = await Promise.all([
+    provider.listPersonnelLibrary(viewer, search || undefined),
+    provider.listCredentialRosters(viewer),
+  ])
 
   return (
     <>
@@ -22,9 +28,14 @@ export default async function CredentialsPage({
         title="Personnel credentials"
         subtitle="Every CWI and NDT card on file, shared by every job book. A card follows the person onto each book they work (§7, §8)"
       />
+      {canManage && (
+        <div className="mb-4">
+          <CredentialFiler cwis={rosters.cwis} technicians={rosters.technicians} />
+        </div>
+      )}
       <PersonnelLibrary
         entries={entries}
-        canManage={can(viewer.role, 'edit_records')}
+        canManage={canManage}
         search={search}
       />
     </>

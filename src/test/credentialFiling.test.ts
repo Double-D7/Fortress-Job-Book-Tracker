@@ -264,14 +264,49 @@ describe('filing one, end to end', () => {
   })
 
   it('files the card itself, not just the dates', async () => {
-    // A credential with no page is a claim. The document is the
-    // evidence, and section 8 is where an auditor looks for it.
+    // A credential with no page is a claim. The page is the evidence,
+    // and it hangs off the library card rather than off any one book's
+    // section, because the card is the same card on every job.
     const p = getDataProvider()
-    const id = await firstBook()
-    const before = (await p.getBundle(admin, id))!.documents.length
-    await p.fileCredential(admin, id, input({ fullName: 'Ingrid Sandoval' }),
-      pdf('sandoval'), 'sandoval-asnt.pdf')
-    expect((await p.getBundle(admin, id))!.documents.length).toBe(before + 1)
+    const bytes = pdf('sandoval')
+    await p.fileCredential(admin, null, input({ fullName: 'Ingrid Sandoval' }),
+      bytes, 'sandoval-asnt.pdf')
+    const card = (await p.listPersonnelLibrary(admin))
+      .find((c) => c.personName === 'Ingrid Sandoval')!
+    expect(card.storagePath).toContain('personnel-library/')
+    expect(card.sha256).toHaveLength(64)
+    expect(card.byteSize).toBe(bytes.byteLength)
+    expect(card.originalFilename).toBe('sandoval-asnt.pdf')
+    // Renamed for the SharePoint copy, which has to be legible to
+    // somebody who never opens this application.
+    expect(card.normalizedFilename).toMatch(/^ASNT_Level_II_2025-01-15\.pdf$/)
+  })
+
+  it('files from the library with no job book at all', async () => {
+    // The case that made this reachable. A credential exists before
+    // anybody knows which job wants it, and a project with no books yet
+    // could not file one.
+    const p = getDataProvider()
+    const res = await p.fileCredential(admin, null, input({
+      fullName: 'Booklessly Filed', ndtMethods: ['MT'],
+    }), pdf('bookless'), 'bookless.pdf')
+    expect(res.ok).toBe(true)
+    const card = (await p.listPersonnelLibrary(admin))
+      .find((c) => c.personName === 'Booklessly Filed')
+    expect(card).toBeDefined()
+    expect(card!.ndtMethods).toEqual(['MT'])
+    expect(card!.referencedByBooks).toBe(0)
+  })
+
+  it('puts a person added from the library on the roster the form reads', async () => {
+    // The filing form reads the rosters, not a book. Somebody added
+    // while filing has to appear there or the next card for them would
+    // create a duplicate person.
+    const p = getDataProvider()
+    await p.fileCredential(admin, null, input({ fullName: 'Rosalind Teague' }),
+      pdf('teague'), 'teague.pdf')
+    const { technicians } = await p.listCredentialRosters(admin)
+    expect(technicians.some((t) => t.label === 'Rosalind Teague')).toBe(true)
   })
 
   it('carries the recorded methods through to the book it is pulled onto', async () => {

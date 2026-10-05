@@ -419,17 +419,21 @@ export interface DataProvider {
   /**
    * File a CWI or NDT technician credential (§7 and §8).
    *
-   * The one filing path the application never had, which is why those
-   * two sections could only ever be scored on paperwork nobody could
-   * enter. Adds the person to the roster when `subjectId` is null, so
-   * filing the first card for somebody is one action rather than two.
+   * The card goes to the library, not to one book: an ASNT card is the
+   * same card on every job that person works. Which books show it is
+   * decided by migration 0043, from who has signed what.
    *
-   * Typed in rather than parsed: these are usually photographs of
-   * wallet cards, and a misread certification date is a wrong answer to
-   * the only question §7 and §8 ask.
+   * `jobBookId` is null when filing from the library itself, which is
+   * the ordinary case — a credential exists before anybody knows which
+   * job wants it, and requiring a book to file one made the library
+   * unreachable on a project with no books yet. Passing a book only
+   * rescores that book afterwards.
+   *
+   * Adds the person to the roster when `subjectId` is null, so filing
+   * the first card for somebody is one action rather than two.
    */
   fileCredential(
-    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    viewer: Viewer, jobBookId: string | null, input: CredentialInput,
     file: Uint8Array, filename: string,
   ): Promise<ActionResult>
 
@@ -439,6 +443,13 @@ export interface DataProvider {
    *  whole library; anyone else sees only cards pulled onto a book they
    *  can read, which RLS enforces rather than this. */
   listPersonnelLibrary(viewer: Viewer, search?: string): Promise<PersonnelLibraryEntry[]>
+
+  /** The two personnel rosters, which are global rather than per book.
+   *  For the library's filing form, which has no book to read them
+   *  from and should not need one. */
+  listCredentialRosters(
+    viewer: Viewer,
+  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }>
 
   /** Withdraw a card. Every book that pulled it stops claiming it is on
    *  file, rather than keeping a claim the library no longer supports. */
@@ -561,6 +572,9 @@ export interface DataProvider {
 }
 
 /** One library row, with how many books lean on it. */
+/** A person on one of the two rosters, as a picker shows them. */
+export interface RosterMember { id: string; label: string }
+
 export interface PersonnelLibraryEntry extends PersonnelCredential {
   /** The person's name, resolved from whichever roster they are on, so
    *  the library reads as a list of people rather than of uuids. */
@@ -2154,31 +2168,35 @@ class SeedProvider implements DataProvider {
   }
 
   async fileCredential(
-    viewer: Viewer, jobBookId: string, input: CredentialInput,
+    viewer: Viewer, jobBookId: string | null, input: CredentialInput,
     file: Uint8Array, filename: string,
   ): Promise<ActionResult> {
-    const idx = this.all().findIndex((x) => x.book.id === jobBookId)
-    const b = this.all()[idx]
-    if (!b || !this.canSee(viewer, b)) return { ok: false, error: 'Job book not found.' }
     if (!WRITER_ROLES.has(viewer.role)) {
-      return { ok: false, error: 'Not permitted to file credentials on this book.' }
+      return { ok: false, error: 'Not permitted to file credentials.' }
+    }
+    // A book only when one was named. The card belongs to the library,
+    // so filing must work before any book exists.
+    const idx = jobBookId ? this.all().findIndex((x) => x.book.id === jobBookId) : -1
+    const b = idx >= 0 ? this.all()[idx] : undefined
+    if (jobBookId && (!b || !this.canSee(viewer, b))) {
+      return { ok: false, error: 'Job book not found.' }
     }
 
     const problems = validateCredential(input)
     if (problems.length > 0) return { ok: false, error: problems[0]!.message }
 
-    const filed = this.fileSourceDocumentSeed(
-      viewer, b,
-      input.subjectType === 'cwi' ? 'cwi_certificate' : 'ndt_certificate',
-      file, filename,
-    )
-    if (!filed.ok) return { ok: false, error: filed.error }
+    // The stored object. Content-addressed the same way the real
+    // provider does it, so a card filed twice holds one copy.
+    const sha = createHash('sha256').update(file).digest('hex')
 
     // The roster first, because the certificate needs somebody to hang
     // off. Adding the person and filing their card is one action: making
     // it two is how a roster ends up with people carrying no evidence.
-    let cwis = b.cwis
-    let ndtTechnicians = b.ndtTechnicians
+    //
+    // Added to every bundle, because `cwi` and `ndt_technician` are
+    // global tables in the database and every book sees all of them.
+    // Adding to one bundle would make the seed disagree with the real
+    // provider about who is on the roster.
     let subjectId = input.subjectId
     if (!subjectId) {
       subjectId = recordId(input.subjectType, (input.fullName ?? '').trim())
@@ -2189,14 +2207,30 @@ class SeedProvider implements DataProvider {
         employer: (input.employer ?? '').trim() || null,
         active: true,
       }
-      if (input.subjectType === 'cwi') {
-        cwis = [...cwis, { ...person, initials: person.initials ?? '' } as typeof cwis[number]]
-      } else {
-        ndtTechnicians = [
-          ...ndtTechnicians,
-          { ...person, classification: null } as typeof ndtTechnicians[number],
-        ]
-      }
+      this.all().forEach((bundle, i) => {
+        if (input.subjectType === 'cwi') {
+          if (bundle.cwis.some((c) => c.id === subjectId)) return
+          this.commit(bundle.book.id, i, {
+            ...bundle,
+            cwis: [...bundle.cwis, {
+              ...person, initials: person.initials ?? '',
+            } as (typeof bundle.cwis)[number]],
+          })
+        } else {
+          if (bundle.ndtTechnicians.some((t) => t.id === subjectId)) return
+          this.commit(bundle.book.id, i, {
+            ...bundle,
+            ndtTechnicians: [...bundle.ndtTechnicians, {
+              ...person, classification: null,
+            } as (typeof bundle.ndtTechnicians)[number]],
+          })
+        }
+      })
+    } else {
+      const known = this.all().some((bundle) => input.subjectType === 'cwi'
+        ? bundle.cwis.some((c) => c.id === subjectId)
+        : bundle.ndtTechnicians.some((t) => t.id === subjectId))
+      if (!known) return { ok: false, error: 'That person is not on the roster.' }
     }
 
     const entry = credentialToCertificate(input, subjectId)
@@ -2213,10 +2247,10 @@ class SeedProvider implements DataProvider {
       issueDate: entry.issueDate,
       expiryDate: entry.expiryDate,
       ndtMethods: entry.ndtMethods,
-      storagePath: `personnel-library/${filed.documentId}`,
+      storagePath: `personnel-library/${sha}`,
       originalFilename: filename,
       normalizedFilename: credentialFilename(entry, filename),
-      sha256: filed.documentId,
+      sha256: sha,
       byteSize: file.byteLength,
       mimeType: null,
       uploadedBy: viewer.id,
@@ -2227,7 +2261,6 @@ class SeedProvider implements DataProvider {
     if (atCard >= 0) this.personnelLibrary[atCard] = card
     else this.personnelLibrary.push(card)
 
-    this.commit(jobBookId, idx, { ...b, cwis, ndtTechnicians })
     // What 0043's triggers do in the database: pull the card into every
     // book this person has signed something on. Done here rather than
     // only for the book in hand, because the whole point is that a card
@@ -2272,6 +2305,23 @@ class SeedProvider implements DataProvider {
         } as (typeof b.certificates)[number]],
       })
     })
+  }
+
+  async listCredentialRosters(
+    _viewer: Viewer,
+  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }> {
+    // Deduplicated across bundles: the rosters are global, and the seed
+    // holds a copy inside each book because that is how a bundle is
+    // shaped, not because the people differ.
+    const cwis = new Map<string, string>()
+    const technicians = new Map<string, string>()
+    for (const b of this.all()) {
+      for (const c of b.cwis) cwis.set(c.id, c.fullName)
+      for (const t of b.ndtTechnicians) technicians.set(t.id, t.fullName)
+    }
+    const sorted = (m: Map<string, string>): RosterMember[] =>
+      [...m].map(([id, label]) => ({ id, label })).sort((a, z) => a.label.localeCompare(z.label))
+    return { cwis: sorted(cwis), technicians: sorted(technicians) }
   }
 
   async listPersonnelLibrary(
