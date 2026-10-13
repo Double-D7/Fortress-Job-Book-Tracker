@@ -36,6 +36,8 @@ import type { NoteSeverity } from '@/lib/domain/notifications'
 import { heatKey, normalizeHeat } from '@/lib/domain/heats'
 import { applyCertificate, calibrationRegisterEntry } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
+import { buildInviteEmail } from '@/lib/domain/inviteEmail'
+import { sendEmail } from '@/lib/email/send'
 import {
   credentialFilename, credentialToCertificate, filterPersonnelLibrary,
   validateCredential, type CredentialInput,
@@ -1780,7 +1782,99 @@ export class SupabaseProvider implements DataProvider {
       p_role: input.role,
       p_client_org_id: input.clientOrgId ?? null,
     })
-    return error ? { ok: false, error: describe(error) } : { ok: true }
+    if (error) return { ok: false, error: describe(error) }
+
+    // The access is granted at this point, whatever happens next. The
+    // message is a courtesy that tells somebody it happened and how to
+    // sign in — which is the one part nobody guesses, because the code
+    // is requested rather than sent.
+    const orgName = input.clientOrgId
+      ? (await this.listClientOrgs(viewer)).find((o) => o.id === input.clientOrgId)?.name ?? null
+      : null
+    const mail = buildInviteEmail({
+      fullName: input.fullName.trim(),
+      role: input.role,
+      invitedBy: viewer.fullName || viewer.email,
+      appUrl: process.env.APP_URL ?? 'https://app.fortressqc.com',
+      orgName,
+    })
+    const sent = await sendEmail({
+      to: input.email.trim(),
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      // A reply goes to whoever did the inviting, not to a noreply box.
+      replyTo: viewer.email,
+    })
+
+    // Never a failure of the invitation itself. Returning ok:false here
+    // would invite a retry, and the retry would be refused as a
+    // duplicate — leaving an administrator certain it had not worked
+    // when it had.
+    if (!sent.ok) {
+      return {
+        ok: true,
+        warning: sent.reason === 'not_configured'
+          ? `${input.fullName.trim()} now has access, but no invitation email was sent: `
+            + 'this deployment has no RESEND_API_KEY. Tell them to sign in at '
+            + `${process.env.APP_URL ?? 'https://app.fortressqc.com'}/login with this address.`
+          : `${input.fullName.trim()} now has access, but the invitation email did not `
+            + `send. Tell them to sign in with this address. (${sent.error})`,
+      }
+    }
+    return { ok: true }
+  }
+
+  async resendInvite(viewer: Viewer, userId: string): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may send an invitation.' }
+    }
+    const supabase = await createClient()
+    const { data: user, error } = await supabase
+      .from('app_user')
+      .select('email, full_name, role, is_active, auth_user_id, client_org_id')
+      .eq('id', userId).is('deleted_at', null).maybeSingle()
+    if (error) return { ok: false, error: describe(error) }
+    if (!user) return { ok: false, error: 'That person is not in the directory.' }
+
+    if (!user.is_active) {
+      return {
+        ok: false,
+        error: 'That account is switched off. Turn it back on before inviting them in.',
+      }
+    }
+    // Somebody who has signed in already knows the way in. Sending it
+    // again reads as something having gone wrong.
+    if (user.auth_user_id) {
+      return {
+        ok: false,
+        error: `${user.full_name as string} has already signed in, so they do not need `
+          + 'instructions. If they cannot get in, they can ask for a new code at the '
+          + 'sign-in page.',
+      }
+    }
+
+    const orgName = user.client_org_id
+      ? (await this.listClientOrgs(viewer))
+        .find((o) => o.id === user.client_org_id)?.name ?? null
+      : null
+    const mail = buildInviteEmail({
+      fullName: user.full_name as string,
+      role: user.role as UserRole,
+      invitedBy: viewer.fullName || viewer.email,
+      appUrl: process.env.APP_URL ?? 'https://app.fortressqc.com',
+      orgName,
+    })
+    const sent = await sendEmail({
+      to: user.email as string,
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+      replyTo: viewer.email,
+    })
+    // Unlike the invitation itself, sending IS the whole action here, so
+    // a failure is a failure and retrying is the right response.
+    return sent.ok ? { ok: true } : { ok: false, error: sent.error }
   }
 
   async setUserRole(

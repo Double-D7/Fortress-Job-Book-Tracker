@@ -59,7 +59,13 @@ export function UserAdmin({
       })
       const json = await res.json()
       if (!json.ok) { setError(json.error ?? 'That did not go through.'); return false }
-      setNote(ok); router.refresh(); return true
+      // A warning means the thing was done and something alongside it was
+      // not — an invitation granted whose email did not send. Shown in
+      // place of the cheerful note, because "Invited Rodney" with no
+      // email is how somebody ends up waiting for one that never comes.
+      if (json.warning) setError(json.warning)
+      else setNote(ok)
+      router.refresh(); return true
     } catch {
       setError('Could not reach the server.'); return false
     } finally {
@@ -74,7 +80,7 @@ export function UserAdmin({
         email, fullName, role,
         clientOrgId: requirement === 'forbidden' ? null : orgId || null,
       }),
-    }, 'invite', `Invited ${email}.`)
+    }, 'invite', `Invited ${email}. They have been emailed how to sign in.`)
     if (done) { setEmail(''); setFullName(''); setOrgId(''); setInviting(false) }
   }
 
@@ -203,6 +209,28 @@ export function UserAdmin({
                           <Chip tone="idle" title="Invited, but nobody has signed in with this address yet">
                             Not signed in yet
                           </Chip>
+                        )}
+                        {canManage && !u.linked && u.isActive && (
+                          // Only for somebody who has not signed in.
+                          // Inviting again is refused as a duplicate, so
+                          // without this there is no way to send the
+                          // instructions to anybody added before the
+                          // email existed.
+                          <Button
+                            variant="ghost"
+                            disabled={busy === `mail-${u.id}`}
+                            onClick={() => void send(
+                              `/api/users/${u.id}/invite-email`,
+                              { method: 'POST' },
+                              `mail-${u.id}`,
+                              `Sign-in instructions sent to ${u.email}.`,
+                            )}
+                          >
+                            {busy === `mail-${u.id}`
+                              ? <Loader2 size={11} className="animate-spin" />
+                              : <Mail size={11} />}
+                            Send sign-in link
+                          </Button>
                         )}
                         {lastAdmin && (
                           <Chip tone="info" icon={<ShieldCheck size={11} />}>

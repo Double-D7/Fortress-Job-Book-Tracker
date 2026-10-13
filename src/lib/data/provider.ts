@@ -208,6 +208,16 @@ export interface UploadResult {
 export interface ActionResult {
   ok: boolean
   error?: string
+  /**
+   * The action succeeded, but something alongside it did not.
+   *
+   * Distinct from `error` because the two need opposite responses. An
+   * error means try again; a warning means the thing is done and
+   * something else needs attention — an invitation that was granted but
+   * whose email did not send, where retrying would only fail as a
+   * duplicate.
+   */
+  warning?: string
 }
 
 /** A recorded failure, as the administration screen lists it. */
@@ -492,6 +502,17 @@ export interface DataProvider {
    * sign-up that will never come.
    */
   inviteUser(viewer: Viewer, input: InviteInput): Promise<ActionResult>
+
+  /**
+   * Send somebody their sign-in instructions again.
+   *
+   * Needed because inviting is refused as a duplicate once the row
+   * exists, so without this the people invited before the email existed
+   * — and anyone whose copy went to junk — could never be sent one. Only
+   * for somebody who has not signed in yet: once they have, they know
+   * the way in and a repeat is just confusing.
+   */
+  resendInvite(viewer: Viewer, userId: string): Promise<ActionResult>
 
   /** Change a role and its operator together; they are one decision. */
   setUserRole(
@@ -2628,6 +2649,24 @@ class SeedProvider implements DataProvider {
       linked: false,
       createdAt: new Date().toISOString(),
     })
+    return { ok: true }
+  }
+
+  async resendInvite(viewer: Viewer, userId: string): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may send an invitation.' }
+    }
+    const user = this.directory.get(userId)
+    if (!user) return { ok: false, error: 'That person is not in the directory.' }
+    if (!user.isActive) {
+      return {
+        ok: false,
+        error: 'That account is switched off. Turn it back on before inviting them in.',
+      }
+    }
+    // Seed mode sends nothing: there is no key and no outbound anything.
+    // Reported as done rather than faked as a failure, because what is
+    // being exercised here is the decision, not the transport.
     return { ok: true }
   }
 

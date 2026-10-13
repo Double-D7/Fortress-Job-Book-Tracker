@@ -471,3 +471,57 @@ comes back cannot sit closed and unnoticed.
 
 The email is also sent before `notified_at` is stamped, not after, so a
 Resend outage cannot silence a live fault for an hour.
+
+---
+
+## Inviting somebody
+
+"Invite" used to be a permission check and one `INSERT`. It added the
+person to `app_user` and sent nothing, so an administrator added Rodney
+Ring, told him to expect an email, and both of them waited for a message
+no code path produced.
+
+The row is still what grants access. Signing in is a one-time code the
+person asks for themselves, and `app_user` is the allow-list that decides
+whether that gets them anywhere. What was missing was anybody telling
+them so.
+
+Inviting now sends them that, from the web deployment rather than from an
+Edge Function, because an invitation is a reply to something an
+administrator just did and they should be told then and there whether it
+went.
+
+**This needs one variable on the Vercel deployment:**
+
+| Name | Value |
+|---|---|
+| `RESEND_API_KEY` | the same key the Edge Functions use |
+
+Optionally `APP_URL` (defaults to `https://app.fortressqc.com`) and
+`DIGEST_FROM` (defaults to the same sender the digest uses).
+
+Without the key nothing breaks and nobody is left guessing: the person is
+still invited, and the administrator is told on screen that the email did
+not send and that they will have to pass the message on. That is the one
+case where the screen shows a warning rather than the usual confirmation.
+
+**A failed email never fails the invitation.** The access is granted
+before the message is attempted, and returning a failure would invite a
+retry that is then refused as a duplicate — leaving an administrator
+certain it had not worked when it had.
+
+### Sending it again
+
+Inviting the same address twice is refused, so the user list carries a
+**Send sign-in link** button against anybody who has not signed in yet.
+That is the way to reach people added before this existed, and anybody
+whose copy went to junk. It disappears once they have signed in, because
+somebody who is already in does not need instructions and getting them
+reads as something having gone wrong.
+
+### If it lands in junk
+
+Same as the digest: check `Authentication-Results` in the headers before
+assuming anything is misconfigured, and see the DMARC note above. A first
+message to a person who has never been written to before is the most
+likely of all of these to be filed as spam.
