@@ -405,9 +405,9 @@ reference they can read out over the phone. `0039` creates that table.
 
 That is half of it. The other half is somebody being told, because a
 record nobody opens is only slightly better than no record. The Edge
-Function in `supabase/functions/error-alert` runs every fifteen minutes,
-collects the open faults that are due, and emails them to every active
-`fortress_admin`. Nobody is on a configured recipient list: the function
+Function in `supabase/functions/error-alert` runs once a day at 13:30
+UTC, half an hour after the digest, collects the open faults that are
+due, and emails them to every active `fortress_admin`. Nobody is on a configured recipient list: the function
 reads the directory, so an administrator added next month starts
 receiving these without anybody remembering to wire them in.
 
@@ -436,8 +436,8 @@ and `DIGEST_FROM` are already set by the digest and are reused.
 
 Until `ALERT_SECRET` is set the function returns 503 on every run and
 sends nothing. That is deliberate: an unset secret must not mean "open
-to anyone", and a cron run failing loudly every quarter hour is easier
-to notice than one that quietly succeeds at nothing.
+to anyone", and a run that fails loudly is easier to notice than one
+that quietly succeeds at nothing.
 
 **3. The schedule** is created by `0040`. It reads the secret from Vault
 when it fires rather than storing it in `cron.job`.
@@ -460,17 +460,39 @@ select reference, error_name, occurrences, last_seen_at
 
 An empty second query is the normal state and means nothing is broken.
 
+### Changing the cadence
+
+It ran every fifteen minutes to begin with. That is a pager, and this
+system has no on-call rota: a notification arriving four times an hour
+stops being read long before it stops being sent. Daily, beside the
+morning digest, is a list somebody works through.
+
+The schedule is the only thing to change. The quiet window inside the
+function is what stops a fault repeating, and at sixty minutes it is
+well under any sensible interval:
+
+```sql
+select cron.alter_job(
+  (select jobid from cron.job where jobname = 'error-alert'),
+  schedule => '*/15 * * * *');
+```
+
+One consequence of the daily run: a backlog drains one batch of 50 per
+day rather than one per quarter hour, so the email says how many faults
+are due as well as how many it is showing. A subject reading "50 errors"
+when there are 300 would be the only thing most people saw.
+
 ### Why it does not email on every throw
 
 A broken page throws for everybody who opens it. One email per
 occurrence would be a hundred messages for one bug, and a hundred
-messages are read as often as none. Each fault is mentioned once, then
-goes quiet for an hour. Closing it on the admin screen records that it
+messages are read as often as none. Each fault is mentioned once per daily run while it
+stays open, and closing it is what stops that. Closing it on the admin screen records that it
 was dealt with; it reopens by itself if it happens again, so a bug that
 comes back cannot sit closed and unnoticed.
 
-The email is also sent before `notified_at` is stamped, not after, so a
-Resend outage cannot silence a live fault for an hour.
+The email is sent before `notified_at` is stamped, not after, so a
+Resend outage cannot silence a live fault until tomorrow.
 
 ---
 

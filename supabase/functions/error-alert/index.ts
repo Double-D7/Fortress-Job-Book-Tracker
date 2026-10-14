@@ -18,11 +18,27 @@
  * has been told about, or one last mentioned longer ago than the
  * quiet window.
  *
+ * ## Why once a day
+ *
+ * It ran every fifteen minutes to begin with, on the reasoning that
+ * somebody should hear about a broken page while the person who hit it
+ * is still on the phone. In practice that is a pager for a system that
+ * does not have an on-call rota, and a notification that arrives four
+ * times an hour stops being read long before it stops being sent. Once
+ * a day, beside the morning digest, is a list somebody actually works
+ * through. A fault that is genuinely urgent is one somebody is already
+ * ringing about.
+ *
+ * The cost is that a backlog now drains a batch per day rather than a
+ * batch per quarter hour, which is why the message reports how many
+ * faults are due as well as how many it is showing.
+ *
  * ## Why it stamps after sending, not before
  *
  * `notified_at` is what suppresses the next alert. Stamping before the
- * send would mean a failed email silences the fault for an hour, which
- * is the one outcome worse than a duplicate.
+ * send would mean a failed email silences the fault until tomorrow,
+ * which is the one outcome worse than a duplicate — and a day of
+ * silence costs far more than the quarter hour it used to.
  */
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -33,13 +49,23 @@ const RESEND_KEY = Deno.env.get('RESEND_API_KEY')
 /** Shared secret so only pg_cron can trigger a run. */
 const ALERT_SECRET = Deno.env.get('ALERT_SECRET')
 
-/** How long a group stays quiet after being mentioned. Matches the
- *  default the application passes to `report_error`. */
+/**
+ * How long a group stays quiet after being mentioned. Matches the
+ * default the application passes to `report_error`.
+ *
+ * Deliberately far shorter than the gap between runs. If it were close
+ * to twenty-four hours, a run starting a minute earlier than yesterday's
+ * would find nothing due and skip a fault for a whole day. Well under
+ * the interval means every open fault is due on every run, which is what
+ * a daily "still broken" list should be.
+ */
 const QUIET_MINUTES = 60
 
-/** Enough faults to show the shape of a bad morning without producing a
- *  message nobody finishes. */
-const MAX_IN_EMAIL = 20
+/** Enough faults to show the shape of a bad day without producing a
+ *  message nobody finishes. Raised from 20 when this moved to a daily
+ *  schedule: a day's worth accumulates where a quarter hour's did not,
+ *  and anything over the limit waits a whole day for the next batch. */
+const MAX_IN_EMAIL = 50
 
 interface Row {
   id: string
@@ -67,15 +93,23 @@ function when(iso: string): string {
   return hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`
 }
 
-function subjectFor(rows: Row[]): string {
-  if (rows.length === 1) {
+function subjectFor(rows: Row[], totalDue: number): string {
+  if (totalDue === 1 && rows.length === 1) {
     const r = rows[0]!
     return `Job Book Tracker error: ${r.error_name} (${r.reference})`
   }
-  return `Job Book Tracker: ${rows.length} errors need attention`
+  // The real total, not the number that fitted. A subject that undercounts
+  // is the only part most people read.
+  return `Job Book Tracker: ${totalDue} errors need attention`
 }
 
-function bodyFor(rows: Row[]): { html: string; text: string } {
+function bodyFor(rows: Row[], totalDue: number): { html: string; text: string } {
+  /** Said plainly when the list is cut short, because the rest waits a
+   *  day rather than a quarter of an hour. */
+  const truncated = totalDue > rows.length
+    ? `Showing the ${rows.length} most recent of ${totalDue}. The rest are in the `
+      + `list on the admin screen, and come in tomorrow's email.`
+    : ''
   const lines = rows.map((r) => {
     const times = r.occurrences === 1 ? 'once' : `${r.occurrences} times`
     return {
@@ -87,6 +121,7 @@ function bodyFor(rows: Row[]): { html: string; text: string } {
 
   const text = [
     'The Job Book Tracker recorded these failures.',
+    ...(truncated ? ['', truncated] : []),
     '',
     ...lines.flatMap((l) => [l.head, `  ${l.detail}`, `  ${l.meta}`, '']),
     `Full list: ${APP_URL}/admin`,
@@ -99,8 +134,9 @@ function bodyFor(rows: Row[]): { html: string; text: string } {
   const html = `
 <div style="font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;max-width:640px">
   <p style="font-size:14px;color:#3C4C66;margin:0 0 16px">
-    The Job Book Tracker recorded ${rows.length === 1 ? 'a failure' : `${rows.length} failures`}.
+    The Job Book Tracker recorded ${totalDue === 1 ? 'a failure' : `${totalDue} failures`}.
   </p>
+  ${truncated ? `<p style="font-size:12px;color:#6C7B91;margin:0 0 14px">${truncated}</p>` : ''}
   ${lines.map((l) => `
   <div style="border-left:3px solid #A62F1C;background:#F8F9FB;padding:10px 14px;margin:0 0 10px">
     <div style="font-family:ui-monospace,monospace;font-size:13px;font-weight:700;color:#16243A">
@@ -147,9 +183,16 @@ Deno.serve(async (req: Request) => {
   // Open faults either never mentioned or last mentioned before the
   // window. Ordered by most recent so a message truncated at the limit
   // keeps what is happening now.
-  const { data, error } = await supabase
+  //
+  // The exact count comes back alongside, because the rows are capped
+  // and the message has to say how many there really are. Running daily
+  // rather than quarter-hourly makes that matter: a backlog used to
+  // drain within the hour and now takes a day per batch, so a subject
+  // line reading "50 errors" when there are 300 would be the only thing
+  // anybody saw.
+  const { data, error, count } = await supabase
     .from('error_report')
-    .select('*')
+    .select('*', { count: 'exact' })
     .is('resolved_at', null)
     // The timestamp is quoted because it carries dots and colons, which
     // are what PostgREST splits a filter on. Unquoted it parses as far
@@ -165,6 +208,8 @@ Deno.serve(async (req: Request) => {
 
   const rows = (data ?? []) as Row[]
   if (rows.length === 0) return Response.json({ ok: true, sent: 0, faults: 0 })
+  /** Everything due, which is not the same as everything shown. */
+  const totalDue = count ?? rows.length
 
   // Everyone who can act on it. Reading the directory rather than a
   // configured address means somebody made an admin tomorrow starts
@@ -182,21 +227,23 @@ Deno.serve(async (req: Request) => {
     return Response.json({ ok: false, error: 'no active admin to alert' }, { status: 500 })
   }
 
-  const { html, text } = bodyFor(rows)
+  const { html, text } = bodyFor(rows, totalDue)
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${RESEND_KEY}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ from: FROM, to, subject: subjectFor(rows), html, text }),
+    body: JSON.stringify({
+      from: FROM, to, subject: subjectFor(rows, totalDue), html, text,
+    }),
   })
 
   if (!res.ok) {
     const detail = await res.text()
     console.error('Resend refused the alert:', res.status, detail)
     // Deliberately no stamp. A failed send must not silence the fault
-    // for an hour; the next run will try again.
+    // until tomorrow; the next run will try again.
     return Response.json(
       { ok: false, error: `Resend ${res.status}: ${detail}` }, { status: 502 },
     )
@@ -207,5 +254,7 @@ Deno.serve(async (req: Request) => {
     await supabase.rpc('mark_error_notified', { p_fingerprint: r.fingerprint })
   }
 
-  return Response.json({ ok: true, sent: to.length, faults: rows.length })
+  return Response.json({
+    ok: true, sent: to.length, faults: rows.length, due: totalDue,
+  })
 })
