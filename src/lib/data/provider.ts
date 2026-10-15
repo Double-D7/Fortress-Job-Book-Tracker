@@ -2321,10 +2321,21 @@ class SeedProvider implements DataProvider {
     }
 
     const entry = credentialToCertificate(input, subjectId)
-    // The library card. Keyed on person, type and issue date, so
-    // re-filing the same card replaces it and a renewal files alongside
-    // rather than over.
-    const cardId = recordId('personnel_credential', subjectId, entry.certType, entry.issueDate)
+    // The library card. Keyed on person, type, METHOD SET and issue
+    // date, so re-filing the same card replaces it and a renewal files
+    // alongside rather than over.
+    //
+    // The method set is in the key for the reason migration 0047 widens
+    // the database's unique index: an ASNT card certifies each method on
+    // its own dates, and Edgar Mercado's four lines share a person, a
+    // type and a certification date. Without the methods here, filing
+    // that card would be four writes onto one row and three methods
+    // would vanish. An undated card keys on the expiry it does print.
+    const cardId = recordId(
+      'personnel_credential', subjectId, entry.certType,
+      (entry.ndtMethods ?? []).join(','),
+      entry.issueDate ?? `exp:${entry.expiryDate ?? ''}`,
+    )
     const card: PersonnelCredential = {
       id: cardId,
       subjectType: entry.subjectType,
@@ -2396,8 +2407,10 @@ class SeedProvider implements DataProvider {
       if (at >= 0) {
         quals[at] = { ...quals[at]!, ...filled }
       } else {
+        // `filled` came from `credentialToQualification`, which has
+        // already refused a welder without a date.
         const id = recordId('welder_qualification', welderId,
-          input.qualificationCode!, input.issueDate)
+          input.qualificationCode!, filled.qualificationDate)
         if (quals.some((q) => q.id === id)) {
           const existing = quals.findIndex((q) => q.id === id)
           quals[existing] = { ...quals[existing]!, ...filled }

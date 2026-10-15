@@ -723,11 +723,20 @@ export interface PersonnelCredential {
   subjectId: string
   certType: string
   issuingBody?: string | null
-  /** Required here, unlike the book register, which tolerates an unread
-   *  page. Nothing enters the library unread: the point of it is to
-   *  answer "was this person covered on that date" without opening the
-   *  file. */
-  issueDate: IsoDate
+  /**
+   * The date the term began, where the certificate prints one.
+   *
+   * Null where it does not. All four AWS CWI certificates on file carry
+   * a certificate number and an expiry and no issue date at all — AWS
+   * does not print one — and a library that refused them would be
+   * refusing what the paper says, which is the trap section 6 was in.
+   *
+   * Null is not "valid since the beginning of time". `coversDate`
+   * refuses to certify any work date against an unknown start, so an
+   * undated card is on file and visible and certifies nothing until
+   * somebody records when the term began.
+   */
+  issueDate: IsoDate | null
   expiryDate?: IsoDate | null
   /** Which methods an NDT card certifies. Null is "not recorded", which
    *  certifies nothing. */

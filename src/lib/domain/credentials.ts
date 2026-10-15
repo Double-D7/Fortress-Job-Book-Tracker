@@ -57,7 +57,12 @@ export interface CredentialInput {
   employer?: string | null
   certType: string
   issuingBody?: string | null
-  issueDate: IsoDate
+  /**
+   * The date the term began. Null is allowed only where the certificate
+   * prints none — see `printsNoIssueDate`. An NDT method line and a
+   * welder's WPQ both state theirs, and are refused without it.
+   */
+  issueDate: IsoDate | null
   expiryDate?: IsoDate | null
   /** NDT only. Empty is rejected rather than stored, because an empty
    *  list reads as "certifies nothing" and nobody means that. */
@@ -66,6 +71,22 @@ export interface CredentialInput {
   qualificationCode?: QualificationCode | null
   /** Welder only: the welding process, as the certificate prints it. */
   process?: string | null
+}
+
+/**
+ * Whether this credential may be filed with no issue date.
+ *
+ * Only a CWI card. Every AWS QC1 certificate examined — Emig, Kidd,
+ * Cole, Hayman — prints a certificate number and an expiration date and
+ * nothing else; AWS does not issue one with a start date on it. An ASNT
+ * method line and a welder's WPQ both print theirs, so for those the
+ * absence is an unread page rather than a fact about the document.
+ *
+ * Permission to omit it is not permission to assume it. An undated card
+ * certifies no work date; it is on file, and visible, and that is all.
+ */
+export function printsNoIssueDate(subjectType: CredentialSubject): boolean {
+  return subjectType === 'cwi'
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -111,11 +132,16 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
     out.push({ field: 'certType', message: `Keep the certificate type under ${MAX_TEXT} characters.` })
   }
 
+  const issue = clean(input.issueDate)
+  const expiry = clean(input.expiryDate)
+
   // The domain refuses to certify anything against an unread card, so a
   // credential with no issue date would file and then certify nothing.
-  // Better to refuse it here, where the person can read the date off the
-  // card in front of them.
-  if (!ISO_DATE.test(clean(input.issueDate))) {
+  // Refused here, where the person can read the date off the card in
+  // front of them — unless the card genuinely prints none.
+  if (issue && !ISO_DATE.test(issue)) {
+    out.push({ field: 'issueDate', message: 'Write the issue date as YYYY-MM-DD.' })
+  } else if (!issue && !printsNoIssueDate(input.subjectType)) {
     out.push({
       field: 'issueDate',
       message: input.subjectType === 'welder'
@@ -125,16 +151,27 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
         ? 'The date the welder qualified is on the WPQ and is required. '
           + 'It is the date the overview sheet does not carry, and without it '
           + 'the qualification stays unverifiable.'
-        : 'The issue date is on the card and is required.',
+        : 'Each method line carries the date it was certified, and it is required.',
     })
   }
 
-  const expiry = clean(input.expiryDate)
   if (expiry && !ISO_DATE.test(expiry)) {
     out.push({ field: 'expiryDate', message: 'Write the expiry as YYYY-MM-DD, or leave it blank.' })
   }
+
+  // A credential with neither date answers nothing the register asks.
+  // Reachable only for a CWI card, which is the one allowed to omit the
+  // issue date — and then the expiry is what makes it evidence.
+  if (!issue && !expiry) {
+    out.push({
+      field: 'expiryDate',
+      message: 'A card with no issue date must at least carry the expiry it prints. '
+        + 'With neither, there is nothing to check a work date against.',
+    })
+  }
+
   if (!out.some((p) => p.field === 'issueDate' || p.field === 'expiryDate')
-      && expiry && expiry < clean(input.issueDate)) {
+      && issue && expiry && expiry < issue) {
     out.push({ field: 'expiryDate', message: 'The card cannot expire before it was issued.' })
   }
 
@@ -195,11 +232,25 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
  * blob.
  */
 export function credentialFilename(
-  entry: { certType: string; issueDate: string }, originalFilename: string,
+  entry: {
+    certType: string
+    issueDate: string | null
+    expiryDate?: string | null
+    ndtMethods?: readonly string[] | null
+  },
+  originalFilename: string,
 ): string {
   const ext = originalFilename.toLowerCase().split('.').pop() ?? 'pdf'
   const safe = (s: string) => s.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '')
-  return `${safe(entry.certType)}_${entry.issueDate}.${safe(ext) || 'pdf'}`
+  // The method belongs in the name now that one certificate files as
+  // several lines: four files called `ASNT_Level_II_2025-10-14` in one
+  // SharePoint folder tell a reader nothing.
+  const methods = (entry.ndtMethods ?? []).join('')
+  // An undated card is named for the expiry it does print, so the file
+  // still sorts and still says which term it covers.
+  const when = entry.issueDate ?? (entry.expiryDate ? `exp_${entry.expiryDate}` : 'undated')
+  return [safe(entry.certType), methods && safe(methods), when]
+    .filter(Boolean).join('_') + `.${safe(ext) || 'pdf'}`
 }
 
 /**
@@ -284,7 +335,7 @@ export function credentialToCertificate(
   subjectId: string
   certType: string
   issuingBody: string | null
-  issueDate: IsoDate
+  issueDate: IsoDate | null
   expiryDate: IsoDate | null
   ndtMethods: NdtMethod[] | null
 } {
@@ -309,7 +360,7 @@ export function credentialToCertificate(
     subjectId,
     certType: clean(input.certType),
     issuingBody: clean(input.issuingBody) || null,
-    issueDate: clean(input.issueDate),
+    issueDate: clean(input.issueDate) || null,
     expiryDate: clean(input.expiryDate) || null,
     ndtMethods: methods.length > 0 ? methods : null,
   }
@@ -375,4 +426,91 @@ export function openQualificationId<
     && !q.qualificationDate
     && !q.deletedAt)
   return open?.id ?? null
+}
+
+/**
+ * One line of a certificate's method table.
+ *
+ * ASNT-derived certifications do not certify a person; they certify a
+ * person for a method, and each method carries its own dates. Every
+ * certification read on 2026-10-15 stated them separately, and they
+ * were rarely the same day:
+ *
+ *   Castaneda-Quezadas  MT 2/7/2028   PT 2/7/2028    RT 2/8/2028
+ *   LeCompte            RT 5/2/2028   MT 5/4/2028    PT 5/10/2028
+ *   Mercado             PT 2028-10-08 UTT 2028-10-08 MT/RT 2028-10-09
+ *
+ * The form used to take one pair of dates and apply it to every ticked
+ * method, which could only be right by luck. A line is what the page
+ * actually prints, and each one files as its own credential.
+ */
+export interface CredentialMethodLine {
+  methods: NdtMethod[]
+  issueDate: IsoDate | null
+  expiryDate?: IsoDate | null
+  /** As the card prints it: "Yoke", "Gamma & X-Ray", "Thickness Only".
+   *  Recorded on the certificate type so the register says which of two
+   *  RT lines — film or computed radiography — is meant. */
+  limitation?: string | null
+}
+
+/**
+ * The credentials one filed certificate becomes.
+ *
+ * A CWI card and a welder's WPQ are one each. An NDT certification is
+ * one per method line, sharing the person, the issuer and the page, and
+ * differing in methods and dates. They file as separate rows because
+ * they expire separately, and a register that could not say so would be
+ * claiming a technician was covered for RT on the strength of their MT.
+ */
+export function expandCredentialLines(
+  base: CredentialInput,
+  lines: readonly CredentialMethodLine[],
+): CredentialInput[] {
+  if (base.subjectType !== 'ndt_technician') return [base]
+  if (lines.length === 0) return [base]
+  return lines.map((line) => ({
+    ...base,
+    ndtMethods: line.methods,
+    issueDate: line.issueDate,
+    expiryDate: line.expiryDate ?? null,
+    // The limitation rides on the certificate type, which is the field
+    // the register already shows and searches. "ASNT Level II (Gamma &
+    // X-Ray)" distinguishes the two RT lines American Piping issues.
+    certType: line.limitation?.trim()
+      ? `${base.certType.trim()} (${line.limitation.trim()})`
+      : base.certType,
+  }))
+}
+
+/** Every problem across every line, each tagged with the line it came
+ *  from so a form can show it in the right row. */
+export function validateCredentialLines(
+  base: CredentialInput,
+  lines: readonly CredentialMethodLine[],
+): (CredentialProblem & { line?: number })[] {
+  const inputs = expandCredentialLines(base, lines)
+  const out: (CredentialProblem & { line?: number })[] = []
+  inputs.forEach((input, i) => {
+    for (const p of validateCredential(input)) {
+      out.push(inputs.length > 1 ? { ...p, line: i } : p)
+    }
+  })
+
+  // Two lines for the same method on the same dates are one line typed
+  // twice; they would collide in the library and silently become one.
+  const seen = new Map<string, number>()
+  inputs.forEach((input, i) => {
+    const key = `${[...(input.ndtMethods ?? [])].sort().join(',')}|${input.issueDate ?? ''}`
+    const first = seen.get(key)
+    if (first === undefined) seen.set(key, i)
+    else {
+      out.push({
+        field: 'ndtMethods',
+        line: i,
+        message: `This is the same method and date as line ${first + 1}.`,
+      })
+    }
+  })
+  return out
 }

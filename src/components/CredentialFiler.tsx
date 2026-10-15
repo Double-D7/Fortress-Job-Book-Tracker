@@ -17,11 +17,28 @@
  * reads the card and types what it says, and the card is filed beside
  * what they typed so the next person can check them.
  *
- * ## Why methods are not optional
+ * ## Why an NDT card is a table rather than a row
  *
- * ASNT certifies per method. A card with no methods recorded certifies
- * no work, and leaving the field blank is what let a PT-qualified
- * technician pass an RT report for the life of this application.
+ * ASNT certifies per method, and each method carries its own dates.
+ * Every real certification read on 2026-10-15 proved it — Mercado's PT
+ * and UT expire 2028-10-08, his MT and RT 2028-10-09 — and the form
+ * used to take one pair of dates and apply them to every ticked method,
+ * which could only ever be right by luck. So the methods are a table
+ * now, one line per line of the certificate, and each files as its own
+ * credential.
+ *
+ * Methods are still not optional. A card with no methods recorded
+ * certifies no work, and leaving the field blank is what let a
+ * PT-qualified technician pass an RT report for the life of this
+ * application.
+ *
+ * ## Why a CWI card may have no issue date
+ *
+ * Because AWS does not print one. All four certificates on file carry a
+ * certificate number and an expiration date and nothing else. The field
+ * is optional for a CWI and required everywhere else, and an undated
+ * card certifies no work date — it is on file, and visible, and that is
+ * all until somebody records when the term began.
  *
  * ## Why a welder's dates read differently
  *
@@ -34,10 +51,11 @@
  */
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Loader2, Paperclip, Plus } from 'lucide-react'
+import { Loader2, Paperclip, Plus, X } from 'lucide-react'
 import {
   NDT_METHODS, QUALIFICATION_CODES, QUALIFICATION_CODE_LABEL,
-  defaultCertType, type CredentialSubject,
+  defaultCertType, printsNoIssueDate, validateCredentialLines,
+  type CredentialMethodLine, type CredentialSubject,
 } from '@/lib/domain/credentials'
 import type { NdtMethod, QualificationCode } from '@/lib/domain/types'
 import type { RosterMember } from '@/lib/data/provider'
@@ -74,12 +92,16 @@ export function CredentialFiler({
   const [issuingBody, setIssuingBody] = useState('')
   const [issueDate, setIssueDate] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
-  const [methods, setMethods] = useState<NdtMethod[]>([])
+  const [lines, setLines] = useState<CredentialMethodLine[]>(
+    [{ methods: [], issueDate: '', expiryDate: '', limitation: '' }],
+  )
   const [qualificationCode, setQualificationCode] = useState<QualificationCode>('ASME_IX')
   const [process, setProcess] = useState('')
   const [file, setFile] = useState<File | null>(null)
 
+  const isTech = subjectType === 'ndt_technician'
   const isWelder = subjectType === 'welder'
+  const issueOptional = printsNoIssueDate(subjectType)
   const roster = subjectType === 'cwi' ? cwis : isWelder ? welders : technicians
   const addingPerson = subjectId === NEW_PERSON
 
@@ -89,7 +111,7 @@ export function CredentialFiler({
     // so neither survives the switch. Carrying them over is how a CWI
     // ends up filed with radiographic methods.
     setSubjectId(NEW_PERSON)
-    setMethods([])
+    setLines([{ methods: [], issueDate: '', expiryDate: '', limitation: '' }])
     setProcess('')
     setQualificationCode('ASME_IX')
     setCertType(defaultCertType(next))
@@ -98,7 +120,8 @@ export function CredentialFiler({
   function reset() {
     setFullName(''); setInitials(''); setEmployer('')
     setIssuingBody(''); setIssueDate(''); setExpiryDate('')
-    setMethods([]); setProcess(''); setQualificationCode('ASME_IX')
+    setLines([{ methods: [], issueDate: '', expiryDate: '', limitation: '' }])
+    setProcess(''); setQualificationCode('ASME_IX')
     setFile(null); setSubjectId(NEW_PERSON)
     setCertType(defaultCertType(subjectType))
   }
@@ -118,7 +141,7 @@ export function CredentialFiler({
       form.set('issuingBody', issuingBody)
       form.set('issueDate', issueDate)
       form.set('expiryDate', expiryDate)
-      for (const m of methods) form.append('ndtMethods', m)
+      if (isTech) form.set('methodLines', JSON.stringify(lines))
       if (isWelder) {
         form.set('qualificationCode', qualificationCode)
         form.set('process', process)
@@ -139,10 +162,20 @@ export function CredentialFiler({
     }
   }
 
-  const ready = !!file && !!issueDate && !!certType.trim()
-    && (addingPerson ? !!fullName.trim() : !!subjectId)
-    && (subjectType !== 'ndt_technician' || methods.length > 0)
-    && (!isWelder || !!process.trim())
+  // The same rules the server applies, so the button is disabled for
+  // the reasons the server would reject it rather than for its own.
+  const problems = validateCredentialLines(
+    {
+      subjectType, subjectId: addingPerson ? null : subjectId,
+      fullName, certType, issuingBody,
+      issueDate: issueDate || null, expiryDate: expiryDate || null,
+      ndtMethods: isTech ? [] : null,
+      qualificationCode: isWelder ? qualificationCode : null,
+      process: isWelder ? process : null,
+    },
+    isTech ? lines : [],
+  )
+  const ready = !!file && problems.length === 0
 
   if (!open) {
     return (
@@ -246,7 +279,7 @@ export function CredentialFiler({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className={`flex flex-wrap items-center gap-2 ${isTech ? 'hidden' : ''}`}>
           <label className="text-2xs text-ink-secondary">
             {isWelder ? 'Qualified on' : 'Issued'}
           </label>
@@ -262,29 +295,89 @@ export function CredentialFiler({
           <span className="text-2xs text-ink-muted">
             {isWelder
               ? 'The qualification date is the one the overview sheet never carries.'
-              : 'Blank expiry means the card prints none.'}
+              : issueOptional
+                ? 'An AWS card prints no issue date. Leave it blank and the expiry stands alone.'
+                : 'Blank expiry means the card prints none.'}
           </span>
         </div>
 
-        {subjectType === 'ndt_technician' && (
-          <div>
-            <div className="flex flex-wrap items-center gap-3">
+        {isTech && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
               <label className="text-2xs text-ink-secondary">Methods</label>
-              {NDT_METHODS.map((m) => (
-                <label key={m} className="flex items-center gap-1 text-xs text-ink">
-                  <input
-                    type="checkbox"
-                    checked={methods.includes(m)}
-                    onChange={(e) => setMethods((prev) =>
-                      e.target.checked ? [...prev, m] : prev.filter((x) => x !== m))}
-                  />
-                  {m}
-                </label>
-              ))}
+              <Button
+                variant="ghost"
+                onClick={() => setLines((prev) => [
+                  ...prev, { methods: [], issueDate: '', expiryDate: '', limitation: '' },
+                ])}
+              >
+                <Plus size={11} /> Add a method line
+              </Button>
             </div>
-            <p className="mt-1 text-2xs text-ink-muted">
-              ASNT certifies per method. Tick only what this card covers: a technician
-              certified for PT is not thereby certified to interpret an RT film.
+
+            {lines.map((line, i) => (
+              <div
+                key={i}
+                className="rounded-md border border-hairline bg-surface-raised p-2 space-y-1.5"
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  {NDT_METHODS.map((m) => (
+                    <label key={m} className="flex items-center gap-1 text-xs text-ink">
+                      <input
+                        type="checkbox"
+                        checked={line.methods.includes(m)}
+                        onChange={(e) => setLines((prev) => prev.map((l, j) =>
+                          j !== i ? l : {
+                            ...l,
+                            methods: e.target.checked
+                              ? [...l.methods, m]
+                              : l.methods.filter((x) => x !== m),
+                          }))}
+                      />
+                      {m}
+                    </label>
+                  ))}
+                  <input
+                    className={`${field} ml-1 min-w-[9rem] flex-1`}
+                    placeholder="Limited to — Yoke, Gamma & X-Ray, Thickness Only"
+                    value={line.limitation ?? ''}
+                    maxLength={80}
+                    onChange={(e) => setLines((prev) => prev.map((l, j) =>
+                      j !== i ? l : { ...l, limitation: e.target.value }))}
+                  />
+                  {lines.length > 1 && (
+                    <button
+                      type="button"
+                      aria-label={`Remove method line ${i + 1}`}
+                      className="text-ink-muted hover:text-status-critical"
+                      onClick={() => setLines((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-2xs text-ink-secondary">Certified</label>
+                  <input
+                    type="date" className={field} value={line.issueDate ?? ''}
+                    onChange={(e) => setLines((prev) => prev.map((l, j) =>
+                      j !== i ? l : { ...l, issueDate: e.target.value }))}
+                  />
+                  <label className="ml-2 text-2xs text-ink-secondary">Expires</label>
+                  <input
+                    type="date" className={field} value={line.expiryDate ?? ''}
+                    onChange={(e) => setLines((prev) => prev.map((l, j) =>
+                      j !== i ? l : { ...l, expiryDate: e.target.value }))}
+                  />
+                </div>
+              </div>
+            ))}
+
+            <p className="text-2xs text-ink-muted">
+              One line per line of the certificate. ASNT certifies each method on its
+              own dates and they are often days apart, so each line files as its own
+              credential and expires on its own.
             </p>
           </div>
         )}

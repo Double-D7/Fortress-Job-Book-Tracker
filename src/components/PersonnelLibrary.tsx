@@ -132,10 +132,19 @@ export function PersonnelLibrary({
                 // book's question and not this screen's.
                 const status = evaluateCert(
                   { expiryDate: e.expiryDate ?? null } as never, WARN_DAYS, today)
-                // A qualification read off the overview sheet carries an
-                // expiry and no start, which is precisely what makes it
-                // unverifiable. Said out loud rather than shown blank.
-                const unverifiable = e.kind === 'welder' && !e.issueDate
+                // A credential with an expiry and no start date cannot
+                // show the person was covered on the day they signed.
+                // Two different reasons, both worth saying out loud
+                // rather than showing blank:
+                //
+                //   a welder qualification read off the overview sheet,
+                //   which simply does not carry the date; and
+                //
+                //   an AWS CWI certificate, which does not print one at
+                //   all — the card is complete and the date is still
+                //   unknown.
+                const undated = !e.issueDate
+                const unverifiable = undated && (e.kind === 'welder' || e.kind === 'cwi')
                 return (
                   <Tr key={e.id}>
                     <Td className="font-medium text-ink">{e.personName}</Td>
@@ -159,9 +168,17 @@ export function PersonnelLibrary({
                     </Td>
                     <Td className="tnum font-mono text-ink-secondary">
                       {e.issueDate ?? (
-                        <Chip tone="progress" title="The overview sheet gave an expiry and no start date, so nothing on file shows the welder was qualified on the day they welded">
-                          Not on file
-                        </Chip>
+                        e.kind === 'cwi'
+                          ? (
+                            <Chip tone="idle" title="AWS does not print an issue date on a CWI certificate. The card is complete; the date the term began is not on it, so nothing here shows the inspector was certified on the day they signed.">
+                              Not printed
+                            </Chip>
+                          )
+                          : (
+                            <Chip tone="progress" title="The overview sheet gave an expiry and no start date, so nothing on file shows the welder was qualified on the day they welded">
+                              Not on file
+                            </Chip>
+                          )
                       )}
                     </Td>
                     <Td className="tnum font-mono">

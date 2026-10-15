@@ -13,7 +13,8 @@
  * the only place that says whether an input is acceptable.
  */
 import {
-  NDT_METHODS, QUALIFICATION_CODES, type CredentialInput, type CredentialSubject,
+  NDT_METHODS, QUALIFICATION_CODES, expandCredentialLines,
+  type CredentialInput, type CredentialMethodLine, type CredentialSubject,
 } from '@/lib/domain/credentials'
 import type { NdtMethod, QualificationCode } from '@/lib/domain/types'
 
@@ -52,6 +53,52 @@ export function ndtMethodsFrom(form: FormData): NdtMethod[] {
     .filter((m): m is NdtMethod => (NDT_METHODS as readonly string[]).includes(m))
 }
 
+/**
+ * The method table a form submitted, if it submitted one.
+ *
+ * Sent as JSON in a single field rather than as indexed form keys
+ * (`line.0.methods`), because the rows are a list of objects and
+ * reassembling that from flat keys is where off-by-one bugs live.
+ * Anything unparseable yields no lines, and the credential falls back
+ * to the single-line shape — which validation then judges on its own
+ * merits rather than filing something half-read.
+ */
+export function methodLinesFrom(form: FormData): CredentialMethodLine[] {
+  const raw = form.get('methodLines')
+  if (typeof raw !== 'string' || !raw.trim()) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { return [] }
+  if (!Array.isArray(parsed)) return []
+
+  const out: CredentialMethodLine[] = []
+  for (const row of parsed) {
+    if (typeof row !== 'object' || row === null) continue
+    const r = row as Record<string, unknown>
+    const methods = Array.isArray(r.methods)
+      ? r.methods.filter((m): m is NdtMethod =>
+          typeof m === 'string' && (NDT_METHODS as readonly string[]).includes(m))
+      : []
+    const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+    out.push({
+      methods,
+      issueDate: str(r.issueDate) || null,
+      expiryDate: str(r.expiryDate) || null,
+      limitation: str(r.limitation) || null,
+    })
+  }
+  return out
+}
+
+/**
+ * Every credential this upload becomes.
+ *
+ * One for a CWI card or a welder's WPQ. One per method line for an NDT
+ * certification, because each line expires on its own date.
+ */
+export function credentialsFromForm(form: FormData): CredentialInput[] {
+  return expandCredentialLines(credentialFromForm(form), methodLinesFrom(form))
+}
+
 export function credentialFromForm(form: FormData): CredentialInput {
   const subjectType = credentialSubjectFrom(text(form, 'subjectType'))
   const welder = subjectType === 'welder'
@@ -63,7 +110,7 @@ export function credentialFromForm(form: FormData): CredentialInput {
     employer: text(form, 'employer') || null,
     certType: text(form, 'certType'),
     issuingBody: text(form, 'issuingBody') || null,
-    issueDate: text(form, 'issueDate'),
+    issueDate: text(form, 'issueDate') || null,
     expiryDate: text(form, 'expiryDate') || null,
     // Each field is read only for the roster it belongs to. A welder
     // form that carried methods, or a CWI form that carried a process,

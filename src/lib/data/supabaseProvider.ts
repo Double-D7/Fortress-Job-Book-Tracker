@@ -1463,7 +1463,7 @@ export class SupabaseProvider implements DataProvider {
           ? { id: open.id as string, ...filled }
           : {
             id: recordId('welder_qualification', subjectId,
-              input.qualificationCode!, input.issueDate),
+              input.qualificationCode!, filled.qualificationDate),
             ...filled, source: 'filed_certificate',
           },
         COLUMNS.welder_qualification,
@@ -1491,7 +1491,11 @@ export class SupabaseProvider implements DataProvider {
         mimeType: sourceMimeType(filename),
         uploadedBy: viewer.id,
       }, COLUMNS.personnel_credential),
-      { onConflict: 'subject_id,cert_type,issue_date' },
+      // Matches `personnel_credential_live` as 0047 widens it. The
+      // method set is in the key because an ASNT card certifies each
+      // method on its own dates; without it, a four-method certification
+      // upserts onto one row and keeps only the last line.
+      { onConflict: 'subject_id,cert_type,ndt_methods,issue_date' },
     )
     if (cardError) {
       // Leave no object behind that no row points at, unless another

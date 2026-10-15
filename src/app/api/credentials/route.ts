@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
+import { fileCredentials } from '@/lib/http/fileCredentials'
 import type { CredentialInput } from '@/lib/domain/credentials'
-import { MAX_CREDENTIAL_BYTES, credentialFromForm } from '@/lib/http/credentialForm'
+import { MAX_CREDENTIAL_BYTES, credentialsFromForm } from '@/lib/http/credentialForm'
 
 /**
  * File a welder, CWI or NDT technician credential into the library.
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
   const viewer = await currentViewer()
   if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
 
-  let input: CredentialInput
+  let inputs: CredentialInput[]
   let bytes: Uint8Array
   let filename: string
   try {
@@ -46,11 +47,13 @@ export async function POST(request: Request) {
     bytes = new Uint8Array(await entry.arrayBuffer())
     filename = entry.name || 'certificate.pdf'
 
-    input = credentialFromForm(form)
+    inputs = credentialsFromForm(form)
   } catch {
     return NextResponse.json({ ok: false, error: 'Malformed upload.' }, { status: 400 })
   }
 
-  const result = await getDataProvider().fileCredential(viewer, null, input, bytes, filename)
-  return NextResponse.json(result, { status: result.ok ? 200 : 422 })
+  const [body, init] = await fileCredentials(
+    getDataProvider(), viewer, null, inputs, bytes, filename,
+  )
+  return NextResponse.json(body, init)
 }

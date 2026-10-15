@@ -286,8 +286,11 @@ describe('filing one, end to end', () => {
     expect(card.byteSize).toBe(bytes.byteLength)
     expect(card.originalFilename).toBe('sandoval-asnt.pdf')
     // Renamed for the SharePoint copy, which has to be legible to
-    // somebody who never opens this application.
-    expect(card.normalizedFilename).toMatch(/^ASNT_Level_II_2025-01-15\.pdf$/)
+    // somebody who never opens this application. The method is in the
+    // name because one certification now files as several lines, and
+    // four files called `ASNT_Level_II_2025-10-14` in one folder tell a
+    // reader nothing about which is which.
+    expect(card.normalizedFilename).toMatch(/^ASNT_Level_II_RT_2025-01-15\.pdf$/)
   })
 
   it('files from the library with no job book at all', async () => {
