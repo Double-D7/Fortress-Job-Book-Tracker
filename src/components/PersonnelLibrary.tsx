@@ -18,7 +18,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AlertTriangle, Loader2, Search, Trash2, X } from 'lucide-react'
-import type { PersonnelLibraryEntry } from '@/lib/data/provider'
+import type { CredentialRow } from '@/lib/data/provider'
 import { evaluateCert } from '@/lib/domain/certificates'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, EmptyState,
@@ -36,12 +36,19 @@ const WARN_DAYS = 45
 const ROSTER_LABEL: Record<string, string> = {
   cwi: 'CWI',
   ndt_technician: 'NDT',
+  welder: 'Welder',
+}
+
+/** How a WPQ code reads. The register stores the enum. */
+const CERT_LABEL: Record<string, string> = {
+  ASME_IX: 'WPQ — ASME IX',
+  API_1104: 'WPQ — API 1104',
 }
 
 export function PersonnelLibrary({
   entries, canManage, search,
 }: {
-  entries: PersonnelLibraryEntry[]
+  entries: CredentialRow[]
   canManage: boolean
   search: string
 }) {
@@ -120,16 +127,23 @@ export function PersonnelLibrary({
                 // Status against today, which is the question this
                 // screen asks. Whether a card covered a report written
                 // last March is the book's question, not the library's.
+                // Expiry status reads the same for all three; what
+                // differs is validity on a work date, which is the
+                // book's question and not this screen's.
                 const status = evaluateCert(
-                  { ...e, subjectType: e.subjectType } as never, WARN_DAYS, today)
+                  { expiryDate: e.expiryDate ?? null } as never, WARN_DAYS, today)
+                // A qualification read off the overview sheet carries an
+                // expiry and no start, which is precisely what makes it
+                // unverifiable. Said out loud rather than shown blank.
+                const unverifiable = e.kind === 'welder' && !e.issueDate
                 return (
                   <Tr key={e.id}>
                     <Td className="font-medium text-ink">{e.personName}</Td>
                     <Td>
-                      <Chip tone="idle">{ROSTER_LABEL[e.subjectType] ?? e.subjectType}</Chip>
+                      <Chip tone="idle">{ROSTER_LABEL[e.kind] ?? e.kind}</Chip>
                     </Td>
                     <Td className="text-ink-secondary">
-                      {e.certType}
+                      {CERT_LABEL[e.certType] ?? e.certType}
                       {e.issuingBody && (
                         <div className="text-2xs text-ink-muted">{e.issuingBody}</div>
                       )}
@@ -137,13 +151,26 @@ export function PersonnelLibrary({
                     <Td>
                       {e.ndtMethods && e.ndtMethods.length > 0
                         ? <span className="font-mono text-xs">{e.ndtMethods.join(', ')}</span>
-                        : e.subjectType === 'ndt_technician'
+                        : e.process
+                          ? <span className="text-xs text-ink-secondary">{e.process}</span>
+                          : e.kind === 'ndt_technician'
                           ? <Chip tone="progress">Not recorded</Chip>
                           : <span className="text-ink-muted">—</span>}
                     </Td>
-                    <Td className="tnum font-mono text-ink-secondary">{e.issueDate}</Td>
+                    <Td className="tnum font-mono text-ink-secondary">
+                      {e.issueDate ?? (
+                        <Chip tone="progress" title="The overview sheet gave an expiry and no start date, so nothing on file shows the welder was qualified on the day they welded">
+                          Not on file
+                        </Chip>
+                      )}
+                    </Td>
                     <Td className="tnum font-mono">
                       {e.expiryDate ?? <span className="text-ink-muted">none printed</span>}
+                      {unverifiable && (
+                        <Chip tone="progress" className="ml-1.5">
+                          <AlertTriangle size={10} /> Unverifiable
+                        </Chip>
+                      )}
                       {status.status === 'expired' && (
                         <Chip tone="critical" className="ml-1.5">
                           <AlertTriangle size={10} /> Expired

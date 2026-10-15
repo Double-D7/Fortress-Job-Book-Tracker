@@ -18,7 +18,7 @@ export default async function CredentialsPage({
   const provider = getDataProvider()
   const canManage = can(viewer.role, 'edit_records')
   const [entries, rosters] = await Promise.all([
-    provider.listPersonnelLibrary(viewer, search || undefined),
+    provider.listCredentials(viewer, search || undefined),
     provider.listCredentialRosters(viewer),
   ])
 
@@ -26,11 +26,15 @@ export default async function CredentialsPage({
     <>
       <SectionHeading
         title="Personnel credentials"
-        subtitle="Every CWI and NDT card on file, shared by every job book. A card follows the person onto each book they work (§7, §8)"
+        subtitle="Welder qualifications, CWI cards and NDT certifications, shared by every job book. A credential follows the person onto each book they work (§6, §7, §8)"
       />
       {canManage && (
         <div className="mb-4">
-          <CredentialFiler cwis={rosters.cwis} technicians={rosters.technicians} />
+          <CredentialFiler
+            cwis={rosters.cwis}
+            technicians={rosters.technicians}
+            welders={rosters.welders}
+          />
         </div>
       )}
       <PersonnelLibrary

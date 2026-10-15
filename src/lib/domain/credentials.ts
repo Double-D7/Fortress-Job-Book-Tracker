@@ -22,12 +22,30 @@
  * the rules in one pure function means the seed and the database agree
  * by construction rather than by review.
  */
-import type { CertSubjectType, IsoDate, NdtMethod } from './types'
+import type { CertSubjectType, IsoDate, NdtMethod, QualificationCode } from './types'
 
 export const NDT_METHODS: readonly NdtMethod[] = ['RT', 'PT', 'MT', 'UT']
 
-/** Which roster a credential belongs to, and where it files. */
-export type CredentialSubject = Extract<CertSubjectType, 'cwi' | 'ndt_technician'>
+/**
+ * Which roster a credential belongs to, and where it files.
+ *
+ * A welder is here too, but their credential is not a `Certificate`: it
+ * is a `WelderQualification`, because a welder already has a register
+ * and that is it. What the three share is the act of filing — a person,
+ * a page, and the dates read off it — which is why one form and one set
+ * of rules covers all three.
+ */
+export type CredentialSubject =
+  Extract<CertSubjectType, 'cwi' | 'ndt_technician' | 'welder'>
+
+/** The codes a WPQ is written against. */
+export const QUALIFICATION_CODES: readonly QualificationCode[] = ['ASME_IX', 'API_1104']
+
+/** How each code reads on screen. */
+export const QUALIFICATION_CODE_LABEL: Record<QualificationCode, string> = {
+  ASME_IX: 'ASME IX',
+  API_1104: 'API 1104',
+}
 
 export interface CredentialInput {
   subjectType: CredentialSubject
@@ -44,6 +62,10 @@ export interface CredentialInput {
   /** NDT only. Empty is rejected rather than stored, because an empty
    *  list reads as "certifies nothing" and nobody means that. */
   ndtMethods?: NdtMethod[] | null
+  /** Welder only: the code the WPQ is written against. */
+  qualificationCode?: QualificationCode | null
+  /** Welder only: the welding process, as the certificate prints it. */
+  process?: string | null
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -66,8 +88,11 @@ export interface CredentialProblem { field: string; message: string }
 export function validateCredential(input: CredentialInput): CredentialProblem[] {
   const out: CredentialProblem[] = []
 
-  if (input.subjectType !== 'cwi' && input.subjectType !== 'ndt_technician') {
-    out.push({ field: 'subjectType', message: 'Choose whether this is a CWI or an NDT technician.' })
+  if (!['cwi', 'ndt_technician', 'welder'].includes(input.subjectType)) {
+    out.push({
+      field: 'subjectType',
+      message: 'Choose whether this is a welder, a CWI or an NDT technician.',
+    })
   }
 
   if (!input.subjectId) {
@@ -91,7 +116,17 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
   // Better to refuse it here, where the person can read the date off the
   // card in front of them.
   if (!ISO_DATE.test(clean(input.issueDate))) {
-    out.push({ field: 'issueDate', message: 'The issue date is on the card and is required.' })
+    out.push({
+      field: 'issueDate',
+      message: input.subjectType === 'welder'
+        // The one fact the overview sheet never carries, and the reason
+        // every imported qualification reads `unverifiable`. Filing a
+        // certificate without it would change nothing.
+        ? 'The date the welder qualified is on the WPQ and is required. '
+          + 'It is the date the overview sheet does not carry, and without it '
+          + 'the qualification stays unverifiable.'
+        : 'The issue date is on the card and is required.',
+    })
   }
 
   const expiry = clean(input.expiryDate)
@@ -122,7 +157,28 @@ export function validateCredential(input: CredentialInput): CredentialProblem[] 
   } else if ((input.ndtMethods?.length ?? 0) > 0) {
     out.push({
       field: 'ndtMethods',
-      message: 'Methods belong to an NDT card. A CWI certification does not carry them.',
+      message: 'Methods belong to an NDT card. No other credential carries them.',
+    })
+  }
+
+  if (input.subjectType === 'welder') {
+    if (!input.qualificationCode
+        || !QUALIFICATION_CODES.includes(input.qualificationCode)) {
+      out.push({
+        field: 'qualificationCode',
+        message: 'Say which code the WPQ is written against: ASME IX or API 1104.',
+      })
+    }
+    if (!clean(input.process)) {
+      out.push({
+        field: 'process',
+        message: 'Name the welding process the WPQ covers, as the certificate prints it.',
+      })
+    }
+  } else if (input.qualificationCode || clean(input.process)) {
+    out.push({
+      field: 'qualificationCode',
+      message: 'A qualification code and process belong to a welder\'s WPQ.',
     })
   }
 
@@ -169,14 +225,42 @@ export function filterPersonnelLibrary<
     || (e.ndtMethods ?? []).some((m) => m.toLowerCase() === q))
 }
 
+/**
+ * Narrowing the credentials screen.
+ *
+ * One function over the merged list, so a welder and a CWI answer the
+ * same search in the same way. Matches the person, what the credential
+ * is, the issuer, an NDT method, and a welding process — because
+ * "who can run a 6G" is a question somebody will ask of this screen.
+ */
+export function filterCredentials<
+  T extends {
+    personName: string; certType: string
+    issuingBody?: string | null
+    ndtMethods?: readonly string[] | null
+    process?: string | null
+  },
+>(rows: T[], search?: string): T[] {
+  const q = (search ?? '').trim().toLowerCase()
+  if (!q) return rows
+  return rows.filter((r) =>
+    r.personName.toLowerCase().includes(q)
+    || r.certType.toLowerCase().includes(q)
+    || (r.issuingBody ?? '').toLowerCase().includes(q)
+    || (r.process ?? '').toLowerCase().includes(q)
+    || (r.ndtMethods ?? []).some((m) => m.toLowerCase() === q))
+}
+
 /** Where this credential files, by the book's own section numbering. */
 export function credentialSection(subjectType: CredentialSubject): string {
+  if (subjectType === 'welder') return '6'
   return subjectType === 'cwi' ? '7' : '8'
 }
 
 /** The default certificate type for each roster, as the cards print it.
  *  A starting point for the form, not a constraint. */
 export function defaultCertType(subjectType: CredentialSubject): string {
+  if (subjectType === 'welder') return 'WPQ'
   return subjectType === 'cwi' ? 'AWS CWI' : 'ASNT Level II'
 }
 
@@ -188,11 +272,15 @@ export function defaultCertType(subjectType: CredentialSubject): string {
  * database never holds `{}` meaning "unrecorded" alongside null meaning
  * the same thing.
  */
+/** The two subjects whose credential IS a certificate. A welder's is a
+ *  qualification and never travels through here. */
+export type CardSubject = Exclude<CredentialSubject, 'welder'>
+
 export function credentialToCertificate(
   input: CredentialInput,
   subjectId: string,
 ): {
-  subjectType: CredentialSubject
+  subjectType: CardSubject
   subjectId: string
   certType: string
   issuingBody: string | null
@@ -200,9 +288,22 @@ export function credentialToCertificate(
   expiryDate: IsoDate | null
   ndtMethods: NdtMethod[] | null
 } {
+  // A welder's credential is a qualification row, not a certificate, and
+  // the two are not interchangeable. Thrown rather than coerced: a
+  // caller that reached here with a welder has a bug, and quietly
+  // filing one as a card would create the second source of truth this
+  // whole design exists to avoid.
+  if (input.subjectType === 'welder') {
+    throw new Error(
+      'a welder credential is a qualification, not a certificate; '
+      + 'file it against welder_qualification',
+    )
+  }
+
   const methods = input.subjectType === 'ndt_technician'
     ? [...new Set(input.ndtMethods ?? [])].sort()
     : []
+
   return {
     subjectType: input.subjectType,
     subjectId,
@@ -212,4 +313,66 @@ export function credentialToCertificate(
     expiryDate: clean(input.expiryDate) || null,
     ndtMethods: methods.length > 0 ? methods : null,
   }
+}
+
+/**
+ * The qualification row a valid welder input becomes.
+ *
+ * The mirror of `credentialToCertificate`, and here for the same
+ * reason: both providers write this row, and when they each built it
+ * themselves they disagreed about whether a blank process was `''` or
+ * null. Throws for anybody but a welder, because a CWI card is not a
+ * qualification and coercing one into this shape would invent a
+ * welding process for an inspector.
+ */
+export function credentialToQualification(
+  input: CredentialInput,
+  welderId: string,
+): {
+  welderId: string
+  code: QualificationCode
+  process: string | null
+  qualificationDate: IsoDate
+  expiryDate: IsoDate | null
+} {
+  if (input.subjectType !== 'welder' || !input.qualificationCode) {
+    throw new Error(
+      'only a welder credential is a qualification, and it must name a code',
+    )
+  }
+  return {
+    welderId,
+    code: input.qualificationCode,
+    process: clean(input.process) || null,
+    qualificationDate: clean(input.issueDate),
+    expiryDate: clean(input.expiryDate) || null,
+  }
+}
+
+/**
+ * The qualification a filed WPQ completes, if there is one.
+ *
+ * A Weld Log Overview Sheet carries "Date WPQ Expires" and never the
+ * date the welder qualified, so every imported qualification reads
+ * `unverifiable` — not expired, not valid, unknown. The certificate is
+ * what supplies the missing date. Completing that row is the whole
+ * point of filing it; adding a second row beside it would leave the
+ * first unverifiable for ever and give two answers to one question.
+ *
+ * Only a row with no start date is a candidate. A dated qualification
+ * is a different qualification — a requalification files alongside,
+ * because a welder really does hold more than one over a career.
+ */
+export function openQualificationId<
+  T extends {
+    id: string; welderId: string; code: string
+    qualificationDate?: string | null; deletedAt?: string | null
+  },
+>(qualifications: readonly T[], welderId: string, code: QualificationCode): string | null {
+  const open = qualifications.find((q) =>
+    q.welderId === welderId
+    && q.code === code
+    && !q.qualificationDate
+    && !q.deletedAt)
+  return open?.id ?? null
 }

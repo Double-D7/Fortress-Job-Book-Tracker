@@ -329,6 +329,28 @@ export interface WelderQualification extends EnteredRecord {
   expiryDate?: IsoDate | null
   continuityLastVerified?: IsoDate | null
   documentId?: string | null
+  /**
+   * The filed WPQ certificate.
+   *
+   * Null for a qualification read off the overview sheet, which gives an
+   * expiry and no page — and therefore no provable start date, which is
+   * why `qualificationOn` reports those as `unverifiable`. Filing the
+   * certificate is what supplies the missing date and settles it.
+   *
+   * On the qualification rather than in `personnel_credential` because a
+   * welder already has a register and this is it. Two rows answering
+   * "was this welder qualified" is the shape that has cost this project
+   * four production bugs.
+   */
+  storagePath?: string | null
+  originalFilename?: string | null
+  normalizedFilename?: string | null
+  sha256?: string | null
+  byteSize?: number | null
+  pageCount?: number | null
+  mimeType?: string | null
+  uploadedBy?: string | null
+  uploadedAt?: string | null
 }
 
 export interface Cwi extends EnteredRecord { id: string; fullName: string; initials: string; employer?: string | null; active: boolean }

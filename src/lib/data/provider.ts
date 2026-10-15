@@ -38,7 +38,8 @@ import {
 } from '@/lib/domain/calibrationPlan'
 import { recordId } from '@/lib/domain/recordId'
 import {
-  credentialFilename, credentialToCertificate, filterPersonnelLibrary,
+  credentialFilename, credentialToCertificate, credentialToQualification,
+  filterCredentials, filterPersonnelLibrary, openQualificationId,
   validateCredential, type CredentialInput,
 } from '@/lib/domain/credentials'
 import { createHash } from 'node:crypto'
@@ -454,12 +455,21 @@ export interface DataProvider {
    *  can read, which RLS enforces rather than this. */
   listPersonnelLibrary(viewer: Viewer, search?: string): Promise<PersonnelLibraryEntry[]>
 
+  /** The credentials screen: CWI and NDT cards together with welder
+   *  qualifications, which live in a different register and are not
+   *  certificates. */
+  listCredentials(viewer: Viewer, search?: string): Promise<CredentialRow[]>
+
   /** The two personnel rosters, which are global rather than per book.
    *  For the library's filing form, which has no book to read them
    *  from and should not need one. */
   listCredentialRosters(
     viewer: Viewer,
-  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }>
+  ): Promise<{
+    cwis: RosterMember[]
+    technicians: RosterMember[]
+    welders: RosterMember[]
+  }>
 
   /** Withdraw a card. Every book that pulled it stops claiming it is on
    *  file, rather than keeping a claim the library no longer supports. */
@@ -595,6 +605,36 @@ export interface DataProvider {
 /** One library row, with how many books lean on it. */
 /** A person on one of the two rosters, as a picker shows them. */
 export interface RosterMember { id: string; label: string }
+
+/**
+ * One row on the credentials screen, whatever kind it is.
+ *
+ * A welder's credential is a `WelderQualification` and a CWI's is a
+ * `Certificate`; they are different records with different validity
+ * rules, and flattening them into one table would have meant inventing
+ * a shared row that is true of neither. This carries what the screen
+ * shows and marks which kind it came from, so the columns that only
+ * apply to one are null rather than fabricated.
+ */
+export interface CredentialRow {
+  id: string
+  kind: 'cwi' | 'ndt_technician' | 'welder'
+  personName: string
+  /** "AWS CWI", "ASNT Level II", or the WPQ code. */
+  certType: string
+  issuingBody?: string | null
+  /** NDT only. */
+  ndtMethods?: string[] | null
+  /** Welder only: the welding process the WPQ covers. */
+  process?: string | null
+  /** The date it starts. Null only for a welder qualification read off
+   *  the overview sheet, which is exactly what makes it unverifiable. */
+  issueDate: string | null
+  expiryDate?: string | null
+  /** Whether the page itself is on file, as opposed to just the dates. */
+  hasDocument: boolean
+  referencedByBooks: number
+}
 
 export interface PersonnelLibraryEntry extends PersonnelCredential {
   /** The person's name, resolved from whichever roster they are on, so
@@ -2237,7 +2277,15 @@ class SeedProvider implements DataProvider {
         active: true,
       }
       this.all().forEach((bundle, i) => {
-        if (input.subjectType === 'cwi') {
+        if (input.subjectType === 'welder') {
+          if (bundle.welders.some((w) => w.id === subjectId)) return
+          this.commit(bundle.book.id, i, {
+            ...bundle,
+            welders: [...bundle.welders, {
+              ...person, initials: person.initials ?? '',
+            } as (typeof bundle.welders)[number]],
+          })
+        } else if (input.subjectType === 'cwi') {
           if (bundle.cwis.some((c) => c.id === subjectId)) return
           this.commit(bundle.book.id, i, {
             ...bundle,
@@ -2256,10 +2304,20 @@ class SeedProvider implements DataProvider {
         }
       })
     } else {
-      const known = this.all().some((bundle) => input.subjectType === 'cwi'
-        ? bundle.cwis.some((c) => c.id === subjectId)
-        : bundle.ndtTechnicians.some((t) => t.id === subjectId))
+      const known = this.all().some((bundle) => input.subjectType === 'welder'
+        ? bundle.welders.some((w) => w.id === subjectId)
+        : input.subjectType === 'cwi'
+          ? bundle.cwis.some((c) => c.id === subjectId)
+          : bundle.ndtTechnicians.some((t) => t.id === subjectId))
       if (!known) return { ok: false, error: 'That person is not on the roster.' }
+    }
+
+    // A welder's credential is a qualification, not a certificate. It
+    // goes in the register they already have rather than in the card
+    // library, so there is one answer to "was this welder qualified"
+    // and not two.
+    if (input.subjectType === 'welder') {
+      return this.fileWelderQualificationSeed(input, subjectId, file, filename, sha, viewer)
     }
 
     const entry = credentialToCertificate(input, subjectId)
@@ -2295,6 +2353,61 @@ class SeedProvider implements DataProvider {
     // only for the book in hand, because the whole point is that a card
     // filed once follows the person.
     this.pullCredentialsIntoBooks(card)
+    return { ok: true }
+  }
+
+  /**
+   * File a WPQ against the welder's own register.
+   *
+   * Completes an existing qualification of the same code where one is on
+   * file without a start date, rather than adding a second row. That is
+   * what is actually happening: the overview sheet recorded an expiry
+   * and no page, `qualificationOn` has been reporting it `unverifiable`
+   * ever since, and the certificate supplies the missing date. A second
+   * row would leave the first one unverifiable for ever and give two
+   * answers to one question.
+   */
+  private fileWelderQualificationSeed(
+    input: CredentialInput,
+    welderId: string,
+    file: Uint8Array,
+    filename: string,
+    sha: string,
+    viewer: Viewer,
+  ): ActionResult {
+    const page = {
+      storagePath: `personnel-library/${sha}`,
+      originalFilename: filename,
+      normalizedFilename: credentialFilename(
+        { certType: input.qualificationCode ?? 'WPQ', issueDate: input.issueDate }, filename),
+      sha256: sha,
+      byteSize: file.byteLength,
+      uploadedBy: viewer.id,
+      uploadedAt: new Date().toISOString(),
+    }
+
+    this.all().forEach((bundle, i) => {
+      const quals = [...bundle.welderQualifications]
+      const openId = openQualificationId(quals, welderId, input.qualificationCode!)
+      const at = openId ? quals.findIndex((q) => q.id === openId) : -1
+
+      const filled = { ...credentialToQualification(input, welderId), ...page }
+
+      if (at >= 0) {
+        quals[at] = { ...quals[at]!, ...filled }
+      } else {
+        const id = recordId('welder_qualification', welderId,
+          input.qualificationCode!, input.issueDate)
+        if (quals.some((q) => q.id === id)) {
+          const existing = quals.findIndex((q) => q.id === id)
+          quals[existing] = { ...quals[existing]!, ...filled }
+        } else {
+          quals.push({ id, ...filled } as (typeof quals)[number])
+        }
+      }
+      this.commit(bundle.book.id, i, { ...bundle, welderQualifications: quals })
+    })
+
     return { ok: true }
   }
 
@@ -2336,21 +2449,78 @@ class SeedProvider implements DataProvider {
     })
   }
 
+  async listCredentials(viewer: Viewer, search?: string): Promise<CredentialRow[]> {
+    const cards = await this.listPersonnelLibrary(viewer)
+    const fromCards: CredentialRow[] = cards.map((c) => ({
+      id: c.id,
+      kind: c.subjectType,
+      personName: c.personName,
+      certType: c.certType,
+      issuingBody: c.issuingBody ?? null,
+      ndtMethods: c.ndtMethods ?? null,
+      process: null,
+      issueDate: c.issueDate,
+      expiryDate: c.expiryDate ?? null,
+      hasDocument: !!c.storagePath,
+      referencedByBooks: c.referencedByBooks,
+    }))
+
+    // Welder qualifications are per-bundle copies of one global
+    // register, so they are deduplicated by id the same way the rosters
+    // are.
+    const byId = new Map<string, CredentialRow>()
+    const booksFor = new Map<string, Set<string>>()
+    for (const b of this.all()) {
+      for (const q of b.welderQualifications) {
+        if (!booksFor.has(q.id)) booksFor.set(q.id, new Set())
+        booksFor.get(q.id)!.add(b.book.id)
+        if (byId.has(q.id)) continue
+        const welder = b.welders.find((w) => w.id === q.welderId)
+        byId.set(q.id, {
+          id: q.id,
+          kind: 'welder',
+          personName: welder?.fullName ?? 'Unknown welder',
+          certType: q.code,
+          issuingBody: null,
+          ndtMethods: null,
+          process: q.process ?? null,
+          issueDate: q.qualificationDate,
+          expiryDate: q.expiryDate ?? null,
+          hasDocument: !!q.storagePath,
+          referencedByBooks: 0,
+        })
+      }
+    }
+    const fromQuals = [...byId.values()].map((r) => ({
+      ...r, referencedByBooks: booksFor.get(r.id)?.size ?? 0,
+    }))
+
+    return filterCredentials([...fromCards, ...fromQuals], search)
+  }
+
   async listCredentialRosters(
     _viewer: Viewer,
-  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }> {
+  ): Promise<{
+    cwis: RosterMember[]
+    technicians: RosterMember[]
+    welders: RosterMember[]
+  }> {
     // Deduplicated across bundles: the rosters are global, and the seed
     // holds a copy inside each book because that is how a bundle is
     // shaped, not because the people differ.
     const cwis = new Map<string, string>()
     const technicians = new Map<string, string>()
+    const welders = new Map<string, string>()
     for (const b of this.all()) {
       for (const c of b.cwis) cwis.set(c.id, c.fullName)
       for (const t of b.ndtTechnicians) technicians.set(t.id, t.fullName)
+      // A combined crew stamp is not a person and holds no qualification
+      // of its own; the welders behind it hold theirs.
+      for (const w of b.welders) if (!w.combinedOf?.length) welders.set(w.id, w.fullName)
     }
     const sorted = (m: Map<string, string>): RosterMember[] =>
       [...m].map(([id, label]) => ({ id, label })).sort((a, z) => a.label.localeCompare(z.label))
-    return { cwis: sorted(cwis), technicians: sorted(technicians) }
+    return { cwis: sorted(cwis), technicians: sorted(technicians), welders: sorted(welders) }
   }
 
   async listPersonnelLibrary(

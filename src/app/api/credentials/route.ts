@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import type { CredentialInput } from '@/lib/domain/credentials'
-import type { NdtMethod } from '@/lib/domain/types'
+import { MAX_CREDENTIAL_BYTES, credentialFromForm } from '@/lib/http/credentialForm'
 
 /**
- * File a CWI or NDT technician credential into the library.
+ * File a welder, CWI or NDT technician credential into the library.
  *
  * No job book in the path, because a card belongs to the person rather
  * than to a job. Which books show it is decided by migration 0043, from
@@ -17,15 +17,6 @@ import type { NdtMethod } from '@/lib/domain/types'
  * browser is a claim about who evidence belongs to.
  */
 export const dynamic = 'force-dynamic'
-
-/** A wallet card photographed at full resolution. Generous for a page,
- *  mean enough that nobody files a scanned binder through this form. */
-const MAX_BYTES = 10 * 1024 * 1024
-
-function text(form: FormData, key: string): string {
-  const v = form.get(key)
-  return typeof v === 'string' ? v.trim() : ''
-}
 
 export async function POST(request: Request) {
   const viewer = await currentViewer()
@@ -46,7 +37,7 @@ export async function POST(request: Request) {
         { status: 400 },
       )
     }
-    if (entry.size > MAX_BYTES) {
+    if (entry.size > MAX_CREDENTIAL_BYTES) {
       return NextResponse.json(
         { ok: false, error: `${entry.name} is ${(entry.size / 1e6).toFixed(1)} MB; the limit is 10 MB.` },
         { status: 413 },
@@ -55,19 +46,7 @@ export async function POST(request: Request) {
     bytes = new Uint8Array(await entry.arrayBuffer())
     filename = entry.name || 'certificate.pdf'
 
-    input = {
-      subjectType: text(form, 'subjectType') === 'cwi' ? 'cwi' : 'ndt_technician',
-      subjectId: text(form, 'subjectId') || null,
-      fullName: text(form, 'fullName') || null,
-      initials: text(form, 'initials') || null,
-      employer: text(form, 'employer') || null,
-      certType: text(form, 'certType'),
-      issuingBody: text(form, 'issuingBody') || null,
-      issueDate: text(form, 'issueDate'),
-      expiryDate: text(form, 'expiryDate') || null,
-      ndtMethods: form.getAll('ndtMethods')
-        .filter((m): m is string => typeof m === 'string') as NdtMethod[],
-    }
+    input = credentialFromForm(form)
   } catch {
     return NextResponse.json({ ok: false, error: 'Malformed upload.' }, { status: 400 })
   }

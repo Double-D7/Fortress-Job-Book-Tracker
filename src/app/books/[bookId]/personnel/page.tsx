@@ -48,6 +48,11 @@ export default async function PersonnelPage({ params }: { params: Promise<{ book
           bookId={bookId}
           cwis={b.cwis.map((c) => ({ id: c.id, label: c.fullName }))}
           technicians={b.ndtTechnicians.map((t) => ({ id: t.id, label: t.fullName }))}
+          // A combined stamp is two welders sharing one mark on a log. It
+          // is not a person and holds no qualification of its own.
+          welders={b.welders
+            .filter((w) => !w.combinedOf?.length)
+            .map((w) => ({ id: w.id, label: w.fullName }))}
         />
       )}
 

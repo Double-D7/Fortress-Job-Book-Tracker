@@ -118,6 +118,10 @@ export const COLUMNS = {
   welder_qualification: [
     'id', 'welder_id', 'code', 'process', 'qualification_date', 'expiry_date',
     'continuity_last_verified', 'document_id', 'source', 'entered_at', 'entry_source',
+    // 0046 — the filed WPQ certificate. On the qualification rather than
+    // in the card library, because a welder already has a register.
+    'storage_path', 'original_filename', 'normalized_filename', 'sha256',
+    'byte_size', 'page_count', 'mime_type', 'uploaded_by', 'uploaded_at',
   ],
   cwi: [
     'id', 'full_name', 'initials', 'employer', 'active', 'entered_at', 'entry_source',

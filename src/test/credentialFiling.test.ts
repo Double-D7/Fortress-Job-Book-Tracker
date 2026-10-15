@@ -1,17 +1,25 @@
 /**
- * Filing a credential into sections 7 and 8.
+ * Filing a credential into sections 6, 7 and 8.
  *
- * These were the only two sections with no way to get a record in. The
+ * These were the only sections with no way to get a record in. The
  * certificates existed on paper, the application could not see them,
- * and both sections scored on a register nothing wrote. Everything
+ * and each section scored on a register nothing wrote. Everything
  * here is about the gap between "we have the card" and "the book can
  * show we have the card".
+ *
+ * A welder is in the same form and not in the same table. Their
+ * credential completes the qualification register they already have,
+ * because two answers to "was this welder qualified" is the drift this
+ * codebase keeps paying for.
  */
 import { describe, expect, it } from 'vitest'
 import {
-  credentialSection, credentialToCertificate, defaultCertType, validateCredential,
+  credentialSection, credentialToCertificate, credentialToQualification,
+  defaultCertType, openQualificationId, validateCredential,
   type CredentialInput,
 } from '@/lib/domain/credentials'
+import { qualificationOn } from '@/lib/domain/welders'
+import type { WelderQualification } from '@/lib/domain/types'
 import { SOURCE_SECTION } from '@/lib/domain/sourceFiling'
 import { getDataProvider, type Viewer } from '@/lib/data/provider'
 import { certValidOn, ndtMethodCoverage } from '@/lib/domain/certificates'
@@ -385,5 +393,260 @@ describe('filing one, end to end', () => {
     expect(after.documents.length).toBe(before.documents.length)
     expect(after.ndtTechnicians.length).toBe(before.ndtTechnicians.length)
     expect((await p.listPersonnelLibrary(admin)).length).toBe(beforeCards)
+  })
+})
+
+function welderInput(over: Partial<CredentialInput> = {}): CredentialInput {
+  return {
+    subjectType: 'welder',
+    subjectId: null,
+    fullName: 'Marcus Teale',
+    certType: 'WPQ',
+    issueDate: '2025-03-04',
+    expiryDate: null,
+    qualificationCode: 'ASME_IX',
+    process: 'GTAW/SMAW',
+    ...over,
+  }
+}
+
+describe('what a welder WPQ must say', () => {
+  it('accepts a complete WPQ', () => {
+    expect(validateCredential(welderInput())).toEqual([])
+  })
+
+  it('refuses a WPQ with no code, because the code is what it qualifies against', () => {
+    expect(fieldsOf(validateCredential(welderInput({ qualificationCode: null }))))
+      .toContain('qualificationCode')
+  })
+
+  it('refuses a code it does not model', () => {
+    expect(fieldsOf(validateCredential(
+      welderInput({ qualificationCode: 'AWS_D1_1' as never })))).toContain('qualificationCode')
+  })
+
+  it('refuses a WPQ with no process', () => {
+    expect(fieldsOf(validateCredential(welderInput({ process: '  ' })))).toContain('process')
+  })
+
+  it('refuses a code or a process on a card that is not a WPQ', () => {
+    expect(fieldsOf(validateCredential(input({ qualificationCode: 'ASME_IX' }))))
+      .toContain('qualificationCode')
+    expect(fieldsOf(validateCredential(input({ process: 'GTAW' }))))
+      .toContain('qualificationCode')
+  })
+
+  it('refuses methods on a WPQ', () => {
+    expect(fieldsOf(validateCredential(welderInput({ ndtMethods: ['RT'] }))))
+      .toContain('ndtMethods')
+  })
+
+  it('requires the qualification date, which is the one the overview sheet never carries', () => {
+    const problems = validateCredential(welderInput({ issueDate: '' }))
+    expect(fieldsOf(problems)).toContain('issueDate')
+    expect(problems.find((p) => p.field === 'issueDate')!.message).toContain('unverifiable')
+  })
+
+  it('files into section 6, and prints WPQ by default', () => {
+    expect(credentialSection('welder')).toBe('6')
+    expect(defaultCertType('welder')).toBe('WPQ')
+  })
+})
+
+describe('a welder credential is a qualification, not a certificate', () => {
+  it('refuses to be turned into a certificate row', () => {
+    expect(() => credentialToCertificate(welderInput(), 'w-1')).toThrow(/qualification/)
+  })
+
+  it('refuses to turn a CWI card into a qualification', () => {
+    expect(() => credentialToQualification(
+      input({ subjectType: 'cwi', ndtMethods: null }), 'w-1')).toThrow()
+  })
+
+  it('normalises a blank process to null rather than an empty string', () => {
+    // Both providers write this row. When each built it themselves they
+    // disagreed about exactly this.
+    const q = credentialToQualification(welderInput({ process: '   ', fullName: 'X' }), 'w-1')
+    expect(q.process).toBeNull()
+    expect(q).toMatchObject({
+      welderId: 'w-1', code: 'ASME_IX', qualificationDate: '2025-03-04', expiryDate: null,
+    })
+  })
+})
+
+describe('which qualification a filed WPQ completes', () => {
+  const quals = (over: Partial<WelderQualification>[]): WelderQualification[] =>
+    over.map((o, i) => ({
+      id: `q${i}`, welderId: 'w-1', code: 'ASME_IX', process: null,
+      qualificationDate: null, expiryDate: null, ...o,
+    } as WelderQualification))
+
+  it('completes the row the overview sheet left with no start date', () => {
+    expect(openQualificationId(
+      quals([{ id: 'open', expiryDate: '2026-06-01' }]), 'w-1', 'ASME_IX')).toBe('open')
+  })
+
+  it('leaves a dated qualification alone: a requalification files alongside', () => {
+    expect(openQualificationId(
+      quals([{ id: 'dated', qualificationDate: '2024-01-01' }]), 'w-1', 'ASME_IX')).toBeNull()
+  })
+
+  it('does not reach across codes', () => {
+    expect(openQualificationId(quals([{ id: 'api' }]), 'w-1', 'API_1104')).toBeNull()
+  })
+
+  it('does not reach across welders', () => {
+    expect(openQualificationId(quals([{ id: 'other' }]), 'w-2', 'ASME_IX')).toBeNull()
+  })
+
+  it('ignores a withdrawn row', () => {
+    expect(openQualificationId(
+      quals([{ id: 'gone', deletedAt: '2025-01-01' } as Partial<WelderQualification>]),
+      'w-1', 'ASME_IX')).toBeNull()
+  })
+
+  it('is what turns unverifiable into qualified', () => {
+    // The reason the whole welder path exists. The overview sheet gives
+    // an expiry and no start, so every imported qualification reads
+    // `unverifiable` — not valid, not expired, unknown.
+    const open = quals([{ id: 'open', expiryDate: '2027-01-01' }])
+    expect(qualificationOn('w-1', '2025-06-01', open).verdict).toBe('unverifiable')
+
+    const completed = open.map((q) => ({
+      ...q, ...credentialToQualification(welderInput({ expiryDate: '2027-01-01' }), 'w-1'),
+    }))
+    expect(qualificationOn('w-1', '2025-06-01', completed).verdict).toBe('qualified')
+  })
+})
+
+describe('filing a WPQ, end to end', () => {
+  const admin: Viewer = {
+    id: 'seed-user-admin', email: 'admin@fortressds.com',
+    fullName: 'A. Reyes', role: 'fortress_admin', clientOrgId: null,
+  }
+  const pdf = (tag: string) => new TextEncoder().encode(`%PDF-1.4 ${tag}`)
+
+  async function anyBook(): Promise<string> {
+    const books = await getDataProvider().listJobBooks(admin)
+    return books[0]!.id
+  }
+
+  it('adds the welder and files the WPQ against their register', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    const before = (await p.getBundle(admin, id))!
+
+    const res = await p.fileCredential(admin, id, welderInput({
+      fullName: 'Marcus Teale', expiryDate: '2028-03-04',
+    }), pdf('teale'), 'teale-wpq.pdf')
+    expect(res.ok).toBe(true)
+
+    const after = (await p.getBundle(admin, id))!
+    expect(after.welders.length).toBe(before.welders.length + 1)
+
+    const welder = after.welders.find((w) => w.fullName === 'Marcus Teale')!
+    const qual = after.welderQualifications.find((q) => q.welderId === welder.id)!
+    expect(qual).toBeDefined()
+    expect(qual.code).toBe('ASME_IX')
+    expect(qual.process).toBe('GTAW/SMAW')
+    expect(qual.qualificationDate).toBe('2025-03-04')
+    expect(qual.sha256).toBeTruthy()
+
+    // And the welder is qualified on a date inside the window, which is
+    // the only thing filing it was for.
+    expect(qualificationOn(welder.id, '2025-06-01', after.welderQualifications).verdict)
+      .toBe('qualified')
+  })
+
+  it('does not write the WPQ into the card library or the certificate register', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    const beforeCards = (await p.listPersonnelLibrary(admin)).length
+    const beforeCerts = (await p.getBundle(admin, id))!.certificates.length
+
+    const res = await p.fileCredential(admin, id, welderInput({
+      fullName: 'Sole Register Hughes',
+    }), pdf('hughes'), 'hughes-wpq.pdf')
+    expect(res.ok).toBe(true)
+
+    // One register for a welder, and it is `welder_qualification`. A
+    // card beside it would be a second answer to one question.
+    expect((await p.listPersonnelLibrary(admin)).length).toBe(beforeCards)
+    expect((await p.getBundle(admin, id))!.certificates.length).toBe(beforeCerts)
+  })
+
+  it('replaces rather than stacks when the same WPQ is filed twice', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    await p.fileCredential(admin, id, welderInput({ fullName: 'Twice Filed Nunes' }),
+      pdf('nunes-1'), 'nunes-wpq.pdf')
+    const welder = (await p.getBundle(admin, id))!
+      .welders.find((w) => w.fullName === 'Twice Filed Nunes')!
+
+    await p.fileCredential(admin, id, welderInput({ subjectId: welder.id, fullName: null }),
+      pdf('nunes-2'), 'nunes-wpq-rescan.pdf')
+
+    const quals = (await p.getBundle(admin, id))!
+      .welderQualifications.filter((q) => q.welderId === welder.id)
+    expect(quals.length).toBe(1)
+    expect(quals[0]!.originalFilename).toBe('nunes-wpq-rescan.pdf')
+  })
+
+  it('files a requalification alongside rather than over the old one', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    await p.fileCredential(admin, id, welderInput({ fullName: 'Requalified Baptiste' }),
+      pdf('baptiste-1'), 'baptiste-2025.pdf')
+    const welder = (await p.getBundle(admin, id))!
+      .welders.find((w) => w.fullName === 'Requalified Baptiste')!
+
+    await p.fileCredential(admin, id, welderInput({
+      subjectId: welder.id, fullName: null, issueDate: '2026-04-20',
+    }), pdf('baptiste-2'), 'baptiste-2026.pdf')
+
+    const quals = (await p.getBundle(admin, id))!
+      .welderQualifications.filter((q) => q.welderId === welder.id)
+    expect(quals.length).toBe(2)
+    expect(quals.map((q) => q.qualificationDate).sort())
+      .toEqual(['2025-03-04', '2026-04-20'])
+  })
+
+  it('shows the WPQ on the credentials screen beside the cards', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    await p.fileCredential(admin, id, welderInput({ fullName: 'Listed Okonkwo' }),
+      pdf('okonkwo'), 'okonkwo-wpq.pdf')
+
+    const row = (await p.listCredentials(admin))
+      .find((r) => r.personName === 'Listed Okonkwo')
+    expect(row).toBeDefined()
+    expect(row!.kind).toBe('welder')
+    expect(row!.hasDocument).toBe(true)
+    expect(row!.issueDate).toBe('2025-03-04')
+  })
+
+  it('finds a welder by their process, because that is how somebody searches', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    await p.fileCredential(admin, id, welderInput({
+      fullName: 'Searchable Vantrease', process: 'FCAW',
+    }), pdf('vantrease'), 'vantrease-wpq.pdf')
+
+    const found = await p.listCredentials(admin, 'FCAW')
+    expect(found.some((r) => r.personName === 'Searchable Vantrease')).toBe(true)
+    expect(found.every((r) => r.kind === 'welder')).toBe(true)
+  })
+
+  it('refuses a WPQ with no code without writing anything', async () => {
+    const p = getDataProvider()
+    const id = await anyBook()
+    const before = (await p.getBundle(admin, id))!
+    const res = await p.fileCredential(admin, id,
+      welderInput({ fullName: 'Unwritten Welder', qualificationCode: null }),
+      pdf('nocode'), 'x.pdf')
+    expect(res.ok).toBe(false)
+    const after = (await p.getBundle(admin, id))!
+    expect(after.welders.length).toBe(before.welders.length)
+    expect(after.welderQualifications.length).toBe(before.welderQualifications.length)
   })
 })

@@ -1,12 +1,12 @@
 'use client'
 
 /**
- * Filing a CWI or NDT technician credential.
+ * Filing a welder, CWI or NDT technician credential.
  *
- * Sections 7 and 8 ask whether the people who inspected this pipe were
- * qualified to. Every other section had a way to get records in and
- * these two did not, so the answer lived in a folder somewhere and the
- * book scored zero regardless.
+ * Sections 6, 7 and 8 ask whether the people who welded and inspected
+ * this pipe were qualified to. Every other section had a way to get
+ * records in and these did not, so the answer lived in a folder
+ * somewhere and the book scored zero regardless.
  *
  * ## Why this is typed in rather than read off the page
  *
@@ -22,12 +22,24 @@
  * ASNT certifies per method. A card with no methods recorded certifies
  * no work, and leaving the field blank is what let a PT-qualified
  * technician pass an RT report for the life of this application.
+ *
+ * ## Why a welder's dates read differently
+ *
+ * A welder is not issued a card; they qualify on a test coupon, on a
+ * date, against a code and a process. The Weld Log Overview Sheet
+ * carries the expiry and never the qualification date, which is why
+ * every imported qualification reads `unverifiable`. Filing the WPQ is
+ * how that date arrives, so the field is labelled for what the
+ * certificate actually prints.
  */
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Loader2, Paperclip, Plus } from 'lucide-react'
-import { NDT_METHODS, defaultCertType, type CredentialSubject } from '@/lib/domain/credentials'
-import type { NdtMethod } from '@/lib/domain/types'
+import {
+  NDT_METHODS, QUALIFICATION_CODES, QUALIFICATION_CODE_LABEL,
+  defaultCertType, type CredentialSubject,
+} from '@/lib/domain/credentials'
+import type { NdtMethod, QualificationCode } from '@/lib/domain/types'
 import type { RosterMember } from '@/lib/data/provider'
 import { Button, Card, CardBody, CardHeader, CardTitle } from '@/components/ui/primitives'
 
@@ -38,7 +50,7 @@ const field =
 const NEW_PERSON = '__new__'
 
 export function CredentialFiler({
-  bookId, cwis, technicians,
+  bookId, cwis, technicians, welders,
 }: {
   /** The book to rescore afterwards, when filing from one. Absent when
    *  filing from the library, which is where a card normally starts:
@@ -46,6 +58,7 @@ export function CredentialFiler({
   bookId?: string
   cwis: RosterMember[]
   technicians: RosterMember[]
+  welders: RosterMember[]
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -62,9 +75,12 @@ export function CredentialFiler({
   const [issueDate, setIssueDate] = useState('')
   const [expiryDate, setExpiryDate] = useState('')
   const [methods, setMethods] = useState<NdtMethod[]>([])
+  const [qualificationCode, setQualificationCode] = useState<QualificationCode>('ASME_IX')
+  const [process, setProcess] = useState('')
   const [file, setFile] = useState<File | null>(null)
 
-  const roster = subjectType === 'cwi' ? cwis : technicians
+  const isWelder = subjectType === 'welder'
+  const roster = subjectType === 'cwi' ? cwis : isWelder ? welders : technicians
   const addingPerson = subjectId === NEW_PERSON
 
   function switchRoster(next: CredentialSubject) {
@@ -74,13 +90,16 @@ export function CredentialFiler({
     // ends up filed with radiographic methods.
     setSubjectId(NEW_PERSON)
     setMethods([])
+    setProcess('')
+    setQualificationCode('ASME_IX')
     setCertType(defaultCertType(next))
   }
 
   function reset() {
     setFullName(''); setInitials(''); setEmployer('')
     setIssuingBody(''); setIssueDate(''); setExpiryDate('')
-    setMethods([]); setFile(null); setSubjectId(NEW_PERSON)
+    setMethods([]); setProcess(''); setQualificationCode('ASME_IX')
+    setFile(null); setSubjectId(NEW_PERSON)
     setCertType(defaultCertType(subjectType))
   }
 
@@ -100,6 +119,10 @@ export function CredentialFiler({
       form.set('issueDate', issueDate)
       form.set('expiryDate', expiryDate)
       for (const m of methods) form.append('ndtMethods', m)
+      if (isWelder) {
+        form.set('qualificationCode', qualificationCode)
+        form.set('process', process)
+      }
       if (file) form.set('file', file)
 
       const res = await fetch(
@@ -118,7 +141,8 @@ export function CredentialFiler({
 
   const ready = !!file && !!issueDate && !!certType.trim()
     && (addingPerson ? !!fullName.trim() : !!subjectId)
-    && (subjectType === 'cwi' || methods.length > 0)
+    && (subjectType !== 'ndt_technician' || methods.length > 0)
+    && (!isWelder || !!process.trim())
 
   if (!open) {
     return (
@@ -127,7 +151,8 @@ export function CredentialFiler({
           <div>
             <div className="text-xs font-medium text-ink">File a credential</div>
             <p className="mt-0.5 text-2xs text-ink-muted">
-              A CWI card into section 7, an NDT technician card into section 8.
+              A welder WPQ into section 6, a CWI card into section 7, an NDT
+              technician card into section 8.
             </p>
           </div>
           <Button variant="primary" onClick={() => setOpen(true)}>
@@ -151,6 +176,7 @@ export function CredentialFiler({
           >
             <option value="ndt_technician">NDT technician (section 8)</option>
             <option value="cwi">CWI (section 7)</option>
+            <option value="welder">Welder (section 6)</option>
           </select>
 
           <label className="ml-2 text-2xs text-ink-secondary">Person</label>
@@ -183,17 +209,47 @@ export function CredentialFiler({
 
         <div className="flex flex-wrap gap-2">
           <input
-            className={`${field} min-w-[12rem] flex-1`} placeholder="Certificate type"
+            className={`${field} min-w-[12rem] flex-1`}
+            placeholder={isWelder ? 'What the certificate is called' : 'Certificate type'}
             value={certType} maxLength={120} onChange={(e) => setCertType(e.target.value)}
           />
           <input
-            className={`${field} min-w-[10rem] flex-1`} placeholder="Issuing body"
+            className={`${field} min-w-[10rem] flex-1`}
+            placeholder={isWelder ? 'Who performed the test' : 'Issuing body'}
             value={issuingBody} maxLength={120} onChange={(e) => setIssuingBody(e.target.value)}
           />
         </div>
 
+        {isWelder && (
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-2xs text-ink-secondary">Code</label>
+              <select
+                className={field}
+                value={qualificationCode}
+                onChange={(e) => setQualificationCode(e.target.value as QualificationCode)}
+              >
+                {QUALIFICATION_CODES.map((c) => (
+                  <option key={c} value={c}>{QUALIFICATION_CODE_LABEL[c]}</option>
+                ))}
+              </select>
+              <label className="ml-2 text-2xs text-ink-secondary">Process</label>
+              <input
+                className={`${field} min-w-[8rem]`} placeholder="GTAW, SMAW, GTAW/SMAW"
+                value={process} maxLength={120} onChange={(e) => setProcess(e.target.value)}
+              />
+            </div>
+            <p className="mt-1 text-2xs text-ink-muted">
+              As the WPQ prints them. A welder qualified under one code and process
+              is not thereby qualified under another.
+            </p>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2">
-          <label className="text-2xs text-ink-secondary">Issued</label>
+          <label className="text-2xs text-ink-secondary">
+            {isWelder ? 'Qualified on' : 'Issued'}
+          </label>
           <input
             type="date" className={field} value={issueDate}
             onChange={(e) => setIssueDate(e.target.value)}
@@ -204,7 +260,9 @@ export function CredentialFiler({
             onChange={(e) => setExpiryDate(e.target.value)}
           />
           <span className="text-2xs text-ink-muted">
-            Blank expiry means the card prints none.
+            {isWelder
+              ? 'The qualification date is the one the overview sheet never carries.'
+              : 'Blank expiry means the card prints none.'}
           </span>
         </div>
 
@@ -234,7 +292,9 @@ export function CredentialFiler({
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-secondary">
             <Paperclip size={12} />
-            <span className="underline">{file ? file.name : 'Attach the card'}</span>
+            <span className="underline">
+              {file ? file.name : isWelder ? 'Attach the WPQ' : 'Attach the card'}
+            </span>
             <input
               type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}

@@ -24,7 +24,8 @@ import type {
   MtrLibraryEntry, MtrPatch, MtrUploadInput, MtrUploadResult,
   NdeImportPreview, NdeImportResult,
   CalibrationImportPreview, CalibrationImportResult,
-  ErrorReportRow, NoteInput, NotificationItem, Operator, PersonnelLibraryEntry,
+  CredentialRow, ErrorReportRow, NoteInput, NotificationItem, Operator,
+  PersonnelLibraryEntry,
   RosterMember,
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
@@ -39,7 +40,8 @@ import { recordId } from '@/lib/domain/recordId'
 import { buildInviteEmail } from '@/lib/domain/inviteEmail'
 import { sendEmail } from '@/lib/email/send'
 import {
-  credentialFilename, credentialToCertificate, filterPersonnelLibrary,
+  credentialFilename, credentialToCertificate, credentialToQualification,
+  filterCredentials, filterPersonnelLibrary,
   validateCredential, type CredentialInput,
 } from '@/lib/domain/credentials'
 import {
@@ -1377,9 +1379,13 @@ export class SupabaseProvider implements DataProvider {
     // The roster first: the certificate needs somebody to hang off, and
     // a certificate written against a person who failed to insert would
     // be evidence attached to nobody.
+    const roster = input.subjectType === 'welder'
+      ? 'welder'
+      : input.subjectType === 'cwi' ? 'cwi' : 'ndt_technician'
+
     let subjectId = input.subjectId
     if (!subjectId) {
-      const table = input.subjectType === 'cwi' ? 'cwi' : 'ndt_technician'
+      const table = roster
       subjectId = randomUUID()
       const person = {
         id: subjectId,
@@ -1392,7 +1398,8 @@ export class SupabaseProvider implements DataProvider {
       }
       const { error } = await supabase.from(table).insert(domainToRow(
         person,
-        input.subjectType === 'cwi' ? COLUMNS.cwi : COLUMNS.ndt_technician,
+        input.subjectType === 'welder' ? COLUMNS.welder
+          : input.subjectType === 'cwi' ? COLUMNS.cwi : COLUMNS.ndt_technician,
       ))
       if (error) return { ok: false, error: describe(error) }
     } else {
@@ -1400,7 +1407,7 @@ export class SupabaseProvider implements DataProvider {
       // itself rather than a book's view of it, because the rosters are
       // global and a card filed from the library names nobody's book.
       const { data: person } = await supabase
-        .from(input.subjectType === 'cwi' ? 'cwi' : 'ndt_technician')
+        .from(roster)
         .select('id').eq('id', subjectId).is('deleted_at', null).maybeSingle()
       if (!person) return { ok: false, error: 'That person is not on the roster.' }
     }
@@ -1417,6 +1424,56 @@ export class SupabaseProvider implements DataProvider {
     })
     if (up.error) {
       return { ok: false, error: `Could not store the certificate: ${up.error.message}` }
+    }
+
+    // A welder's credential is a qualification, not a certificate. It
+    // completes the row their register already holds rather than
+    // starting a card beside it, so "was this welder qualified" keeps
+    // one answer.
+    if (input.subjectType === 'welder') {
+      const page = {
+        storagePath,
+        originalFilename: filename,
+        normalizedFilename: credentialFilename(
+          { certType: input.qualificationCode ?? 'WPQ', issueDate: input.issueDate },
+          filename),
+        sha256,
+        byteSize: file.byteLength,
+        mimeType: sourceMimeType(filename),
+        uploadedBy: viewer.id,
+        uploadedAt: new Date().toISOString(),
+      }
+      const filled = { ...credentialToQualification(input, subjectId), ...page }
+
+      // The qualification the overview sheet left without a start date,
+      // if there is one. Completing it is what turns `unverifiable` into
+      // `qualified`; a second row would leave the first unverifiable for
+      // ever.
+      const { data: open } = await supabase
+        .from('welder_qualification')
+        .select('id')
+        .eq('welder_id', subjectId)
+        .eq('code', input.qualificationCode!)
+        .is('qualification_date', null)
+        .is('deleted_at', null)
+        .limit(1).maybeSingle()
+
+      const row = domainToRow(
+        open?.id
+          ? { id: open.id as string, ...filled }
+          : {
+            id: recordId('welder_qualification', subjectId,
+              input.qualificationCode!, input.issueDate),
+            ...filled, source: 'filed_certificate',
+          },
+        COLUMNS.welder_qualification,
+      )
+      const { error: qualError } = await supabase
+        .from('welder_qualification').upsert(row, { onConflict: 'id' })
+      if (qualError) return { ok: false, error: describe(qualError) }
+
+      if (jobBookId) await this.refreshScores(jobBookId, viewer)
+      return { ok: true }
     }
 
     const entry = credentialToCertificate(input, subjectId)
@@ -1456,19 +1513,80 @@ export class SupabaseProvider implements DataProvider {
     return { ok: true }
   }
 
+  async listCredentials(viewer: Viewer, search?: string): Promise<CredentialRow[]> {
+    const supabase = await createClient()
+    const [cards, { data: quals }, { data: welders }] = await Promise.all([
+      this.listPersonnelLibrary(viewer),
+      supabase.from('welder_qualification')
+        .select('id, welder_id, code, process, qualification_date, expiry_date, storage_path')
+        .is('deleted_at', null)
+        .order('qualification_date', { ascending: false, nullsFirst: false }),
+      supabase.from('welder').select('id, full_name').is('deleted_at', null),
+    ])
+
+    const nameById = new Map(
+      (welders ?? []).map((w) => [w.id as string, w.full_name as string]),
+    )
+
+    const rows: CredentialRow[] = [
+      ...cards.map((c) => ({
+        id: c.id,
+        kind: c.subjectType,
+        personName: c.personName,
+        certType: c.certType,
+        issuingBody: c.issuingBody ?? null,
+        ndtMethods: c.ndtMethods ?? null,
+        process: null,
+        issueDate: c.issueDate,
+        expiryDate: c.expiryDate ?? null,
+        hasDocument: !!c.storagePath,
+        referencedByBooks: c.referencedByBooks,
+      })),
+      ...(quals ?? []).map((q) => ({
+        id: q.id as string,
+        kind: 'welder' as const,
+        personName: nameById.get(q.welder_id as string) ?? 'Unknown welder',
+        certType: q.code as string,
+        issuingBody: null,
+        ndtMethods: null,
+        process: (q.process as string | null) ?? null,
+        // Null where the overview sheet gave an expiry and no start,
+        // which is what the screen has to show rather than hide.
+        issueDate: (q.qualification_date as string | null) ?? null,
+        expiryDate: (q.expiry_date as string | null) ?? null,
+        hasDocument: !!q.storage_path,
+        // A qualification belongs to the welder, not to a book; the
+        // register is global and every book sees all of it.
+        referencedByBooks: 0,
+      })),
+    ]
+
+    return filterCredentials(rows, search)
+  }
+
   async listCredentialRosters(
     _viewer: Viewer,
-  ): Promise<{ cwis: RosterMember[]; technicians: RosterMember[] }> {
+  ): Promise<{
+    cwis: RosterMember[]
+    technicians: RosterMember[]
+    welders: RosterMember[]
+  }> {
     const supabase = await createClient()
-    const [{ data: cwis }, { data: techs }] = await Promise.all([
+    const [{ data: cwis }, { data: techs }, { data: welders }] = await Promise.all([
       supabase.from('cwi').select('id, full_name')
         .is('deleted_at', null).order('full_name'),
       supabase.from('ndt_technician').select('id, full_name')
         .is('deleted_at', null).order('full_name'),
+      supabase.from('welder').select('id, full_name')
+        .is('deleted_at', null).order('full_name'),
     ])
     const toMembers = (rows: { id: unknown; full_name: unknown }[] | null): RosterMember[] =>
       (rows ?? []).map((r) => ({ id: r.id as string, label: r.full_name as string }))
-    return { cwis: toMembers(cwis), technicians: toMembers(techs) }
+    return {
+      cwis: toMembers(cwis),
+      technicians: toMembers(techs),
+      welders: toMembers(welders),
+    }
   }
 
   async listPersonnelLibrary(
