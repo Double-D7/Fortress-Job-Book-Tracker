@@ -51,7 +51,7 @@
  */
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Loader2, Paperclip, Plus, X } from 'lucide-react'
+import { AlertTriangle, Loader2, Paperclip, Plus, ScanLine, X } from 'lucide-react'
 import {
   NDT_METHODS, QUALIFICATION_CODES, QUALIFICATION_CODE_LABEL,
   defaultCertType, printsNoIssueDate, validateCredentialLines,
@@ -59,6 +59,7 @@ import {
 } from '@/lib/domain/credentials'
 import type { NdtMethod, QualificationCode } from '@/lib/domain/types'
 import type { RosterMember } from '@/lib/data/provider'
+import type { CredentialDraft } from '@/lib/extract/credentialExtraction'
 import { Button, Card, CardBody, CardHeader, CardTitle } from '@/components/ui/primitives'
 
 const field =
@@ -98,6 +99,11 @@ export function CredentialFiler({
   const [qualificationCode, setQualificationCode] = useState<QualificationCode>('ASME_IX')
   const [process, setProcess] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [reading, setReading] = useState(false)
+  /** What the page was read as, kept so the person checking can be
+   *  told which fields came off the certificate and which did not. */
+  const [readFrom, setReadFrom] = useState<CredentialDraft | null>(null)
+  const [readNote, setReadNote] = useState<string | null>(null)
 
   const isTech = subjectType === 'ndt_technician'
   const isWelder = subjectType === 'welder'
@@ -123,7 +129,68 @@ export function CredentialFiler({
     setLines([{ methods: [], issueDate: '', expiryDate: '', limitation: '' }])
     setProcess(''); setQualificationCode('ASME_IX')
     setFile(null); setSubjectId(NEW_PERSON)
+    setReadFrom(null); setReadNote(null)
     setCertType(defaultCertType(subjectType))
+  }
+
+  /**
+   * Read the attached certificate and fill the form in.
+   *
+   * Fills; does not file. Nothing reaches the register until somebody
+   * presses "File it", and the fields stay editable throughout — the
+   * person checking the page is the one whose answer gets stored.
+   *
+   * A failed read is not an error state. It leaves the form exactly as
+   * it was, which is empty and typeable, and says so.
+   */
+  async function readPage(f: File) {
+    setReading(true); setError(null); setReadNote(null)
+    try {
+      const form = new FormData()
+      form.set('file', f)
+      const res = await fetch('/api/credentials/extract', { method: 'POST', body: form })
+      const json = (await res.json()) as
+        { ok: boolean; draft?: CredentialDraft; error?: string }
+
+      if (!json.ok || !json.draft) {
+        setReadNote(json.error ?? 'The certificate could not be read. Type the fields in.')
+        return
+      }
+
+      const d = json.draft
+      setReadFrom(d)
+      if (d.subjectType) switchRosterKeepingFile(d.subjectType)
+      // Every field stays editable. These are a starting point for
+      // somebody reading the page, not an answer.
+      if (d.fullName) setFullName(d.fullName)
+      if (d.employer) setEmployer(d.employer)
+      if (d.certType) setCertType(d.certType)
+      if (d.issuingBody) setIssuingBody(d.issuingBody)
+      setIssueDate(d.issueDate ?? '')
+      setExpiryDate(d.expiryDate ?? '')
+      if (d.qualificationCode) setQualificationCode(d.qualificationCode)
+      if (d.process) setProcess(d.process)
+      if (d.methodLines.length > 0) {
+        setLines(d.methodLines.map((l) => ({
+          methods: l.methods,
+          issueDate: l.issueDate ?? '',
+          expiryDate: l.expiryDate ?? '',
+          limitation: l.limitation ?? '',
+        })))
+      }
+    } catch {
+      setReadNote('Could not reach the server to read the certificate. Type the fields in.')
+    } finally {
+      setReading(false)
+    }
+  }
+
+  /** `switchRoster` clears the form, which would throw away a reading
+   *  the instant it was applied. */
+  function switchRosterKeepingFile(next: CredentialSubject) {
+    setSubjectType(next)
+    setSubjectId(NEW_PERSON)
+    setCertType(defaultCertType(next))
   }
 
   async function submit() {
@@ -185,7 +252,8 @@ export function CredentialFiler({
             <div className="text-xs font-medium text-ink">File a credential</div>
             <p className="mt-0.5 text-2xs text-ink-muted">
               A welder WPQ into section 6, a CWI card into section 7, an NDT
-              technician card into section 8.
+              technician card into section 8. Attach the page and it is read for
+              you; you check it before it files.
             </p>
           </div>
           <Button variant="primary" onClick={() => setOpen(true)}>
@@ -389,12 +457,77 @@ export function CredentialFiler({
               {file ? file.name : isWelder ? 'Attach the WPQ' : 'Attach the card'}
             </span>
             <input
-              type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg,.webp"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null
+                setFile(f)
+                setReadFrom(null); setReadNote(null)
+                // Read it straight away. Attaching the page is the
+                // moment somebody wants the form filled in; making
+                // them press a second button is a step with no
+                // decision in it.
+                if (f) void readPage(f)
+              }}
             />
           </label>
+          {file && (
+            <Button variant="ghost" disabled={reading} onClick={() => void readPage(file)}>
+              {reading
+                ? <Loader2 size={12} className="animate-spin" />
+                : <ScanLine size={12} />}
+              {reading ? 'Reading the page' : 'Read it again'}
+            </Button>
+          )}
           <span className="text-2xs text-ink-muted">Required. Up to 10 MB.</span>
         </div>
+
+        {readNote && (
+          <p className="text-2xs text-ink-secondary">{readNote}</p>
+        )}
+
+        {readFrom && (
+          <div className="rounded-md border border-brand-bright/40 bg-brand-bright/5 p-2">
+            <div className="flex items-start gap-1.5 text-2xs text-ink-secondary">
+              <ScanLine size={12} className="mt-0.5 shrink-0 text-brand-bright" />
+              <div className="space-y-1">
+                <p>
+                  <span className="font-medium text-ink">Filled in from the page.</span>{' '}
+                  Check every date against the certificate before filing — what gets
+                  stored is what you confirm here, not what was read.
+                </p>
+                {readFrom.certificateNumber && (
+                  <p>
+                    Certificate number{' '}
+                    <span className="font-mono text-ink">{readFrom.certificateNumber}</span>
+                    {' '}— not stored, but worth checking it is the right person.
+                  </p>
+                )}
+                {readFrom.subjectType === 'cwi' && !readFrom.issueDate && (
+                  <p>
+                    No issue date, because an AWS card does not print one. Left blank
+                    deliberately. Fill it in only if you know when the term began.
+                  </p>
+                )}
+                {readFrom.visionAcuityExpiry && (
+                  <p className="text-status-progress">
+                    This page also states a vision acuity expiry of{' '}
+                    <span className="font-mono">{readFrom.visionAcuityExpiry}</span>.
+                    The application does not record that yet; file the eye exam
+                    separately.
+                  </p>
+                )}
+                {readFrom.notes && <p>{readFrom.notes}</p>}
+                {readFrom.unreadable.length > 0 && (
+                  <p className="flex items-center gap-1 text-status-critical">
+                    <AlertTriangle size={11} />
+                    Could not be read with confidence: {readFrom.unreadable.join(', ')}.
+                    Type {readFrom.unreadable.length > 1 ? 'those' : 'that'} in from the page.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {error && <p className="text-2xs text-status-critical">{error}</p>}
 

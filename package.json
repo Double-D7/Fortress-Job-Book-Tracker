@@ -21,6 +21,7 @@
     "build:icons": "tsx scripts/build-icons.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.134.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.47.10",
     "@tanstack/react-table": "^8.20.6",
