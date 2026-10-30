@@ -1870,13 +1870,16 @@ export class SupabaseProvider implements DataProvider {
     const [{ data }, { data: orgs }] = await Promise.all([
       supabase
         .from('app_user')
-        .select('id, full_name, email, role, client_org_id, is_active, auth_user_id, created_at')
+        .select('id, full_name, email, role, client_org_id, is_active, auth_user_id, created_at, competency_level, competency_granted_at, competency_granted_by')
         .is('deleted_at', null)
         .order('full_name'),
       supabase.from('client_org').select('id, name'),
     ])
     const orgName = new Map(
       (orgs ?? []).map((o) => [o.id as string, o.name as string]))
+    // The assessor is another row of the same list, so no second query.
+    const nameById = new Map(
+      (data ?? []).map((u) => [u.id as string, u.full_name as string]))
     return (data ?? []).map((u) => {
       const orgId = (u.client_org_id as string | null) ?? null
       return {
@@ -1889,6 +1892,10 @@ export class SupabaseProvider implements DataProvider {
         isActive: u.is_active as boolean,
         linked: u.auth_user_id != null,
         createdAt: u.created_at as string,
+        competencyLevel: (u.competency_level as CompetencyLevel | null) ?? null,
+        competencyGrantedAt: (u.competency_granted_at as string | null) ?? null,
+        competencyGrantedByName:
+          nameById.get(u.competency_granted_by as string) ?? null,
       }
     })
   }
@@ -2010,6 +2017,21 @@ export class SupabaseProvider implements DataProvider {
       p_user_id: userId,
       p_role: role,
       p_client_org_id: clientOrgId,
+    })
+    return error ? { ok: false, error: describe(error) } : { ok: true }
+  }
+
+  async setUserCompetency(
+    viewer: Viewer, userId: string, level: CompetencyLevel | null,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may record a competency assessment.' }
+    }
+    // The self-assessment refusal and the client-role refusal both live
+    // in `set_user_competency` (0048), which is what actually runs.
+    const supabase = await createClient()
+    const { error } = await supabase.rpc('set_user_competency', {
+      p_user_id: userId, p_level: level,
     })
     return error ? { ok: false, error: describe(error) } : { ok: true }
   }

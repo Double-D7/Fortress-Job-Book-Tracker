@@ -17,7 +17,7 @@ import type {
   GateId, GateOutcome, GateReview, JobBookAudit, JobBookBundle, UserRole,
 } from '@/lib/domain/types'
 import { canPeerAudit, scoreAudit } from '@/lib/domain/audits'
-import { can, canComment, orgRequirement, rolesWith } from '@/lib/domain/roles'
+import { can, canComment, orgRequirement, roleDefinition, rolesWith } from '@/lib/domain/roles'
 import { recipientsFor, type Candidate, type NoteSeverity } from '@/lib/domain/notifications'
 import type { Division } from '@/lib/domain/divisions'
 import type { MtrDocument, PersonnelCredential } from '@/lib/domain/types'
@@ -527,6 +527,19 @@ export interface DataProvider {
   /** Change a role and its operator together; they are one decision. */
   setUserRole(
     viewer: Viewer, userId: string, role: UserRole, clientOrgId: string | null,
+  ): Promise<ActionResult>
+
+  /**
+   * Record an FDS-JBMP-004 competency assessment, or clear it.
+   *
+   * Separate from `setUserRole` because they are different kinds of
+   * fact. A role is what somebody is allowed to do; a competency level
+   * is an assessment somebody else performed on them, and it is what
+   * §5.1 and §10.2 actually read. Null means not assessed, which the
+   * domain treats as unqualified rather than as unknown.
+   */
+  setUserCompetency(
+    viewer: Viewer, userId: string, level: CompetencyLevel | null,
   ): Promise<ActionResult>
 
   /** Switch an account on or off. Never a delete — the audit log names
@@ -1116,6 +1129,19 @@ export interface DirectoryUser {
    */
   linked: boolean
   createdAt: string
+  /**
+   * The FDS-JBMP-004 assessment, or null for not assessed.
+   *
+   * On the directory row rather than only on the staff picker because
+   * this is where it is set, and because "not assessed" is the state
+   * an admin most needs to see: §5.1 and §10.2 both read it, and null
+   * means neither can proceed however senior the role.
+   */
+  competencyLevel: CompetencyLevel | null
+  /** When it was recorded, and by whom. An assessment with no assessor
+   *  is a number from nowhere. */
+  competencyGrantedAt: string | null
+  competencyGrantedByName: string | null
 }
 
 export interface InviteInput {
@@ -1288,19 +1314,28 @@ const SEED_DIRECTORY: DirectoryUser[] = [
     isActive: true,
     linked: true,
     createdAt: '2025-01-06T00:00:00.000Z',
+    // The staff roster already carries assessed levels; the directory
+    // shows the same fact rather than a second copy that can drift.
+    competencyLevel: s.competencyLevel,
+    competencyGrantedAt: s.competencyLevel ? '2025-01-06' : null,
+    competencyGrantedByName: s.competencyLevel ? 'A. Reyes' : null,
   })),
   { id: 'seed-user-admin', fullName: 'A. Reyes', email: 'admin@fortressds.com',
     role: 'fortress_admin', clientOrgId: null, clientOrgName: null,
-    isActive: true, linked: true, createdAt: '2025-01-06T00:00:00.000Z' },
+    isActive: true, linked: true, createdAt: '2025-01-06T00:00:00.000Z',
+    competencyLevel: null, competencyGrantedAt: null, competencyGrantedByName: null },
   { id: 'seed-user-readonly', fullName: 'J. Whitfield', email: 'review@fortressds.com',
     role: 'fortress_read_only', clientOrgId: null, clientOrgName: null,
-    isActive: true, linked: true, createdAt: '2025-02-11T00:00:00.000Z' },
+    isActive: true, linked: true, createdAt: '2025-02-11T00:00:00.000Z',
+    competencyLevel: null, competencyGrantedAt: null, competencyGrantedByName: null },
   { id: 'seed-user-client', fullName: 'K. Brandt', email: 'k.brandt@operator.example',
     role: 'client_user', clientOrgId: 'seed-org-demo', clientOrgName: 'Demo Operator',
-    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z' },
+    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z',
+    competencyLevel: null, competencyGrantedAt: null, competencyGrantedByName: null },
   { id: 'seed-user-inspector', fullName: 'P. Nakamura', email: 'p.nakamura@inspection.example',
     role: 'third_party_inspector', clientOrgId: null, clientOrgName: null,
-    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z' },
+    isActive: true, linked: false, createdAt: '2025-03-04T00:00:00.000Z',
+    competencyLevel: null, competencyGrantedAt: null, competencyGrantedByName: null },
 ]
 
 /** The refusal both providers give, worded once. */
@@ -2830,6 +2865,9 @@ class SeedProvider implements DataProvider {
       // Nobody has signed in as this person in a demo, which is the
       // honest answer and shows the "invited, not yet claimed" state.
       linked: false,
+      competencyLevel: null,
+      competencyGrantedAt: null,
+      competencyGrantedByName: null,
       createdAt: new Date().toISOString(),
     })
     return { ok: true }
@@ -2875,6 +2913,36 @@ class SeedProvider implements DataProvider {
       clientOrgId,
       clientOrgName: clientOrgId ? this.orgName(clientOrgId) : null,
     })
+    return { ok: true }
+  }
+
+  /** Mirrors `set_user_competency` (0048) refusal for refusal. The two
+   *  implementations of one contract are what this codebase keeps
+   *  paying for when they drift. */
+  async setUserCompetency(
+    viewer: Viewer, userId: string, level: CompetencyLevel | null,
+  ): Promise<ActionResult> {
+    if (!can(viewer.role, 'manage_users')) {
+      return { ok: false, error: 'Only a Fortress Admin may record a competency assessment.' }
+    }
+    const u = this.directory.get(userId)
+    if (!u) return { ok: false, error: 'No such user.' }
+
+    if (userId === viewer.id) {
+      return {
+        ok: false,
+        error: 'A competency assessment is recorded by somebody else; '
+          + 'ask another Fortress Admin.',
+      }
+    }
+    if (level !== null && !roleDefinition(u.role).isInternal) {
+      return {
+        ok: false,
+        error: `Competency applies to Fortress staff; ${u.fullName} holds a client role.`,
+      }
+    }
+
+    this.directory.set(userId, { ...u, competencyLevel: level })
     return { ok: true }
   }
 

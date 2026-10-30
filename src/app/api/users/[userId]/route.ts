@@ -1,19 +1,23 @@
 import { NextResponse } from 'next/server'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
 import { ROLES } from '@/lib/domain/roles'
-import type { UserRole } from '@/lib/domain/types'
+import { COMPETENCY_LEVELS } from '@/lib/domain/competency'
+import type { CompetencyLevel, UserRole } from '@/lib/domain/types'
 
 /**
- * Change one person's role, or switch their account on or off.
+ * Change one person's role, record their competency, or switch their
+ * account on or off.
  *
- * One route rather than two because they are one screen and one row. The
- * body says which: `role` changes the role and its operator together,
- * `isActive` flips the switch. Sending both would be two decisions in
- * one request with no defined order, so it is refused.
+ * One route rather than three because they are one screen and one row.
+ * The body says which: `role` changes the role and its operator
+ * together, `competencyLevel` records an FDS-JBMP-004 assessment, and
+ * `isActive` flips the switch. Sending more than one would be several
+ * decisions in one request with no defined order, so it is refused.
  */
 export const dynamic = 'force-dynamic'
 
 const VALID_ROLES = new Set<string>(ROLES.map((r) => r.role))
+const VALID_LEVELS = new Set<string>(COMPETENCY_LEVELS)
 
 export async function PATCH(
   request: Request,
@@ -32,14 +36,28 @@ export async function PATCH(
 
   const wantsRole = body.role !== undefined
   const wantsActive = body.isActive !== undefined
-  if (wantsRole === wantsActive) {
+  const wantsCompetency = body.competencyLevel !== undefined
+  // Exactly one. `competencyLevel: null` is a real instruction — it
+  // clears an assessment — so presence is what counts, not truthiness.
+  if ([wantsRole, wantsActive, wantsCompetency].filter(Boolean).length !== 1) {
     return NextResponse.json(
-      { ok: false, error: 'Change the role or the switch, one at a time.' },
+      { ok: false, error: 'Change the role, the competency or the switch, one at a time.' },
       { status: 400 },
     )
   }
 
   const provider = getDataProvider()
+
+  if (wantsCompetency) {
+    const level = body.competencyLevel
+    if (level !== null && (typeof level !== 'string' || !VALID_LEVELS.has(level))) {
+      return NextResponse.json({ ok: false, error: 'Unknown competency level.' }, { status: 400 })
+    }
+    const result = await provider.setUserCompetency(
+      viewer, userId, (level as CompetencyLevel | null) ?? null,
+    )
+    return NextResponse.json(result, { status: result.ok ? 200 : 422 })
+  }
 
   if (wantsActive) {
     if (typeof body.isActive !== 'boolean') {

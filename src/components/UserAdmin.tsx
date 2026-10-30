@@ -21,6 +21,10 @@ import { useRouter } from 'next/navigation'
 import { Loader2, Mail, ShieldCheck, UserPlus } from 'lucide-react'
 import type { DirectoryUser } from '@/lib/data/provider'
 import { ROLES, orgRequirement, roleDefinition } from '@/lib/domain/roles'
+import {
+  COMPETENCY_LEVELS, COMPETENCY_SUMMARY, competencyGaps,
+} from '@/lib/domain/competency'
+import type { CompetencyLevel } from '@/lib/domain/types'
 import type { UserRole } from '@/lib/domain/types'
 import {
   Button, Card, CardBody, CardHeader, CardTitle, Chip, Table, Td, Th, Tr,
@@ -175,7 +179,7 @@ export function UserAdmin({
           <Table>
             <thead>
               <Tr>
-                <Th>Name</Th><Th>Role</Th><Th>Sees</Th><Th>Operator</Th>
+                <Th>Name</Th><Th>Role</Th><Th>Competency</Th><Th>Sees</Th><Th>Operator</Th>
                 <Th>Status</Th>{canManage && <Th className="text-right">Change</Th>}
               </Tr>
             </thead>
@@ -195,6 +199,47 @@ export function UserAdmin({
                     </Td>
                     <Td>
                       <Chip tone={def.isInternal ? 'brand' : 'info'}>{def.label}</Chip>
+                    </Td>
+                    <Td>
+                      {!def.isInternal ? (
+                        <span className="text-2xs text-ink-muted">—</span>
+                      ) : canManage ? (
+                        <>
+                          <select
+                            className={field}
+                            value={u.competencyLevel ?? ''}
+                            // An assessment is recorded by somebody
+                            // else; the database refuses this too.
+                            disabled={busy !== null || u.id === viewerId}
+                            title={u.id === viewerId
+                              ? 'A competency assessment is recorded by somebody else'
+                              : undefined}
+                            onChange={(e) => {
+                              const next = (e.target.value || null) as CompetencyLevel | null
+                              void send(`/api/users/${u.id}`, {
+                                method: 'PATCH',
+                                body: JSON.stringify({ competencyLevel: next }),
+                              }, `comp-${u.id}`,
+                                next
+                                  ? `${u.fullName} assessed at ${next}.`
+                                  : `${u.fullName}\u2019s assessment cleared.`)
+                            }}
+                          >
+                            <option value="">Not assessed</option>
+                            {COMPETENCY_LEVELS.map((l) => (
+                              <option key={l} value={l}>{l}</option>
+                            ))}
+                          </select>
+                          <CompetencyNote user={u} viewerId={viewerId} />
+                        </>
+                      ) : (
+                        <>
+                          <Chip tone={u.competencyLevel ? 'complete' : 'progress'}>
+                            {u.competencyLevel ?? 'Not assessed'}
+                          </Chip>
+                          <CompetencyNote user={u} viewerId={viewerId} />
+                        </>
+                      )}
                     </Td>
                     <Td className="text-2xs text-ink-secondary">{def.scopeLabel}</Td>
                     <Td className="text-2xs text-ink-secondary">
@@ -300,5 +345,42 @@ export function UserAdmin({
         </p>
       </CardBody>
     </Card>
+  )
+}
+
+/**
+ * What an assessment does and does not unlock, under the picker.
+ *
+ * An admin choosing between JB-2 and JB-3 is not choosing a number,
+ * they are deciding whether this person may peer-audit somebody else's
+ * book. Saying so under the control beats expecting them to remember
+ * §5.1 and §10.2.
+ */
+function CompetencyNote(
+  { user, viewerId }: { user: DirectoryUser; viewerId: string },
+) {
+  const gaps = competencyGaps(user.competencyLevel)
+  return (
+    <div className="mt-1 space-y-0.5 text-2xs text-ink-muted">
+      {user.id === viewerId && (
+        <div>Recorded by another admin, not by you.</div>
+      )}
+      {user.competencyLevel ? (
+        <div>{COMPETENCY_SUMMARY[user.competencyLevel]}</div>
+      ) : (
+        <div className="text-status-progress">
+          Not assessed — {competencyGaps(null).join(', ')}.
+        </div>
+      )}
+      {user.competencyLevel && gaps.length > 0 && (
+        <div className="text-status-progress">{gaps.join(', ')}.</div>
+      )}
+      {user.competencyGrantedAt && (
+        <div>
+          {user.competencyGrantedAt}
+          {user.competencyGrantedByName ? ` · ${user.competencyGrantedByName}` : ''}
+        </div>
+      )}
+    </div>
   )
 }
