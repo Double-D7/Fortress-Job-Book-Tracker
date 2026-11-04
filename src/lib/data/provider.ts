@@ -55,7 +55,8 @@ import {
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib/domain/scaffold'
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
-import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
+import { previewUploads, type PrepareInput, type UploadPreview } from '@/lib/domain/upload'
+import type { StagedFileRequest, StagingClassification } from '@/lib/domain/staging'
 import {
   checkWeldLogOverview, parseWeldLogOverviewPdf, type WeldLogOverview,
 } from '@/lib/import/weldLogOverview'
@@ -318,6 +319,42 @@ export interface DataProvider {
     jobBookId: string,
     sectionNumber: string,
     files: PrepareInput[],
+  ): Promise<UploadResult>
+
+  /**
+   * Reserve somewhere for the browser to put files, and say where.
+   *
+   * The first half of an upload that does not travel through a
+   * function body. Writes no document; returns one signed upload URL
+   * per file plus the id that names the batch.
+   *
+   * `ok: false` with `unavailable` means this provider has no storage
+   * to stage into — the seed has none — and the caller should fall
+   * back to posting the bytes.
+   */
+  stageUploads(
+    viewer: Viewer,
+    jobBookId: string,
+    sectionNumber: string,
+    files: StagedFileRequest[],
+    classification: StagingClassification,
+  ): Promise<StageResult>
+
+  /**
+   * Hash what was staged and say what it would do to the section.
+   *
+   * The server reads each object back out of storage and hashes it
+   * itself. That is the whole point: a client-supplied hash would make
+   * the duplicate check a matter of the browser's word.
+   */
+  previewStaged(
+    viewer: Viewer, jobBookId: string, sectionNumber: string, uploadId: string,
+  ): Promise<{ ok: true; preview: UploadPreview } | { ok: false; error: string }>
+
+  /** File what was staged, moving each object into the book rather
+   *  than uploading it again. */
+  commitStaged(
+    viewer: Viewer, jobBookId: string, sectionNumber: string, uploadId: string,
   ): Promise<UploadResult>
 
   // -- Gate reviews, FDS-JBMP-001 §7 -------------------------------------
@@ -1144,6 +1181,19 @@ export interface DirectoryUser {
   competencyGrantedByName: string | null
 }
 
+/** One file the browser may upload, and where to put it. */
+export interface StagedUploadTarget {
+  originalFilename: string
+  /** The object path inside the documents bucket. */
+  path: string
+  /** The one-shot token the browser presents with the upload. */
+  token: string
+}
+
+export type StageResult =
+  | { ok: true; uploadId: string; targets: StagedUploadTarget[] }
+  | { ok: false; error: string; unavailable?: boolean }
+
 export interface InviteInput {
   email: string
   fullName: string
@@ -1559,6 +1609,32 @@ class SeedProvider implements DataProvider {
     for (const [id, name] of this.addedOrgs) orgs.set(id, name)
     return [...orgs.entries()].map(([id, name]) => ({ id, name }))
                               .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  /**
+   * The seed has no object storage, so there is nowhere to stage into.
+   *
+   * Reported as unavailable rather than faked: the caller falls back to
+   * posting the bytes, which is what the seed has always done and what
+   * a demo batch is small enough for.
+   */
+  async stageUploads(): Promise<StageResult> {
+    return {
+      ok: false,
+      unavailable: true,
+      error: 'Direct upload needs object storage, which the demo does not have.',
+    }
+  }
+
+  async previewStaged(): Promise<{ ok: false; error: string }> {
+    return { ok: false, error: 'Nothing is staged in the demo.' }
+  }
+
+  async commitStaged(): Promise<UploadResult> {
+    return {
+      ok: false, added: [], rejected: [],
+      error: 'Nothing is staged in the demo.',
+    }
   }
 
   async addDocuments(

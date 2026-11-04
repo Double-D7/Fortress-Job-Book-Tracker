@@ -14,6 +14,13 @@ import { previewUploads, type PrepareInput } from '@/lib/domain/upload'
  *          committing.
  *   POST — do it.
  *
+ * Either verb takes one of two shapes. A JSON body naming an
+ * `uploadId` means the files are already in storage, put there
+ * directly by the browser (see `./staged`), and the server reads them
+ * back from there. A multipart body means the bytes came in the
+ * request, which is the older path and is held to a few megabytes by
+ * the platform.
+ *
  * The hash is computed here, on the server, from the bytes that actually
  * arrived. A client-supplied hash would make the duplicate check a matter
  * of the browser's word, and the duplicate check is one of the things this
@@ -73,6 +80,17 @@ async function readForm(request: Request): Promise<
   return { ok: true, files }
 }
 
+/** The batch id, when this request names one instead of carrying bytes. */
+async function stagedUploadId(request: Request): Promise<string | null> {
+  if (!request.headers.get('content-type')?.includes('application/json')) return null
+  try {
+    const body = (await request.json()) as { uploadId?: unknown }
+    return typeof body.uploadId === 'string' && body.uploadId ? body.uploadId : null
+  } catch {
+    return null
+  }
+}
+
 /** Preview: hash, check, and report. Writes nothing. */
 export async function PUT(
   request: Request,
@@ -80,6 +98,14 @@ export async function PUT(
 ) {
   const { bookId, sectionNumber } = await params
   const number = decodeURIComponent(sectionNumber)
+
+  const uploadId = await stagedUploadId(request)
+  if (uploadId) {
+    const viewer = await currentViewer()
+    if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
+    const result = await getDataProvider().previewStaged(viewer, bookId, number, uploadId)
+    return NextResponse.json(result, { status: result.ok ? 200 : 422 })
+  }
 
   const read = await readForm(request)
   if (!read.ok) return NextResponse.json({ ok: false, error: read.error }, { status: 400 })
@@ -113,6 +139,16 @@ export async function POST(
   { params }: { params: Promise<{ bookId: string; sectionNumber: string }> },
 ) {
   const { bookId, sectionNumber } = await params
+  const number = decodeURIComponent(sectionNumber)
+
+  const uploadId = await stagedUploadId(request)
+  if (uploadId) {
+    const viewer = await currentViewer()
+    if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
+    const result = await getDataProvider().commitStaged(viewer, bookId, number, uploadId)
+    return NextResponse.json(result, { status: result.ok ? 201 : 422 })
+  }
+
   const read = await readForm(request)
   if (!read.ok) return NextResponse.json({ ok: false, error: read.error }, { status: 400 })
 
@@ -120,7 +156,7 @@ export async function POST(
   if (!viewer) return NextResponse.json({ ok: false, error: 'Not signed in.' }, { status: 401 })
 
   const result = await getDataProvider().addDocuments(
-    viewer, bookId, decodeURIComponent(sectionNumber), read.files,
+    viewer, bookId, number, read.files,
   )
   return NextResponse.json(result, { status: result.ok ? 201 : 422 })
 }

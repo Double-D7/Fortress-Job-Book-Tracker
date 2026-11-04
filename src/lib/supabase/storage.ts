@@ -8,7 +8,8 @@
  */
 import { createClient } from './server'
 
-export const DOCUMENT_BUCKET = 'job-book-documents'
+export { DOCUMENT_BUCKET } from './bucket'
+import { DOCUMENT_BUCKET } from './bucket'
 /** Long enough to start a download, short enough that a leaked link is
  *  worthless by the time it is shared. */
 export const SIGNED_URL_TTL_SECONDS = 120

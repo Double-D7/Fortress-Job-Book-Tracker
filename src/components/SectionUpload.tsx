@@ -21,7 +21,9 @@ import { DEFAULT_TYPE_BY_SECTION, TYPE_CODES, type TypeCode } from '@/lib/domain
 import { Button, Card, CardBody, CardHeader, CardTitle, Chip } from '@/components/ui/primitives'
 import { bytes, num } from '@/lib/utils'
 import type { UploadPreview } from '@/lib/domain/upload'
-import { MAX_REQUEST_LABEL, postForJson, tooLargeFor } from '@/lib/http/uploadLimits'
+import { postForJson, tooLargeFor } from '@/lib/http/uploadLimits'
+import { uploadDirect, type UploadTarget } from '@/lib/http/directUpload'
+import { MAX_FILE_LABEL, validateStagingRequest } from '@/lib/domain/staging'
 
 interface Props {
   bookId: string
@@ -57,6 +59,10 @@ export function SectionUpload({
   )
   const [identifier, setIdentifier] = useState('')
   const [documentDate, setDocumentDate] = useState('')
+  /** Set once a batch is in storage. The preview and the commit then
+   *  name this instead of carrying the bytes again. */
+  const [uploadId, setUploadId] = useState<string | null>(null)
+  const [sending, setSending] = useState<{ done: number; total: number } | null>(null)
 
   const classification = {
     typeCode, identifier: identifier.trim() || null, documentDate: documentDate || null,
@@ -77,23 +83,93 @@ export function SectionUpload({
     setPreview(null)
     setDone(null)
     setError(null)
+    setUploadId(null)
 
-    // Checked here, before anything is sent. A request over the limit
-    // is refused at the edge before the route runs, so pushing it up a
-    // site connection first only costs the person the wait.
-    const over = tooLargeFor(files)
-    if (over) {
-      setError(over.message)
+    // Refused before a byte moves. One mis-scanned 400 MB file should
+    // not be discovered at the end of a long upload.
+    const problems = validateStagingRequest(
+      files.map((f) => ({ name: f.name, size: f.size, mimeType: f.type })),
+    )
+    if (problems.length > 0) {
+      setError(problems.map((p) => p.message).join(' '))
       return
     }
 
     setBusy('preview')
-    const res = await postForJson<{ preview: UploadPreview }>(
-      base, { method: 'PUT', body: body(files) },
-    )
-    if (!res.ok) setError(res.error ?? 'Could not read those files.')
-    else setPreview(res.data!.preview)
+    const staged = await stageAndSend(files)
+    if (staged === 'fallback') {
+      // No object storage: post the bytes, which the demo has always
+      // done and which a small batch still fits through.
+      const over = tooLargeFor(files)
+      if (over) {
+        setError(over.message)
+        setBusy(null)
+        return
+      }
+      const res = await postForJson<{ preview: UploadPreview }>(
+        base, { method: 'PUT', body: body(files) },
+      )
+      if (!res.ok) setError(res.error ?? 'Could not read those files.')
+      else setPreview(res.data!.preview)
+      setBusy(null)
+      return
+    }
     setBusy(null)
+  }
+
+  /**
+   * Put the batch in storage, then ask what it would do to the section.
+   *
+   * Returns 'fallback' when there is nowhere to stage — the seed has no
+   * storage — so the caller can post the bytes instead.
+   */
+  async function stageAndSend(files: File[]): Promise<'done' | 'fallback'> {
+    const reserved = await postForJson<{ uploadId: string; targets: UploadTarget[] }>(
+      `${base}/staged`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          files: files.map((f) => ({ name: f.name, size: f.size, mimeType: f.type })),
+          classification,
+        }),
+      },
+    )
+    if (!reserved.ok) {
+      if (/not available|does not have/i.test(reserved.error ?? '')) return 'fallback'
+      setError(reserved.error ?? 'Could not prepare the upload.')
+      return 'done'
+    }
+
+    const { uploadId: id, targets } = reserved.data!
+    setSending({ done: 0, total: files.length })
+    const sent = await uploadDirect(files, targets, (p) =>
+      setSending({ done: p.done, total: p.total }))
+    setSending(null)
+
+    if (!sent.ok) {
+      setError(sent.error)
+      return 'done'
+    }
+
+    // The bytes are in the bucket. From here the server reads them
+    // back and hashes them itself, so the duplicate check stays the
+    // server's finding rather than the browser's word.
+    const res = await postForJson<{ preview: UploadPreview }>(
+      base,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ uploadId: id }),
+      },
+    )
+    if (!res.ok) {
+      setError(res.error ?? 'Could not read those files.')
+      return 'done'
+    }
+    setUploadId(id)
+    setPreview(res.data!.preview)
+    return 'done'
   }
 
   async function repreview() {
@@ -101,17 +177,28 @@ export function SectionUpload({
   }
 
   async function commit() {
-    const over = tooLargeFor(picked)
-    if (over) {
-      setError(over.message)
-      return
+    // Nothing is sent again when the batch is already in storage: the
+    // commit names it and the server moves the objects into the book.
+    if (!uploadId) {
+      const over = tooLargeFor(picked)
+      if (over) {
+        setError(over.message)
+        return
+      }
     }
 
     setBusy('commit')
     setError(null)
     try {
       const res = await postForJson<{ added: unknown[]; rejected: unknown[] }>(
-        base, { method: 'POST', body: body(picked) },
+        base,
+        uploadId
+          ? {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ uploadId }),
+          }
+          : { method: 'POST', body: body(picked) },
       )
       if (!res.ok) {
         setError(res.error ?? 'Upload failed.')
@@ -129,6 +216,8 @@ export function SectionUpload({
   }
 
   function reset(clearDone = true) {
+    setUploadId(null)
+    setSending(null)
     setPicked([])
     setPreview(null)
     setError(null)
@@ -231,8 +320,8 @@ export function SectionUpload({
             They are checked against the rest of the book before anything is filed.
           </p>
           <p className="mt-0.5 text-2xs text-ink-muted">
-            Up to {MAX_REQUEST_LABEL} per batch. Several smaller batches land exactly
-            the same as one large one.
+            Files go straight to storage, so a batch is not limited by request size.
+            Up to {MAX_FILE_LABEL} per file.
           </p>
           <input
             ref={inputRef} type="file" multiple className="hidden"
@@ -248,7 +337,23 @@ export function SectionUpload({
           </Button>
         </div>
 
-        {busy === 'preview' && (
+        {sending && (
+          <div className="space-y-1.5">
+            <p className="flex items-center gap-2 text-xs text-ink-secondary">
+              <Loader2 size={13} className="animate-spin" />
+              Uploading {num(Math.min(sending.done + 1, sending.total))} of{' '}
+              {num(sending.total)}…
+            </p>
+            <div className="h-1 overflow-hidden rounded-full bg-hairline">
+              <div
+                className="h-full bg-brand-bright transition-all"
+                style={{ width: `${Math.round((sending.done / sending.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {busy === 'preview' && !sending && (
           <p className="flex items-center gap-2 text-xs text-ink-secondary">
             <Loader2 size={13} className="animate-spin" />
             Hashing {num(picked.length)} file{picked.length === 1 ? '' : 's'} and checking the book…

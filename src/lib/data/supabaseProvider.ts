@@ -18,6 +18,10 @@ import type {
   CompetencyLevel, GateReview, JobBookBundle, MtrDocument, PersonnelCredential,
   UserRole,
 } from '@/lib/domain/types'
+import {
+  finalPath, stagingPath,
+  type StagedFileRequest, type StagingClassification,
+} from '@/lib/domain/staging'
 import type {
   ActionResult, AuditInput, BookNote, CreateResult, DataProvider, DirectoryUser,
   GateDecision, GateSideFacts, GrantInput, InspectorGrant, InviteInput,
@@ -30,6 +34,7 @@ import type {
   PressureTestImportCommit, PressureTestImportPreview,
   JobBookSummary, OverviewImportPreview, OverviewImportResult, StaffMember,
   TorqueLogImportPreview, TorqueLogImportResult,
+  StageResult, StagedUploadTarget,
   UploadResult, Viewer, WeldLogImportPreview, WeldLogImportResult,
 } from './provider'
 import { can, rolesWith } from '@/lib/domain/roles'
@@ -58,7 +63,10 @@ import { scaffoldJobBook, validateNewJobBook, type NewJobBookInput } from '@/lib
 import { afterUpload, applyComputedScores, scoreBook } from '@/lib/domain/scoring'
 import { aggregateFindings, countBySeverity, evaluateFlags } from '@/lib/domain/flags'
 import { latestOfTier, scoreAudit } from '@/lib/domain/audits'
-import { previewUploads, normalizeFilename, type PrepareInput } from '@/lib/domain/upload'
+import {
+  previewUploads, normalizeFilename,
+  type PrepareInput, type UploadPreview,
+} from '@/lib/domain/upload'
 import {
   alreadyFiled, missingSectionMessage, sourceMimeType, sourceSection,
   sourceStoragePath, type SourceKind,
@@ -663,11 +671,211 @@ export class SupabaseProvider implements DataProvider {
     return { ok: true, documentId }
   }
 
+  // -- Direct-to-storage uploads -----------------------------------------
+  //
+  // A document no longer travels inside a request body. The browser
+  // puts it straight into the bucket and these three steps do the rest:
+  // stage (reserve a path), preview (read it back and hash it), commit
+  // (move it into the book). See `supabase/migrations/0049`.
+
+  async stageUploads(
+    viewer: Viewer,
+    jobBookId: string,
+    sectionNumber: string,
+    files: StagedFileRequest[],
+    classification: StagingClassification,
+  ): Promise<StageResult> {
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, error: 'Not permitted to upload to this book.' }
+    }
+    const supabase = await createClient()
+    const uploadId = crypto.randomUUID()
+
+    const targets: StagedUploadTarget[] = []
+    const rows: Record<string, unknown>[] = []
+
+    for (const [i, f] of files.entries()) {
+      const path = stagingPath(jobBookId, uploadId, i)
+      // The signed URL is the only thing the browser is given. It is
+      // good for this one path and nothing else, so a tampered client
+      // cannot write over a filed document with it.
+      const { data, error } = await supabase.storage
+        .from(DOCUMENT_BUCKET).createSignedUploadUrl(path)
+      if (error || !data) {
+        return { ok: false, error: `Could not prepare the upload: ${error?.message ?? ''}`.trim() }
+      }
+      targets.push({ originalFilename: f.name, path, token: data.token })
+      rows.push({
+        upload_id: uploadId,
+        job_book_id: jobBookId,
+        section_number: sectionNumber,
+        storage_path: path,
+        original_filename: f.name,
+        byte_size: f.size,
+        mime_type: f.mimeType ?? null,
+        classification,
+        created_by: viewer.id,
+      })
+    }
+
+    // Rows before tokens are used, so an abandoned batch is sweepable.
+    // An object with no row is invisible to the cleanup job and would
+    // sit in the bucket for ever.
+    const { error } = await supabase.from('staged_upload').insert(rows)
+    if (error) return { ok: false, error: describe(error) }
+
+    return { ok: true, uploadId, targets }
+  }
+
+  /**
+   * Read each staged object back and hash it.
+   *
+   * This is where the integrity contract is kept. The route's promise
+   * has always been that the server hashes the bytes that actually
+   * arrived rather than taking the browser's word, and uploading
+   * directly does not change that — it only changes where the server
+   * reads them from.
+   *
+   * Hashed in a stream rather than a buffer: a section of isometrics
+   * is hundreds of megabytes and a function that held each one whole
+   * would run out of memory long before it ran out of files.
+   */
+  private async hashStaged(
+    supabase: Awaited<ReturnType<typeof createClient>>,
+    row: { id: string; storage_path: string; sha256: string | null },
+  ): Promise<string | null> {
+    if (row.sha256) return row.sha256
+
+    const { data, error } = await supabase.storage
+      .from(DOCUMENT_BUCKET).download(row.storage_path)
+    if (error || !data) return null
+
+    const hash = createHash('sha256')
+    const reader = data.stream().getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) hash.update(value)
+    }
+    const sha256 = hash.digest('hex')
+
+    // Written through a function that takes the hash as an argument,
+    // so the one column the duplicate check rests on has exactly one
+    // writer and it is never a request body.
+    await supabase.rpc('record_staged_hash', { p_staged_id: row.id, p_sha256: sha256 })
+    return sha256
+  }
+
+  /** The staged rows of one batch, with every object hashed. */
+  private async stagedInputs(
+    jobBookId: string, sectionNumber: string, uploadId: string,
+  ): Promise<
+    { ok: true; files: PrepareInput[]; paths: Map<string, string> } | { ok: false; error: string }
+  > {
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from('staged_upload')
+      .select('id, storage_path, original_filename, byte_size, mime_type, sha256, classification')
+      .eq('upload_id', uploadId)
+      .eq('job_book_id', jobBookId)
+      .eq('section_number', sectionNumber)
+      .is('consumed_at', null)
+      .order('storage_path')
+
+    if (error) return { ok: false, error: describe(error) }
+    if (!data || data.length === 0) {
+      return {
+        ok: false,
+        error: 'Those files are no longer staged. Choose them again — nothing was filed.',
+      }
+    }
+
+    const files: PrepareInput[] = []
+    // sha256 to staging path, so the commit knows which object to move
+    // for each file the preview accepted.
+    const paths = new Map<string, string>()
+
+    for (const row of data) {
+      const sha256 = await this.hashStaged(supabase, {
+        id: row.id as string,
+        storage_path: row.storage_path as string,
+        sha256: (row.sha256 as string | null) ?? null,
+      })
+      if (!sha256) {
+        return {
+          ok: false,
+          error: `${row.original_filename as string} did not finish uploading. `
+            + 'Choose the files again.',
+        }
+      }
+      files.push({
+        originalFilename: row.original_filename as string,
+        byteSize: Number(row.byte_size),
+        sha256,
+        mimeType: (row.mime_type as string | null) ?? null,
+        classification: (row.classification ?? {}) as PrepareInput['classification'],
+      })
+      paths.set(sha256, row.storage_path as string)
+    }
+    return { ok: true, files, paths }
+  }
+
+  async previewStaged(
+    viewer: Viewer, jobBookId: string, sectionNumber: string, uploadId: string,
+  ): Promise<{ ok: true; preview: UploadPreview } | { ok: false; error: string }> {
+    const b = await this.getBundle(viewer, jobBookId)
+    if (!b) return { ok: false, error: 'Job book not found.' }
+
+    const def = b.sectionDefinitions.find((d) => d.sectionNumber === sectionNumber)
+    const section = def && b.sections.find((x) => x.sectionDefinitionId === def.id)
+    if (!def || !section) return { ok: false, error: `No section ${sectionNumber} in this book.` }
+
+    const staged = await this.stagedInputs(jobBookId, sectionNumber, uploadId)
+    if (!staged.ok) return staged
+
+    return {
+      ok: true,
+      preview: previewUploads(staged.files, {
+        book: b.book, section: def, sectionId: section.id,
+        existing: b.documents, expectedCount: section.expectedCount ?? null,
+      }),
+    }
+  }
+
+  async commitStaged(
+    viewer: Viewer, jobBookId: string, sectionNumber: string, uploadId: string,
+  ): Promise<UploadResult> {
+    if (!can(viewer.role, 'edit_records')) {
+      return { ok: false, added: [], rejected: [], error: 'Not permitted to upload to this book.' }
+    }
+
+    const staged = await this.stagedInputs(jobBookId, sectionNumber, uploadId)
+    if (!staged.ok) return { ok: false, added: [], rejected: [], error: staged.error }
+
+    // The bytes are already in the bucket, so what reaches
+    // `addDocuments` is metadata plus a mover. Re-checked against the
+    // book as it is now, not as the preview saw it.
+    return this.addDocuments(
+      viewer, jobBookId, sectionNumber, staged.files,
+      { uploadId, pathBySha: staged.paths },
+    )
+  }
+
   async addDocuments(
     viewer: Viewer,
     jobBookId: string,
     sectionNumber: string,
     files: PrepareInput[],
+    /**
+     * Set when the bytes are already in the bucket, staged by a direct
+     * upload. The object is then MOVED into the book rather than
+     * written again — storage does that without transferring anything,
+     * so a 40 MB isometric costs the same as a 40 KB one.
+     *
+     * Absent for the older path, where `PrepareInput.bytes` carries the
+     * file and the object is uploaded here.
+     */
+    staged?: { uploadId: string; pathBySha: Map<string, string> },
   ): Promise<UploadResult> {
     if (!WRITERS.has(viewer.role)) {
       return { ok: false, added: [], rejected: [], error: 'Not permitted to upload to this book.' }
@@ -700,25 +908,61 @@ export class SupabaseProvider implements DataProvider {
         })
         continue
       }
-      const bytes = files.find((f) => f.sha256 === p.sha256)?.bytes
-      if (!bytes) {
-        rejected.push({ originalFilename: p.originalFilename, reason: 'File content was not received.' })
-        continue
-      }
-
       // Content-addressed: the same bytes land on the same path, so a
       // retry after a half-finished request overwrites rather than
       // orphaning. The row is what makes a document exist, and it is
       // written second — an object with no row is invisible, a row with no
       // object is a broken download.
-      const storagePath = `${jobBookId}/${sectionNumber}/${p.sha256}`
-      const up = await supabase.storage.from(DOCUMENT_BUCKET).upload(storagePath, bytes, {
-        contentType: p.mimeType ?? 'application/octet-stream',
-        upsert: true,
-      })
-      if (up.error) {
-        rejected.push({ originalFilename: p.originalFilename, reason: `Storage: ${up.error.message}` })
-        continue
+      const storagePath = finalPath(jobBookId, sectionNumber, p.sha256)
+
+      if (staged) {
+        const from = staged.pathBySha.get(p.sha256)
+        if (!from) {
+          rejected.push({
+            originalFilename: p.originalFilename,
+            reason: 'That file is no longer staged.',
+          })
+          continue
+        }
+        const moved = await supabase.storage.from(DOCUMENT_BUCKET).move(from, storagePath)
+        if (moved.error) {
+          // A move onto an existing path fails, and the path is the
+          // content hash — so the identical bytes are already filed
+          // here. The object in hand is redundant rather than lost:
+          // drop it and let the row below point at what is there.
+          const { data: already } = await supabase.storage
+            .from(DOCUMENT_BUCKET).list(`${jobBookId}/${sectionNumber}`, {
+              search: p.sha256, limit: 1,
+            })
+          if (!already || already.length === 0) {
+            rejected.push({
+              originalFilename: p.originalFilename,
+              reason: `Storage: ${moved.error.message}`,
+            })
+            continue
+          }
+          await supabase.storage.from(DOCUMENT_BUCKET).remove([from])
+        }
+      } else {
+        const bytes = files.find((f) => f.sha256 === p.sha256)?.bytes
+        if (!bytes) {
+          rejected.push({
+            originalFilename: p.originalFilename,
+            reason: 'File content was not received.',
+          })
+          continue
+        }
+        const up = await supabase.storage.from(DOCUMENT_BUCKET).upload(storagePath, bytes, {
+          contentType: p.mimeType ?? 'application/octet-stream',
+          upsert: true,
+        })
+        if (up.error) {
+          rejected.push({
+            originalFilename: p.originalFilename,
+            reason: `Storage: ${up.error.message}`,
+          })
+          continue
+        }
       }
 
       if (p.supersedesDocumentId) {
@@ -748,6 +992,28 @@ export class SupabaseProvider implements DataProvider {
         normalizedFilename: p.normalizedFilename,
         sha256: p.sha256,
       })
+    }
+
+    if (staged) {
+      // The batch is done with, however it went. Marking it consumed
+      // makes a double-clicked commit a no-op instead of a second
+      // attempt to move objects that have already moved, and takes the
+      // rows out of the sweep's way.
+      await supabase.from('staged_upload')
+        .update({ consumed_at: new Date().toISOString() })
+        .eq('upload_id', staged.uploadId)
+        .is('consumed_at', null)
+
+      // Anything rejected still has an object sitting in `_staging`.
+      // The sweep would get it in a day; removing it now keeps the
+      // bucket honest.
+      const leftovers = rejected
+        .map((r) => files.find((f) => f.originalFilename === r.originalFilename)?.sha256)
+        .map((sha) => (sha ? staged.pathBySha.get(sha) : undefined))
+        .filter((p): p is string => !!p)
+      if (leftovers.length > 0) {
+        await supabase.storage.from(DOCUMENT_BUCKET).remove(leftovers)
+      }
     }
 
     if (added.length) {
