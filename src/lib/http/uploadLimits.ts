@@ -181,6 +181,21 @@ export async function postForJson<T>(
     return { ok: false, error: describeUploadFailure(null, false) }
   }
 
+  // An expired session is bounced to the sign-in page by the
+  // middleware, which answers 200 with HTML. Without this the generic
+  // branch below reports "the server refused the upload (HTTP 200)",
+  // which reads as nonsense and hides the one thing the person needs
+  // to do. Checked before parsing, because HTML never parses as JSON
+  // and the failure would otherwise be indistinguishable from a
+  // platform error page.
+  if (response.redirected && new URL(response.url).pathname.startsWith('/login')) {
+    return {
+      ok: false,
+      error: 'Your session has expired. Sign in again and choose the files once more — '
+        + 'nothing was filed.',
+    }
+  }
+
   let parsed: unknown
   let parseFailed = false
   try {

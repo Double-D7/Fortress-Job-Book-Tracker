@@ -153,3 +153,39 @@ describe('reading the answer', () => {
     expect(res.data!.preview).toEqual({ files: [] })
   })
 })
+
+describe('an expired session', () => {
+  async function withFetch<T>(
+    stub: (...args: Parameters<typeof fetch>) => Promise<Response>,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const original = globalThis.fetch
+    globalThis.fetch = stub as typeof fetch
+    try {
+      return await run()
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  it('is named, rather than reported as a refusal with a 200', async () => {
+    // The middleware bounces an unauthenticated API call to the
+    // sign-in page, which answers 200 with HTML. Verified against
+    // production: a GET to the staged route returns 200 and
+    // x-matched-path: /login. Without this case the generic branch
+    // says "the server refused the upload (HTTP 200)", which reads as
+    // nonsense and hides the one thing the person has to do.
+    const res = await withFetch(
+      async () => {
+        const r = new Response('<html>sign in</html>', { status: 200 })
+        Object.defineProperty(r, 'redirected', { value: true })
+        Object.defineProperty(r, 'url', { value: 'https://app.fortressqc.com/login?next=%2Fapi' })
+        return r
+      },
+      () => postForJson('/api/x', { method: 'PUT' }),
+    )
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/session has expired/)
+    expect(res.error).not.toMatch(/HTTP 200/)
+  })
+})
