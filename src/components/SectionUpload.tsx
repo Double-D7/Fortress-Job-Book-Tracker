@@ -21,6 +21,7 @@ import { DEFAULT_TYPE_BY_SECTION, TYPE_CODES, type TypeCode } from '@/lib/domain
 import { Button, Card, CardBody, CardHeader, CardTitle, Chip } from '@/components/ui/primitives'
 import { bytes, num } from '@/lib/utils'
 import type { UploadPreview } from '@/lib/domain/upload'
+import { MAX_REQUEST_LABEL, postForJson, tooLargeFor } from '@/lib/http/uploadLimits'
 
 interface Props {
   bookId: string
@@ -76,17 +77,23 @@ export function SectionUpload({
     setPreview(null)
     setDone(null)
     setError(null)
-    setBusy('preview')
-    try {
-      const res = await fetch(base, { method: 'PUT', body: body(files) })
-      const json = await res.json()
-      if (!json.ok) setError(json.error ?? 'Could not read those files.')
-      else setPreview(json.preview as UploadPreview)
-    } catch {
-      setError('Could not reach the server.')
-    } finally {
-      setBusy(null)
+
+    // Checked here, before anything is sent. A request over the limit
+    // is refused at the edge before the route runs, so pushing it up a
+    // site connection first only costs the person the wait.
+    const over = tooLargeFor(files)
+    if (over) {
+      setError(over.message)
+      return
     }
+
+    setBusy('preview')
+    const res = await postForJson<{ preview: UploadPreview }>(
+      base, { method: 'PUT', body: body(files) },
+    )
+    if (!res.ok) setError(res.error ?? 'Could not read those files.')
+    else setPreview(res.data!.preview)
+    setBusy(null)
   }
 
   async function repreview() {
@@ -94,23 +101,28 @@ export function SectionUpload({
   }
 
   async function commit() {
+    const over = tooLargeFor(picked)
+    if (over) {
+      setError(over.message)
+      return
+    }
+
     setBusy('commit')
     setError(null)
     try {
-      const res = await fetch(base, { method: 'POST', body: body(picked) })
-      const json = await res.json()
-      if (!json.ok) {
-        setError(json.error ?? 'Upload failed.')
+      const res = await postForJson<{ added: unknown[]; rejected: unknown[] }>(
+        base, { method: 'POST', body: body(picked) },
+      )
+      if (!res.ok) {
+        setError(res.error ?? 'Upload failed.')
         return
       }
-      setDone({ added: json.added.length, rejected: json.rejected.length })
+      setDone({ added: res.data!.added.length, rejected: res.data!.rejected.length })
       reset(false)
       // The section's score is derived, so the page it lives on has to be
       // re-fetched rather than patched — a number nudged in the browser and
       // a number computed on the server are two different numbers.
       router.refresh()
-    } catch {
-      setError('Could not reach the server.')
     } finally {
       setBusy(null)
     }
@@ -217,6 +229,10 @@ export function SectionUpload({
           <p className="text-sm text-ink">Drop files for <span className="text-ink-secondary">{sectionTitle}</span></p>
           <p className="mt-0.5 text-xs text-ink-muted">
             They are checked against the rest of the book before anything is filed.
+          </p>
+          <p className="mt-0.5 text-2xs text-ink-muted">
+            Up to {MAX_REQUEST_LABEL} per batch. Several smaller batches land exactly
+            the same as one large one.
           </p>
           <input
             ref={inputRef} type="file" multiple className="hidden"
