@@ -192,10 +192,13 @@ describe('what the section actually scores', () => {
     expect(s.pct).toBe(0)
   })
 
-  it('ignores a drawing nobody has approved', () => {
+  it('counts a drawing nobody has approved', () => {
+    // Previously 0: the score filtered on `approved_at`, which nothing
+    // ever sets. An isometric that was filed and legible scored the
+    // same as one that was never uploaded.
     const s = scoreSection(DEF, SECTION,
       bundle([drawing(`${A}.pdf`, { approvedAt: null })]))
-    expect(s.pct).toBe(0)
+    expect(s.pct).toBeGreaterThan(0)
   })
 })
 

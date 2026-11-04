@@ -220,14 +220,21 @@ describe('committing an upload', () => {
     const s2 = after!.sections.find((x) => x.sectionDefinitionId === d.id)!
     const score = scoreSection(d, s2, after!)
 
-    // Collected moves the moment the file lands — that is the tech's
-    // feedback that the upload worked.
+    // Both figures move the moment the file lands — that is the tech's
+    // feedback that the upload worked, and it is now also the score.
+    //
+    // This used to assert `pct` stayed at 0 until a second person
+    // approved the document, described as the two-person control the
+    // book turns on. It was not one: nothing in this application has
+    // ever written `document.approved_at`, so the headline could never
+    // move and every document section in production read 0% with
+    // evidence filed against it. Correctness is the §10 audits' job;
+    // section approval remains the two-person control over declaring a
+    // section done.
     expect(collectedOf(score)).toBe(100)
-    // The compliance figure does not, because nobody has approved it yet.
-    // Softening that would make the headline a claim no second person had
-    // checked, which is the two-person control the book turns on.
-    expect(score.pct).toBe(0)
-    expect(score.explanation).toContain('awaiting approval')
+    expect(score.pct).toBe(100)
+    expect(score.explanation).toContain('uploaded')
+    expect(score.explanation).not.toContain('awaiting approval')
 
     // Section 16 was empty and required; uploading is evidence arriving.
     expect(s2.status).not.toBe('not_started')

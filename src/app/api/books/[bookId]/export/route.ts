@@ -117,12 +117,22 @@ export async function GET(
   const zip = new JSZip()
   zip.file(`${b.book.jobNumber}-completeness-report.txt`, completenessReport(b, score))
 
-  // Approved documents only. An unapproved upload has not passed the
-  // two-person control, and a turnover package is what the operator is
-  // being told is finished.
+  // Every live document, superseded revisions excluded.
+  //
+  // This filtered on `approved_at` and called it the two-person
+  // control. Nothing has ever written that column, so the filter did
+  // not hold back unapproved work — it held back ALL work, and the
+  // turnover package came out containing a completeness report and no
+  // documents at all.
+  //
+  // What makes a package fit to hand over is the §10 audit trail and
+  // the §10.4 Completeness Certification, both of which are real and
+  // both of which are recorded against the book. A superseded revision
+  // is still excluded: that is a different question from approval, and
+  // shipping R0 beside R2 would be wrong whatever the control.
   const defsById = new Map(b.sectionDefinitions.map((d) => [d.id, d]))
   const sectionById = new Map(b.sections.map((s) => [s.id, s]))
-  const approved = b.documents.filter((d) => !d.deletedAt && !d.isSuperseded && d.approvedAt)
+  const approved = b.documents.filter((d) => !d.deletedAt && !d.isSuperseded)
 
   let written = 0
   const unavailable: string[] = []
@@ -179,7 +189,7 @@ function completenessReport(
     `Generated ${new Date().toISOString()}`,
     '',
     `Overall completion : ${score.overallPct}%  (approved evidence)`,
-    `Collected          : ${score.collectedPct}%  (in the book, some awaiting approval)`,
+    `Collected          : ${score.collectedPct}%  (evidence filed against the book)`,
     `Weight earned      : ${score.weightApplied} of ${score.weightAvailable}`,
     '',
   ]

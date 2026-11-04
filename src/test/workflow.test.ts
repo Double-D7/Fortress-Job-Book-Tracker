@@ -89,19 +89,33 @@ describe('resolving a finding', () => {
   })
 })
 
-describe('approval moves the score, uploading alone does not', () => {
-  it('a section reaches 100% only once approved', async () => {
+describe('uploading moves the score', () => {
+  it('a section reaches 100% on upload, with nothing approving it', async () => {
+    // This used to assert the opposite: that a section stayed at 0%
+    // until a second person approved each document. Nothing in this
+    // application has ever set `document.approved_at` — no route, no
+    // screen, no function — so that was not a two-person control, it
+    // was a score that could never move. Every document section in
+    // production read 0% with evidence filed against it.
+    //
+    // Correctness is the §10 audits' job now. Section-level approval
+    // (`approveSection`) is untouched and is still the two-person
+    // control over a section being declared done.
     const p = getDataProvider()
     const sha = 'c'.repeat(64)
     await p.addDocuments(tech, 'book-dp452', '16', [{
       originalFilename: 'procedure.pdf', byteSize: 4096, sha256: sha, mimeType: 'application/pdf',
     }])
 
-    const before = (await p.getBundle(manager, 'book-dp452'))!
-    const def = before.sectionDefinitions.find((d) => d.sectionNumber === '16')!
-    const s = before.sections.find((x) => x.sectionDefinitionId === def.id)!
-    // Collected, not approved — which is the whole distinction.
-    expect(scoreSection(def, s, before).pct).toBe(0)
-    expect(scoreSection(def, s, before).collectedPct).toBe(100)
+    const after = (await p.getBundle(manager, 'book-dp452'))!
+    const def = after.sectionDefinitions.find((d) => d.sectionNumber === '16')!
+    const s = after.sections.find((x) => x.sectionDefinitionId === def.id)!
+    const scored = scoreSection(def, s, after)
+
+    expect(scored.pct).toBe(100)
+    // The two numbers now agree, because uploading is what collecting
+    // means and nothing stands between them.
+    expect(scored.collectedPct).toBe(100)
+    expect(after.documents.find((d) => d.sha256 === sha)?.approvedAt ?? null).toBeNull()
   })
 })

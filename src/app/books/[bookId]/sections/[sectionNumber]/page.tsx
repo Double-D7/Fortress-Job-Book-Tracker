@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound, redirect} from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 import { currentViewer, getDataProvider } from '@/lib/data/provider'
-import { collectedOf, scoreSection } from '@/lib/domain/scoring'
+import { scoreSection } from '@/lib/domain/scoring'
 import type { JobBookBundle } from '@/lib/domain/types'
 import { evaluateFlags } from '@/lib/domain/flags'
 import {
@@ -152,17 +152,14 @@ export default async function SectionDetail({
               </div>
               {score.countsTowardTotal && def.weight > 0 && (
                 <>
+                  {/* The headline moves on upload now. This used to be
+                      shadowed by a "collected, awaiting approval" line,
+                      because the score filtered on an approval nothing
+                      ever granted — the exact failure that comment
+                      warned about: "a tech who uploads eleven drawings
+                      and watches the headline stay at 0% cannot tell a
+                      working upload from a broken one". */}
                   <ProgressBar value={score.pct} className="mt-2 w-32" />
-                  {/* Evidence in the book but not yet approved. Shown because
-                      a tech who uploads eleven drawings and watches the
-                      headline stay at 0% cannot tell a working upload from a
-                      broken one — and will stop trusting the screen. */}
-                  {collectedOf(score) > score.pct && (
-                    <div className="mt-1.5 text-2xs text-ink-secondary">
-                      <span className="tnum font-medium text-ink">{pct(collectedOf(score))}</span>
-                      {' '}collected, awaiting approval
-                    </div>
-                  )}
                 </>
               )}
             </div>

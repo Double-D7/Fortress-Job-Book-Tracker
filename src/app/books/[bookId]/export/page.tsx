@@ -84,7 +84,7 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
               and broken — see below. */}
           <div className="flex flex-wrap gap-2">
             <a href={`/api/books/${bookId}/export?format=zip`} download>
-              <Button variant="primary"><FileArchive size={13} /> Approved documents (ZIP)</Button>
+              <Button variant="primary"><FileArchive size={13} /> Filed documents (ZIP)</Button>
             </a>
             <a href={`/api/books/${bookId}/export?format=xlsx`} download>
               <Button variant="secondary"><Download size={13} /> Noble-format Excel logs</Button>

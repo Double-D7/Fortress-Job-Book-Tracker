@@ -170,8 +170,33 @@ function liveDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecor
   return docs.filter((d) => d.sectionId === sectionId && !d.deletedAt && !d.isSuperseded)
 }
 
-function approvedDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecord[] {
-  return liveDocuments(docs, sectionId).filter((d) => d.approvedAt)
+/**
+ * Documents that count toward a section's score.
+ *
+ * Every live document, not only approved ones.
+ *
+ * The original design scored `approved_at` and treated an upload as
+ * uncounted until a second person accepted it. Nothing in this
+ * application has ever set that column — there is no route, no screen
+ * and no function that approves a document — so every document-scored
+ * section read 0% no matter how much evidence was filed, and the
+ * turnover export, which also filtered on it, came out empty. The
+ * control was specified and never built, and what it actually did was
+ * hide work that had been done.
+ *
+ * Correctness is established by the §10 audits instead: Tier 1 by the
+ * Custodian, Tier 2 by an independent JB-3, Tier 3 by the QA/QC
+ * Manager at Gate 4. Those sample the filed evidence and raise
+ * findings against it, which is a real control with real teeth,
+ * unlike a column nothing wrote.
+ *
+ * `approved_at` is NOT removed. It still gates what a client user or a
+ * third-party inspector may read (`document_read` in 0003), and that
+ * is a separate decision about publishing records outside Fortress —
+ * untouched here, and still closed.
+ */
+function countableDocuments(docs: DocumentRecord[], sectionId: string): DocumentRecord[] {
+  return liveDocuments(docs, sectionId)
 }
 
 /**
@@ -236,34 +261,24 @@ export function scoreSection(
 
   switch (def.requirementType) {
     case 'document': {
-      const approved = approvedDocuments(bundle.documents, section.id)
-      const present = liveDocuments(bundle.documents, section.id)
+      const present = countableDocuments(bundle.documents, section.id)
       // A declared scope beats the template's generic minimum: the template
       // says "at least one drawing", the job says "eleven".
       const required = Math.max(
         1, section.expectedCount ?? 0, section.expectedCount != null ? 0 : def.minDocuments,
       )
       const inputs: ScoreInput[] = [
-        { label: 'Approved documents', numerator: approved.length, denominator: required },
+        { label: 'Documents uploaded', numerator: present.length, denominator: required },
       ]
-      if (present.length > approved.length) {
-        inputs.push({
-          label: 'Uploaded, awaiting approval',
-          numerator: present.length - approved.length,
-          denominator: present.length,
-        })
-      }
       return {
         ...base,
-        pct: pct(approved.length, required),
+        pct: pct(present.length, required),
         collectedPct: pct(present.length, required),
         countsTowardTotal: true,
         inputs,
-        explanation: approved.length === 0 && present.length === 0
+        explanation: present.length === 0
           ? `No documents uploaded; ${required} required.`
-          : `${approved.length} of ${required} required document(s) approved` +
-            (present.length > approved.length
-              ? `, ${present.length - approved.length} awaiting approval.` : '.'),
+          : `${present.length} of ${required} required document(s) uploaded.`,
       }
     }
 
@@ -674,7 +689,7 @@ function scoreRecords(
         def.sectionNumber === '22' ? '22' : '21',
         bundle.welds.filter(isCountable).map((w) => w.isometricNumber),
         bundle.torqueConnections.map((c) => c.isoNumber),
-        approvedDocuments(bundle.documents, section.id),
+        countableDocuments(bundle.documents, section.id),
       )
       const denominator = scopedDenominator(cov.referenced.length, section.expectedCount)
       if (denominator === 0) {
@@ -728,11 +743,15 @@ function scoreRecords(
       }
     }
     default: {
-      const docs = approvedDocuments(bundle.documents, section.id)
+      const docs = countableDocuments(bundle.documents, section.id)
       return {
         ...base, pct: pct(docs.length, Math.max(1, def.minDocuments)), countsTowardTotal: true,
-        inputs: [{ label: 'Approved documents', numerator: docs.length, denominator: Math.max(1, def.minDocuments) }],
-        explanation: `${docs.length} approved document(s).`,
+        inputs: [{
+          label: 'Documents uploaded',
+          numerator: docs.length,
+          denominator: Math.max(1, def.minDocuments),
+        }],
+        explanation: `${docs.length} document(s) uploaded.`,
       }
     }
   }
