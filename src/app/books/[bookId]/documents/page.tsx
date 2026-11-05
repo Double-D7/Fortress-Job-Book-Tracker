@@ -34,7 +34,6 @@ export default async function DocumentsPage({ params }: { params: Promise<{ book
       normalizedFilename: d.normalizedFilename,
       byteSize: d.byteSize ?? 0,
       mimeType: d.mimeType ?? '',
-      approved: !!d.approvedAt,
       superseded: d.isSuperseded,
       duplicate: (hashCounts.get(d.sha256) ?? 0) > 1,
       isArchive: /\.(zip|7z|rar|tar|gz)$/i.test(d.originalFilename),

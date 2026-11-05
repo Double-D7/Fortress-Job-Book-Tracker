@@ -190,7 +190,7 @@ export interface IsometricSectionCoverage {
    *  its own — a line may be drawn before it is welded — but a book whose
    *  drawings are all extraneous is filed against the wrong job. */
   extraneous: string[]
-  /** Approved drawings that name no isometric at all. */
+  /** Filed drawings that name no isometric at all. */
   unattributable: string[]
   /**
    * Covered isometrics whose drawing does not carry this section's markup.

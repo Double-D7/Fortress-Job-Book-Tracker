@@ -123,7 +123,7 @@ export function IsometricCoverage({
               </div>
             </div>
             <p className="mt-1.5 text-2xs leading-relaxed text-ink-secondary">
-              These are filed and approved, and they ship with the turnover package. They
+              These are filed, and they ship with the turnover package. They
               count toward no isometric, because neither the filename nor an upload tag says
               which line they cover. Choose the isometric when uploading, or rename the file
               to its line number.

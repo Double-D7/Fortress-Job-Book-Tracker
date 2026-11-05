@@ -112,7 +112,10 @@ export default async function SectionDetail({
         number,
         b.welds.filter(isCountable).map((w) => w.isometricNumber),
         b.torqueConnections.map((c) => c.isoNumber),
-        docs.filter((d) => d.approvedAt),
+        // Every filed drawing. This filtered on `approvedAt`, which
+        // nothing in this application writes, so §21 and §22 reported
+        // no coverage however many isometrics were filed against them.
+        docs,
       )
     : null
 
@@ -274,7 +277,7 @@ export default async function SectionDetail({
             <div className="max-h-[460px] overflow-auto">
               <Table>
                 <thead>
-                  <tr><Th>File</Th><Th className="text-right">Size</Th><Th>Uploaded</Th><Th>State</Th></tr>
+                  <tr><Th>File</Th><Th className="text-right">Size</Th><Th>Uploaded</Th></tr>
                 </thead>
                 <tbody>
                   {docs.map((d) => (
@@ -288,9 +291,6 @@ export default async function SectionDetail({
                       </Td>
                       <Td className="tnum whitespace-nowrap font-mono text-2xs text-ink-secondary">
                         {d.uploadedAt.slice(0, 10)}
-                      </Td>
-                      <Td>
-                        {d.approvedAt ? <Chip tone="complete">Approved</Chip> : <Chip tone="progress">Unapproved</Chip>}
                       </Td>
                     </Tr>
                   ))}

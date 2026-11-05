@@ -22,7 +22,6 @@ export interface DocRow {
   normalizedFilename: string
   byteSize: number
   mimeType: string
-  approved: boolean
   superseded: boolean
   duplicate: boolean
   isArchive: boolean
@@ -134,7 +133,6 @@ export function DocumentLibrary({ docs }: { docs: DocRow[] }) {
                       <Td className="font-mono text-2xs text-ink-muted">{d.sha256}…</Td>
                       <Td>
                         <div className="flex flex-wrap gap-1">
-                          {d.approved ? <Chip tone="complete">Approved</Chip> : <Chip tone="progress">Unapproved</Chip>}
                           {d.superseded && <Chip tone="idle">Superseded</Chip>}
                           {d.duplicate && <Chip tone="progress" icon={<Copy size={10} />}>Duplicate content</Chip>}
                           {d.isArchive && <Chip tone="progress" icon={<Archive size={10} />}>Not indexed</Chip>}

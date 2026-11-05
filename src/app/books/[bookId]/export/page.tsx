@@ -30,7 +30,9 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
   const score = scoreBook(b)
   const flags = countBySeverity(evaluateFlags(b))
   const live = b.documents.filter((d) => !d.deletedAt)
-  const approved = live.filter((d) => d.approvedAt)
+  // Every live document. This counted `approvedAt`, which nothing
+  // writes, so the readiness tile read 0 of N with the whole book filed.
+  const shipped = live.filter((d) => !d.isSuperseded)
   const totalBytes = live.reduce((s, d) => s + (d.byteSize ?? 0), 0)
   const blocking = score.sections.filter((s) => s.countsTowardTotal && s.weight > 0 && s.pct === 0)
 
@@ -47,9 +49,9 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
             <div>
               <div className="text-2xs uppercase tracking-wide text-ink-muted">Documents</div>
               <div className="tnum mt-1 text-2xl font-semibold">
-                {num(approved.length)}<span className="text-base text-ink-muted">/{num(live.length)}</span>
+                {num(shipped.length)}<span className="text-base text-ink-muted">/{num(live.length)}</span>
               </div>
-              <div className="text-2xs text-ink-secondary">approved · {bytes(totalBytes)}</div>
+              <div className="text-2xs text-ink-secondary">filed · {bytes(totalBytes)}</div>
             </div>
             <div>
               <div className="text-2xs uppercase tracking-wide text-ink-muted">Open critical flags</div>
@@ -91,8 +93,8 @@ export default async function ExportPage({ params }: { params: Promise<{ bookId:
             </a>
           </div>
           <p className="text-2xs leading-relaxed text-ink-muted">
-            The ZIP carries every <strong className="text-ink-secondary">approved</strong> document
-            filed under its section number, plus a completeness report reproducing this page's
+            The ZIP carries every <strong className="text-ink-secondary">filed</strong> document
+            under its section number, current revisions only, plus a completeness report reproducing this page's
             figures — including, where it applies, that the percentage is a lower bound. Anything
             with a record but no readable file is listed in the package rather than quietly left
             out. The Excel export is the weld and torque logs in the Noble column order, for an

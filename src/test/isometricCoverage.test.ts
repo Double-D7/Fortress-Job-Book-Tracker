@@ -270,3 +270,43 @@ describe('the findings', () => {
     expect(f.title).toMatch(/^19\d isometric/)
   })
 })
+
+describe('coverage counts a drawing the moment it is filed', () => {
+  /**
+   * Regression. The §21/§22 screen built its coverage from
+   * `docs.filter(d => d.approvedAt)` — its own copy of a filter the
+   * scoring module also had. Nothing in this application writes
+   * `approved_at`, so the panel reported no coverage however many
+   * isometrics were filed against the section.
+   *
+   * The scoring module was fixed first and this call site was missed,
+   * which is the same shape of bug twice: one rule, two
+   * implementations. This pins the UI's source of truth to the same
+   * answer the score gives.
+   */
+  it('matches a filed drawing with no approval', () => {
+    const b = bundle([drawing(`${A}.pdf`, { approvedAt: null })])
+    const cov = isometricSectionCoverage(
+      '21',
+      b.welds.map((w) => w.isometricNumber),
+      b.torqueConnections.map((c) => c.isoNumber),
+      // What the screen passes now: every live document.
+      b.documents,
+    )
+    expect(cov.covered.length).toBeGreaterThan(0)
+  })
+
+  it('agrees with the score, which is the point', () => {
+    const b = bundle([drawing(`${A}.pdf`, { approvedAt: null })])
+    const scored = scoreSection(DEF, SECTION, b)
+    const cov = isometricSectionCoverage(
+      '21',
+      b.welds.map((w) => w.isometricNumber),
+      b.torqueConnections.map((c) => c.isoNumber),
+      b.documents,
+    )
+    // Both derive from the same set of documents, so a drawing that
+    // moves one has to move the other.
+    expect(scored.pct > 0).toBe(cov.covered.length > 0)
+  })
+})
